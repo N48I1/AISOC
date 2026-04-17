@@ -1,0 +1,6 @@
+{
+  "name": "Black Box SOC",
+  "description": "A high-performance Security Operations Center platform with multi-agent AI orchestration for Wazuh alert analysis and incident response.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
