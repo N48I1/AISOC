@@ -174,338 +174,625 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
   );
 };
 
-const DetailedReport = ({ alert, aiData, mitreTags, onClose, onAgentTrigger }: { alert: Alert, aiData: any, mitreTags: string[], onClose: () => void, onAgentTrigger: (phase: string) => void }) => {
-  const isAnalyzing = alert.status === 'ANALYZING';
+const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, aiData: any, mitreTags: string[], onClose: () => void }) => {
+  const severity = alert.severity >= 13 ? 'CRITICAL' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MEDIUM' : 'LOW';
+  const sevColor: Record<string, string> = { CRITICAL: '#d93025', HIGH: '#f29900', MEDIUM: '#1a73e8', LOW: '#1e8e3e' };
+
+  const responseActions = aiData?.response?.actions || [];
+  const iocs = aiData?.iocs || {};
+
+  const markdownReport = [
+    `# AEGIS SOC — Incident Report`,
+    `**Incident ID:** ${alert.id.toUpperCase()}`,
+    `**Generated:** ${new Date().toLocaleString()}`,
+    `**Status:** ${alert.status}${alert.email_sent === 1 ? '  |  📧 Email Notification Sent' : ''}`,
+    ``,
+    `---`,
+    `## 1. Executive Summary`,
+    `| Field | Value |`,
+    `|---|---|`,
+    `| Description | ${alert.description} |`,
+    `| Severity | **${severity}** (Level ${alert.severity}) |`,
+    `| Source IP | ${alert.source_ip || 'N/A'} |`,
+    `| Hostname | ${alert.agent_name || 'N/A'} |`,
+    `| Timestamp | ${new Date(alert.timestamp).toLocaleString()} |`,
+    `| Rule ID | ${alert.rule_id || 'N/A'} |`,
+    ``,
+    aiData?.summary ? `> ${aiData.summary}` : `> No AI analysis available yet.`,
+    ``,
+    `---`,
+    `## 2. Indicators of Compromise (IOCs)`,
+    iocs.ips?.length ? `**IPs:** \`${iocs.ips.join('`  `')}\`` : `**IPs:** ${alert.source_ip || 'N/A'}`,
+    iocs.users?.length ? `**Users:** ${iocs.users.join(', ')}` : '',
+    iocs.hosts?.length ? `**Hosts:** ${iocs.hosts.join(', ')}` : `**Hosts:** ${alert.agent_name || 'N/A'}`,
+    ``,
+    `---`,
+    `## 3. MITRE ATT&CK Mapping`,
+    mitreTags.length
+      ? mitreTags.map(t => `- \`${t}\``).join('\n')
+      : `- No MITRE techniques mapped yet.`,
+    ``,
+    `---`,
+    `## 4. Threat Intelligence`,
+    aiData?.intel || `_Threat intel not yet retrieved. Run the Threat Intel agent._`,
+    ``,
+    `---`,
+    `## 5. Remediation & Playbook`,
+    alert.remediation_steps || `_Remediation steps not yet retrieved. Run the RAG Knowledge agent._`,
+    ``,
+    `---`,
+    `## 6. Campaign Correlation`,
+    aiData?.correlation
+      ? `**Campaign:** ${aiData.correlation}`
+      : `_No correlation data. Run the Correlation agent._`,
+    ``,
+    `---`,
+    `## 7. Response Plan`,
+    responseActions.length
+      ? responseActions.map((a: any) => `- **${a.type}** → \`${a.target}\`\n  _${a.reason}_`).join('\n')
+      : `_No response plan generated yet. Run the Response agent._`,
+    aiData?.response?.approval_required !== undefined
+      ? `\n**Analyst Approval Required:** ${aiData.response.approval_required ? 'YES' : 'NO'}`
+      : '',
+    ``,
+    `---`,
+    `## 8. SLA & Validation`,
+    aiData?.validation || `_SLA validation pending._`,
+    ``,
+    `---`,
+    `## 9. Raw Wazuh Log`,
+    `\`\`\``,
+    alert.full_log || 'No log data.',
+    `\`\`\``,
+  ].filter(l => l !== null && l !== undefined).join('\n');
+
+  const downloadReport = () => {
+    const blob = new Blob([markdownReport], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `incident-${alert.id}-report.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const Section = ({ title, children }: { title: string, children: React.ReactNode }) => (
+    <section>
+      <h3 className="text-[0.7rem] font-black text-[#004a99] uppercase tracking-widest mb-3 pb-2 border-b border-[#e8eef7]">
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-10 bg-black/50 backdrop-blur-sm"
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
     >
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-[#004a99] text-white">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-7 py-5 bg-[#003a7a] text-white shrink-0">
           <div>
-            <h2 className="text-xl font-bold">Comprehensive Security Incident Report</h2>
-            <p className="text-sm opacity-80">Incident #{alert.id.toUpperCase()} • Generated by Aegis AI Swarm</p>
+            <p className="text-[0.65rem] font-black uppercase tracking-widest text-blue-200 mb-0.5">Aegis SOC — Final Incident Report</p>
+            <h2 className="text-[1.1rem] font-black tracking-tight">INC-{alert.id.substring(0, 8).toUpperCase()}</h2>
+            <p className="text-[0.75rem] text-blue-200 mt-0.5 truncate max-w-sm">{alert.description}</p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
-            <XCircle size={24} />
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={downloadReport}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[0.75rem] font-bold transition-colors border border-white/20"
+            >
+              <ChevronRight size={13} className="rotate-90" />
+              .md
+            </button>
+            <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
+              <XCircle size={20} />
+            </button>
+          </div>
         </div>
-        
-        <div className="flex-1 overflow-y-auto p-8 space-y-8">
-          <section>
-            <div className="flex justify-between items-center border-b-2 border-[#004a99] pb-1 mb-4">
-              <h3 className="text-lg font-bold text-[#004a99]">1. EXECUTIVE SUMMARY</h3>
-              <div className="flex gap-2">
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${alert.status === 'TRIAGED' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-                  {alert.status}
-                </span>
-                {alert.email_sent === 1 && <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase">Email Sent</span>}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div className="space-y-2">
-                <p><span className="font-bold">Description:</span> {alert.description}</p>
-                <p><span className="font-bold">Severity:</span> {alert.severity >= 12 ? 'CRITICAL' : 'HIGH'}</p>
-                <p><span className="font-bold">Source Host:</span> {alert.agent_name || 'N/A'}</p>
-              </div>
-              <div className="space-y-2">
-                <p><span className="font-bold">Timestamp:</span> {new Date(alert.timestamp).toLocaleString()}</p>
-                <p><span className="font-bold">Incident Manager:</span> SOC AI Swarm</p>
-                <p><span className="font-bold">Correlation ID:</span> {aiData?.correlation?.substring(0, 12) || 'N/A'}</p>
-              </div>
-            </div>
-            <p className="mt-4 p-4 bg-gray-50 rounded-lg border italic text-gray-700 text-sm leading-relaxed">
-              {aiData?.summary || (isAnalyzing ? 'Analyzing incident summary...' : 'Waiting for analyst to start analysis swarm...')}
-            </p>
-          </section>
 
-          <section>
-            <div className="flex justify-between items-center border-b-2 border-[#004a99] pb-1 mb-4">
-              <h3 className="text-lg font-bold text-[#004a99]">2. AGENT EVALUATIONS (HUMAN-IN-THE-LOOP)</h3>
-              <p className="text-[0.65rem] text-slate-500 font-bold uppercase">Manual Execution Required</p>
-            </div>
-            <div className="space-y-4">
+        {/* Status bar */}
+        <div className="flex items-center gap-3 px-7 py-2.5 bg-slate-50 border-b border-slate-200 text-[0.7rem] font-bold shrink-0">
+          <span
+            className="px-2.5 py-1 rounded-full uppercase tracking-wide"
+            style={{ background: `${sevColor[severity]}18`, color: sevColor[severity] }}
+          >
+            {severity}
+          </span>
+          <span className="text-slate-400">|</span>
+          <span className={`px-2.5 py-1 rounded-full uppercase tracking-wide ${
+            alert.status === 'TRIAGED' ? 'bg-green-50 text-green-700' :
+            alert.status === 'ANALYZING' ? 'bg-blue-50 text-blue-700' :
+            'bg-slate-100 text-slate-600'
+          }`}>{alert.status}</span>
+          {alert.email_sent === 1 && (
+            <>
+              <span className="text-slate-400">|</span>
+              <span className="flex items-center gap-1 text-green-600"><Bell size={11} fill="currentColor" /> Email sent</span>
+            </>
+          )}
+          <span className="ml-auto text-slate-400">{new Date(alert.timestamp).toLocaleString()}</span>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-7 py-6 space-y-6 text-sm">
+
+          <Section title="1 — Executive Summary">
+            <div className="grid grid-cols-3 gap-3 mb-4">
               {[
-                { id: 'analysis', name: 'Alert Triage & IOC Extraction', content: aiData?.summary, icon: Search },
-                { id: 'intel', name: 'MITRE ATT&CK & Threat Intel', content: aiData?.intel, icon: Shield },
-                { id: 'knowledge', name: 'Playbook Retrieval (RAG)', content: alert.remediation_steps, icon: Clock },
-                { id: 'correlation', name: 'Campaign Correlation', content: aiData?.correlation, icon: Activity },
-                { id: 'ticketing', name: 'Incident Reporting & Email', content: aiData?.ticket?.report_body, icon: FileText },
-                { id: 'response', name: 'Orchestrated Response Plan', content: aiData?.response?.actions?.map((a: any) => `${a.type}: ${a.reason}`).join('\n'), icon: Terminal },
-                { id: 'validation', name: 'SLA & Policy Validation', content: aiData?.validation, icon: CheckCircle }
-              ].map(agent => (
-                <div key={agent.id} className={`border rounded-xl overflow-hidden transition-all ${agent.content ? 'border-green-100' : 'border-gray-200'}`}>
-                  <div className={`px-4 py-3 font-bold text-sm flex justify-between items-center ${agent.content ? 'bg-green-50 text-green-900' : 'bg-gray-50 text-gray-700'}`}>
-                    <div className="flex items-center gap-2">
-                      <agent.icon size={16} className={agent.content ? 'text-green-600' : 'text-gray-400'} />
-                      <span>{agent.name}</span>
-                    </div>
-                    {agent.content ? (
-                      <span className="flex items-center gap-1 text-[10px] text-green-600 bg-white px-2 py-0.5 rounded-full border border-green-200 uppercase tracking-tighter shadow-sm">
-                        <CheckCircle size={10} /> Verified
-                      </span>
-                    ) : (
-                      <button 
-                        onClick={() => onAgentTrigger(agent.id)}
-                        disabled={isAnalyzing}
-                        className="text-[10px] bg-[#004a99] text-white px-3 py-1 rounded-full font-bold uppercase tracking-wider hover:bg-[#003366] transition-all disabled:opacity-50 shadow-sm flex items-center gap-1"
-                      >
-                        {isAnalyzing ? <div className="w-2 h-2 rounded-full bg-white animate-pulse" /> : <ChevronRight size={10} />}
-                        Run Agent
-                      </button>
-                    )}
-                  </div>
-                  <div className="p-4 text-xs whitespace-pre-wrap text-gray-600 italic bg-white min-h-[60px] flex items-center">
-                    {agent.content || (isAnalyzing ? 'Agent is communicating with Gemini...' : 'Analyst must trigger this agent phase manually.')}
-                  </div>
+                { label: 'Source IP', value: alert.source_ip || 'N/A' },
+                { label: 'Hostname', value: alert.agent_name || 'N/A' },
+                { label: 'Rule ID', value: alert.rule_id || 'N/A' },
+              ].map(f => (
+                <div key={f.label} className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider mb-1">{f.label}</p>
+                  <p className="font-mono font-bold text-[0.8rem] text-slate-800 truncate">{f.value}</p>
                 </div>
               ))}
             </div>
-          </section>
+            <div className="bg-[#f0f7ff] border border-[#c8ddf7] rounded-xl p-4 text-slate-700 leading-relaxed italic text-[0.85rem]">
+              {aiData?.summary || 'No AI summary available. Run the Alert Triage agent first.'}
+            </div>
+          </Section>
 
-          {mitreTags.length > 0 && (
-            <section>
-              <h3 className="text-lg font-bold text-[#004a99] border-b-2 border-[#004a99] pb-1 mb-4">3. MITRE ATT&CK TARGETING</h3>
+          <Section title="2 — Indicators of Compromise">
+            <div className="flex flex-wrap gap-2">
+              {(iocs.ips?.length ? iocs.ips : alert.source_ip ? [alert.source_ip] : []).map((ip: string) => (
+                <span key={ip} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-50 border border-red-200 rounded-lg text-red-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />IP: {ip}
+                </span>
+              ))}
+              {(iocs.users || []).map((u: string) => (
+                <span key={u} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-orange-50 border border-orange-200 rounded-lg text-orange-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />User: {u}
+                </span>
+              ))}
+              {(iocs.hosts?.length ? iocs.hosts : alert.agent_name ? [alert.agent_name] : []).map((h: string) => (
+                <span key={h} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-50 border border-purple-200 rounded-lg text-purple-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0" />Host: {h}
+                </span>
+              ))}
+              {!iocs.ips?.length && !alert.source_ip && !iocs.users?.length && !iocs.hosts?.length && !alert.agent_name && (
+                <p className="text-slate-400 text-xs italic">No IOCs extracted yet.</p>
+              )}
+            </div>
+          </Section>
+
+          <Section title="3 — MITRE ATT&CK Mapping">
+            {mitreTags.length > 0 ? (
               <div className="flex flex-wrap gap-2">
                 {mitreTags.map(tag => (
-                  <span key={tag} className="px-3 py-1 bg-red-50 text-red-700 border border-red-200 rounded-full text-xs font-bold font-mono">
+                  <span key={tag} className="px-3 py-1.5 bg-[#1a1a2e] text-[#e94560] border border-[#e94560]/30 rounded-lg text-[0.7rem] font-black font-mono tracking-wide">
                     {tag}
                   </span>
                 ))}
               </div>
-            </section>
-          )}
+            ) : (
+              <p className="text-slate-400 text-xs italic">No techniques mapped. Run Threat Intel agent.</p>
+            )}
+          </Section>
 
-          <section>
-            <h3 className="text-lg font-bold text-[#004a99] border-b-2 border-[#004a99] pb-1 mb-4">4. RAW SYSTEM LOGS (WAZUH)</h3>
-            <pre className="text-[10px] bg-slate-900 text-green-400 p-5 rounded-xl overflow-x-auto font-mono custom-scrollbar">
-              {alert.full_log}
+          <Section title="4 — Threat Intelligence">
+            <div className="bg-slate-900 rounded-xl p-4 text-slate-200 text-[0.8rem] leading-relaxed whitespace-pre-wrap font-mono">
+              {aiData?.intel || <span className="italic text-slate-500">No intel data. Run the Threat Intel agent.</span>}
+            </div>
+          </Section>
+
+          <Section title="5 — Remediation & Playbook">
+            {alert.remediation_steps ? (
+              <div className="space-y-2">
+                {alert.remediation_steps.split('\n').filter(Boolean).map((step, i) => (
+                  <div key={i} className="flex gap-3 items-start p-3 bg-green-50 border border-green-100 rounded-lg">
+                    <span className="w-5 h-5 shrink-0 rounded-full bg-green-200 text-green-800 font-black text-[0.65rem] flex items-center justify-center mt-0.5">{i + 1}</span>
+                    <p className="text-[0.82rem] text-slate-700 leading-relaxed">{step.replace(/^\d+[\.\)]\s*/, '').replace(/^[-•]\s*/, '')}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-slate-400 text-xs italic">No playbook retrieved. Run the RAG Knowledge agent.</p>
+            )}
+          </Section>
+
+          <Section title="6 — Campaign Correlation">
+            <div className={`rounded-xl p-4 border text-[0.82rem] leading-relaxed ${aiData?.correlation && aiData.correlation !== 'None detected' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
+              {aiData?.correlation || 'No correlation data. Run the Correlation agent.'}
+            </div>
+          </Section>
+
+          <Section title="7 — Response Plan">
+            {responseActions.length > 0 ? (
+              <div className="space-y-2">
+                {responseActions.map((action: any, i: number) => (
+                  <div key={i} className="flex items-start gap-3 p-3.5 border border-slate-200 rounded-xl bg-white">
+                    <span className={`px-2 py-0.5 rounded text-[0.6rem] font-black uppercase tracking-wide shrink-0 mt-0.5 ${
+                      action.type === 'BLOCK_IP' ? 'bg-red-100 text-red-700' :
+                      action.type === 'ISOLATE_HOST' ? 'bg-orange-100 text-orange-700' :
+                      action.type === 'DISABLE_USER' ? 'bg-purple-100 text-purple-700' :
+                      'bg-blue-100 text-blue-700'
+                    }`}>{action.type?.replace('_', ' ')}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-mono font-bold text-[0.8rem] text-slate-800 truncate">{action.target}</p>
+                      <p className="text-[0.75rem] text-slate-500 mt-0.5">{action.reason}</p>
+                    </div>
+                  </div>
+                ))}
+                {aiData?.response?.approval_required && (
+                  <p className="text-[0.7rem] text-amber-700 font-bold bg-amber-50 px-3 py-2 rounded-lg border border-amber-200 flex items-center gap-1.5">
+                    <span>⚠</span> Analyst approval required before executing response actions.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-slate-400 text-xs italic">No response plan generated. Run the Response agent.</p>
+            )}
+          </Section>
+
+          <Section title="8 — SLA & Validation">
+            <div className={`rounded-xl p-4 border text-[0.82rem] ${aiData?.validation ? 'bg-green-50 border-green-200 text-green-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
+              {aiData?.validation || 'SLA validation pending. Run the Validation agent.'}
+            </div>
+          </Section>
+
+          <Section title="9 — Raw Wazuh Log">
+            <pre className="text-[0.7rem] bg-slate-950 text-emerald-400 p-5 rounded-xl overflow-x-auto font-mono leading-relaxed">
+              {alert.full_log || 'No log data.'}
             </pre>
-          </section>
+          </Section>
         </div>
 
-        <div className="p-6 border-t bg-gray-50 flex justify-end gap-3">
-           <button onClick={onClose} className="px-8 py-2.5 rounded-lg font-bold text-gray-600 hover:bg-gray-100 transition-colors border shadow-sm">Dismiss</button>
+        <div className="px-7 py-4 border-t bg-slate-50 flex justify-end shrink-0">
+          <button onClick={onClose} className="px-6 py-2.5 rounded-lg font-bold text-slate-600 hover:bg-slate-100 transition-colors border border-slate-200 text-sm">
+            Close Report
+          </button>
         </div>
-      </div>
+      </motion.div>
     </motion.div>
   );
 };
 
 const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () => void, onAction: (id: string, update: any) => void }) => {
   const [showReport, setShowReport] = useState(false);
+  const [runningPhase, setRunningPhase] = useState<string | null>(null);
+  const [runningAll, setRunningAll] = useState(false);
+
   let aiData: any = null;
   let mitreTags: string[] = [];
+  try { aiData = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch (e) {}
+  try { mitreTags = alert.mitre_attack ? JSON.parse(alert.mitre_attack as any) : []; } catch (e) {}
 
-  try {
-    aiData = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null;
-  } catch (e) {
-    console.error('Failed to parse ai_analysis', e);
-  }
+  const isAnalyzing = alert.status === 'ANALYZING' || runningPhase !== null || runningAll;
 
-  try {
-    mitreTags = alert.mitre_attack ? JSON.parse(alert.mitre_attack as any) : [];
-  } catch (e) {
-    console.error('Failed to parse mitre_attack', e);
-  }
+  const severity = alert.severity >= 13 ? 'CRITICAL' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MEDIUM' : 'LOW';
+  const sevStyle: Record<string, string> = {
+    CRITICAL: 'bg-red-50 text-red-700 border-red-200',
+    HIGH: 'bg-orange-50 text-orange-700 border-orange-200',
+    MEDIUM: 'bg-blue-50 text-blue-700 border-blue-200',
+    LOW: 'bg-green-50 text-green-700 border-green-200',
+  };
 
-  const agents = [
-    { name: '1. Alert Analysis', result: aiData?.summary || (alert.status === 'ANALYZING' ? 'Analyzing...' : 'Waiting...'), status: alert.status === 'NEW' ? 'Pending' : alert.status === 'ANALYZING' ? 'Processing' : 'Completed' },
-    { name: '2. Threat Intel', result: aiData?.intel || (alert.status === 'ANALYZING' ? 'Enriching...' : 'Waiting...'), status: alert.status === 'NEW' ? 'Pending' : alert.status === 'ANALYZING' ? 'Processing' : 'Completed' },
-    { name: '3. RAG Knowledge', result: alert.remediation_steps || (alert.status === 'ANALYZING' ? 'Searching playbooks...' : 'Waiting...'), status: alert.status === 'NEW' ? 'Pending' : alert.status === 'ANALYZING' ? 'Processing' : 'Completed' },
-    { name: '4. Correlation', result: aiData?.correlation || (alert.status === 'ANALYZING' ? 'Correlating...' : 'Waiting...'), status: alert.status === 'NEW' ? 'Pending' : alert.status === 'ANALYZING' ? 'Processing' : 'Completed' },
-    { name: '5. Ticketing', result: aiData?.ticket?.title ? `${aiData.ticket.title}: ${aiData.ticket.report_body}` : (alert.status === 'TRIAGED' ? 'Incident Draft Ready' : 'Pending...'), status: alert.status === 'TRIAGED' ? 'Completed' : 'Pending' },
-    { name: '6. Response', result: aiData?.response?.actions?.map((r: any) => `${r.type}: ${r.target}`).join(', ') || 'Awaiting analyst approval...', status: aiData?.response ? 'Completed' : 'Pending' },
-    { name: '7. Validation', result: aiData?.validation || 'Pending...', status: aiData?.validation ? 'Completed' : 'Pending' },
+  const agentDefs = [
+    { id: 'analysis',   label: 'Alert Triage',       icon: Search,      content: aiData?.summary,                                                                   desc: 'Extracts IOCs and validates severity' },
+    { id: 'intel',      label: 'Threat Intel',        icon: Shield,      content: aiData?.intel,                                                                     desc: 'MITRE ATT&CK mapping & reputation' },
+    { id: 'knowledge',  label: 'RAG Playbook',        icon: Clock,       content: alert.remediation_steps,                                                           desc: 'Retrieves remediation playbooks' },
+    { id: 'correlation',label: 'Correlation',         icon: Activity,    content: aiData?.correlation,                                                               desc: 'Detects multi-stage campaigns' },
+    { id: 'ticketing',  label: 'Incident Report',     icon: FileText,    content: aiData?.ticket?.title ? `${aiData.ticket.title}` : null,                          desc: 'Generates structured ticket & email' },
+    { id: 'response',   label: 'Response Plan',       icon: Terminal,    content: aiData?.response?.actions?.map((a: any) => `${a.type} → ${a.target}`).join('\n'), desc: 'Recommends containment actions' },
+    { id: 'validation', label: 'SLA Validation',      icon: CheckCircle, content: aiData?.validation,                                                               desc: 'Verifies completeness & SLA' },
   ];
 
-  const handleAgentTrigger = async (phase: string) => {
-    onAction(alert.id, { status: 'ANALYZING' });
+  const applyAgentResult = (phase: string, result: any, base: any) => {
+    const updatedAiData = { ...base };
+    const extra: any = {};
+    if (phase === 'analysis' && result.analysis) {
+      updatedAiData.summary = result.analysis.analysis_summary;
+      updatedAiData.iocs = result.analysis.iocs;
+      if (result.analysis.is_false_positive) extra.status = 'FALSE_POSITIVE';
+    }
+    if (phase === 'intel' && result.intel) {
+      updatedAiData.intel = result.intel.intel_summary;
+      extra.mitre_attack = JSON.stringify(result.intel.mitre_attack);
+    }
+    if (phase === 'knowledge' && result.knowledge) {
+      extra.remediation_steps = result.knowledge.remediation_steps;
+    }
+    if (phase === 'correlation' && result.correlation) {
+      updatedAiData.correlation = result.correlation.campaign_name;
+    }
+    if (phase === 'ticketing' && result.ticket) {
+      updatedAiData.ticket = result.ticket;
+      extra.email_sent = result.ticket.email_notification_sent ? 1 : 0;
+    }
+    if (phase === 'response' && result.responsePlan) {
+      updatedAiData.response = result.responsePlan;
+    }
+    if (phase === 'validation' && result.validation) {
+      updatedAiData.validation = result.validation.sla_status;
+    }
+    return { updatedAiData, extra };
+  };
+
+  const handleAgentRun = async (phase: string) => {
+    if (runningPhase !== null || runningAll) return; // prevent double-trigger
+    setRunningPhase(phase);
+    // Snapshot aiData now — don't touch parent state until the agent finishes.
+    // Calling onAction mid-run triggers a server PATCH → socket.io emit → Vite HMR
+    // WebSocket interference on the same port → full page reload.
+    const baseAiData = aiData || {};
     try {
-      // Mock state for individual runs
       const state = {
-        alert: alert,
-        recentAlerts: [], // In real app, we'd pass recent alerts
-        analysis: aiData,
-        intel: aiData?.intel,
+        alert,
+        recentAlerts: [],
+        analysis: baseAiData,
+        intel: baseAiData?.intel,
         knowledge: alert.remediation_steps,
-        correlation: aiData?.correlation,
-        ticket: aiData?.ticket,
-        responsePlan: aiData?.response,
+        correlation: baseAiData?.correlation,
+        ticket: baseAiData?.ticket,
+        responsePlan: baseAiData?.response,
       };
-
       const result = await runAgentPhase(phase, state) as any;
-      
-      let updatedAiData = { ...aiData };
-      let updatedOtherFields: any = {};
-
-      if (phase === 'analysis' && result.analysis) {
-        updatedAiData.summary = result.analysis.analysis_summary;
-        if (result.analysis.is_false_positive) updatedOtherFields.status = 'FALSE_POSITIVE';
-      }
-      if (phase === 'intel' && result.intel) {
-        updatedAiData.intel = result.intel.intel_summary;
-        updatedOtherFields.mitre_attack = JSON.stringify(result.intel.mitre_attack);
-      }
-      if (phase === 'knowledge' && result.knowledge) {
-        updatedOtherFields.remediation_steps = result.knowledge.remediation_steps;
-      }
-      if (phase === 'correlation' && result.correlation) {
-        updatedAiData.correlation = result.correlation.campaign_name;
-      }
-      if (phase === 'ticketing' && result.ticket) {
-        updatedAiData.ticket = result.ticket;
-        updatedOtherFields.email_sent = result.ticket.email_notification_sent ? 1 : 0;
-      }
-      if (phase === 'response' && result.responsePlan) {
-        updatedAiData.response = result.responsePlan;
-      }
-      if (phase === 'validation' && result.validation) {
-        updatedAiData.validation = result.validation.sla_status;
-      }
-
-      onAction(alert.id, { 
-        ...updatedOtherFields,
+      const { updatedAiData, extra } = applyAgentResult(phase, result, baseAiData);
+      // Single onAction call only after the agent completes
+      onAction(alert.id, {
+        ...extra,
         ai_analysis: JSON.stringify(updatedAiData),
-        status: updatedOtherFields.status || 'TRIAGED'
+        status: extra.status || (alert.status === 'NEW' ? 'TRIAGED' : alert.status),
       });
-    } catch (error) {
-      console.error('Agent Trigger Error:', error);
-      onAction(alert.id, { status: 'TRIAGED' });
+    } catch (err) {
+      console.error('[Agent run failed]', err);
+    } finally {
+      setRunningPhase(null);
     }
   };
 
-  const handleAction = (status: string) => {
-    onAction(alert.id, { status });
+  const handleRunAll = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (runningPhase !== null || runningAll) return;
+    setRunningAll(true);
+    let currentAiData = aiData || {};
+    let cumulativeExtra: any = {};
+    for (const agent of agentDefs) {
+      if (agent.content) continue; // skip already-completed agents
+      setRunningPhase(agent.id);
+      try {
+        const state = {
+          alert,
+          recentAlerts: [],
+          analysis: currentAiData,
+          intel: currentAiData?.intel,
+          knowledge: cumulativeExtra.remediation_steps || alert.remediation_steps,
+          correlation: currentAiData?.correlation,
+          ticket: currentAiData?.ticket,
+          responsePlan: currentAiData?.response,
+        };
+        const result = await runAgentPhase(agent.id, state) as any;
+        const { updatedAiData, extra } = applyAgentResult(agent.id, result, currentAiData);
+        currentAiData = updatedAiData;
+        cumulativeExtra = { ...cumulativeExtra, ...extra };
+      } catch (err) {
+        console.error(`[Agent ${agent.id} failed]`, err);
+      }
+    }
+    setRunningPhase(null);
+    setRunningAll(false);
+    // Single onAction call after all agents finish
+    onAction(alert.id, {
+      ...cumulativeExtra,
+      ai_analysis: JSON.stringify(currentAiData),
+      status: cumulativeExtra.status || 'TRIAGED',
+    });
   };
 
-  const downloadReport = () => {
-    const report = {
-      incidentId: alert.id,
-      timestamp: alert.timestamp,
-      description: alert.description,
-      aiAnalysis: aiData,
-      mitreAttack: mitreTags,
-      status: alert.status
-    };
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `incident-report-${alert.id}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  const completedCount = agentDefs.filter(a => a.content).length;
 
   return (
-    <div className="flex flex-col h-full bg-[#f4f7fa] p-5 gap-5 overflow-y-auto">
-      <div className="bg-white p-5 border border-[#d1d9e6] rounded-lg">
-        <div className="flex justify-between items-start">
-          <div>
-            <div className="flex items-center gap-3">
-              <h2 className="text-[1.1rem] font-bold">Incident #{alert.id.substring(0, 8).toUpperCase()}: {alert.description}</h2>
-              <button 
-                onClick={() => setShowReport(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#004a99] text-white hover:bg-[#003366] transition-colors text-[0.7rem] font-bold uppercase"
-              >
-                <FileText size={14} />
-                View Detailed Report
-              </button>
-              <button 
-                onClick={downloadReport}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#e8f0fe] text-[#1967d2] hover:bg-[#d2e3fc] transition-colors text-[0.7rem] font-bold uppercase"
-              >
-                <ChevronRight size={14} />
-                Json
-              </button>
-            </div>
-            <div className="flex gap-2 mt-2">
-              <span className={`px-[10px] py-[4px] rounded-[4px] text-[0.7rem] font-bold uppercase ${alert.severity >= 12 ? 'bg-[#ffebee] text-[#d93025]' : 'bg-orange-50 text-orange-600'}`}>
-                {alert.severity >= 12 ? 'Critical Severity' : 'High Severity'}
-              </span>
-              <span className="px-[10px] py-[4px] rounded-[4px] text-[0.7rem] font-bold uppercase bg-[#e8f0fe] text-[#1967d2]">
-                Triage Phase
-              </span>
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-[0.75rem] text-[#5f6368] mb-1">Assigned to AI Swarm (7 Agents)</div>
+    <div className="flex flex-col h-full bg-[#f0f4f9] overflow-hidden">
+
+      {/* Top bar */}
+      <div className="bg-white border-b border-[#d1d9e6] px-6 py-4 flex items-start justify-between gap-4 shrink-0">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <span className={`px-2.5 py-1 rounded-full text-[0.65rem] font-black uppercase tracking-wide border ${sevStyle[severity]}`}>
+              {severity}
+            </span>
+            <span className={`px-2.5 py-1 rounded-full text-[0.65rem] font-black uppercase tracking-wide border ${
+              alert.status === 'TRIAGED' ? 'bg-green-50 text-green-700 border-green-200' :
+              alert.status === 'ANALYZING' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+              alert.status === 'FALSE_POSITIVE' ? 'bg-gray-50 text-gray-500 border-gray-200' :
+              'bg-slate-50 text-slate-600 border-slate-200'
+            }`}>{alert.status}</span>
             {alert.email_sent === 1 && (
-              <div className="flex items-center justify-end gap-1.5 text-[0.7rem] text-[#1e8e3e] font-bold uppercase mb-2">
-                <Bell size={12} fill="currentColor" />
-                Email Alert Sent
-              </div>
-            )}
-            <div className="text-[0.9rem] font-bold text-[#1e8e3e]">94% Analysis Confidence</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 gap-[15px]">
-        {agents.map((agent, i) => (
-          <div key={i} className={`bg-white border border-[#d1d9e6] rounded-lg p-3 flex flex-col gap-2 ${agent.status === 'Processing' ? 'border-[#004a99] ring-1 ring-[#004a99]' : ''}`}>
-            <div className="text-[0.65rem] uppercase font-bold flex items-center gap-1.5">
-              <div className={`w-1.5 h-1.5 rounded-full ${agent.status === 'Completed' ? 'bg-[#1e8e3e]' : agent.status === 'Processing' ? 'bg-[#004a99]' : 'bg-[#ccc]'}`} />
-              {agent.status}
-            </div>
-            <div className="text-[0.85rem] font-bold text-[#004a99]">{agent.name}</div>
-            <div className="text-[0.75rem] text-[#5f6368] line-height-[1.3]">{agent.result}</div>
-          </div>
-        ))}
-        <div className="bg-transparent border border-dashed border-[#d1d9e6] rounded-lg p-3 flex items-center justify-center">
-          <span className="text-[0.7rem] text-[#5f6368]">+ Add Custom Agent</span>
-        </div>
-      </div>
-
-      {mitreTags.length > 0 && (
-        <div className="bg-white p-5 border border-[#d1d9e6] rounded-lg">
-          <h3 className="text-[0.85rem] font-bold mb-3">MITRE ATT&CK Mapping</h3>
-          <div className="flex flex-wrap gap-2">
-            {mitreTags.map((tag: string) => (
-              <span key={tag} className="bg-[#004a99] text-white px-2 py-1 rounded text-[10px] font-bold">
-                {tag}
+              <span className="flex items-center gap-1 text-[0.65rem] font-bold text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full uppercase">
+                <Bell size={10} fill="currentColor" /> Email Sent
               </span>
-            ))}
+            )}
+          </div>
+          <h2 className="text-[0.95rem] font-bold text-[#1a1a1b] mt-2 leading-snug">
+            {alert.description}
+          </h2>
+          <div className="flex items-center gap-4 mt-1.5 text-[0.72rem] text-[#5f6368]">
+            <span className="font-mono font-bold text-slate-500">#{alert.id.substring(0, 10).toUpperCase()}</span>
+            {alert.source_ip && <span>SRC: <span className="font-mono font-bold text-slate-700">{alert.source_ip}</span></span>}
+            <span>Host: <span className="font-mono font-bold text-slate-700">{alert.agent_name}</span></span>
+            <span>{new Date(alert.timestamp).toLocaleString()}</span>
           </div>
         </div>
-      )}
-
-      <div className="mt-auto bg-[#eef2f6] border border-[#d1d9e6] rounded-lg p-[15px] flex justify-between items-center">
-        <div>
-          <div className="text-[0.85rem] font-bold mb-0.5">Recommended Action: IP Isolation</div>
-          <div className="text-[0.75rem] text-[#5f6368]">Auto-generated workflow ready for approval</div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowReport(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.75rem] font-bold transition-colors border border-slate-200"
+          >
+            <FileText size={14} />
+            View Report
+          </button>
+          <button
+            type="button"
+            onClick={handleRunAll}
+            disabled={isAnalyzing}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] hover:bg-[#003a7a] text-white text-[0.75rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
+          >
+            {runningAll ? (
+              <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running Swarm...</>
+            ) : (
+              <><Activity size={14} /> Run All Agents</>
+            )}
+          </button>
         </div>
-        <div className="flex gap-2.5">
-          <button 
-            onClick={() => handleAction('FALSE_POSITIVE')}
-            className="px-4 py-2 rounded-[4px] border border-[#004a99] text-[#004a99] font-semibold text-[0.85rem] bg-white hover:bg-slate-50 transition-colors"
+      </div>
+
+      {/* Progress bar */}
+      <div className="bg-white border-b border-[#d1d9e6] px-6 py-2 flex items-center gap-3 shrink-0">
+        <span className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest shrink-0">Swarm Progress</span>
+        <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-[#004a99] rounded-full transition-all duration-700"
+            style={{ width: `${(completedCount / agentDefs.length) * 100}%` }}
+          />
+        </div>
+        <span className="text-[0.65rem] font-bold text-slate-500 shrink-0">{completedCount}/{agentDefs.length} agents</span>
+      </div>
+
+      {/* Main scrollable content */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+
+        {/* Agent cards grid */}
+        <div className="grid grid-cols-2 gap-3">
+          {agentDefs.map((agent) => {
+            const isRunningThis = runningPhase === agent.id;
+            const isDone = !!agent.content;
+
+            return (
+              <div
+                key={agent.id}
+                className={`bg-white rounded-xl border transition-all ${
+                  isRunningThis
+                    ? 'border-[#004a99] ring-2 ring-[#004a99]/20'
+                    : isDone
+                    ? 'border-green-200'
+                    : 'border-[#d1d9e6]'
+                }`}
+              >
+                {/* Card header */}
+                <div className={`flex items-center justify-between px-4 py-3 rounded-t-xl border-b ${
+                  isRunningThis ? 'bg-blue-50 border-blue-100' :
+                  isDone ? 'bg-green-50 border-green-100' :
+                  'bg-slate-50 border-slate-100'
+                }`}>
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                      isRunningThis ? 'bg-[#004a99]' : isDone ? 'bg-green-600' : 'bg-slate-200'
+                    }`}>
+                      {isRunningThis
+                        ? <div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                        : <agent.icon size={14} className={isDone ? 'text-white' : 'text-slate-500'} />
+                      }
+                    </div>
+                    <div>
+                      <p className="text-[0.8rem] font-bold text-slate-800">{agent.label}</p>
+                      <p className="text-[0.65rem] text-slate-400">{agent.desc}</p>
+                    </div>
+                  </div>
+                  {isDone ? (
+                    <span className="flex items-center gap-1 text-[0.6rem] font-black text-green-600 bg-white border border-green-200 px-2 py-1 rounded-full uppercase tracking-wide">
+                      <CheckCircle size={9} /> Done
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleAgentRun(agent.id); }}
+                      disabled={isAnalyzing}
+                      className="flex items-center gap-1 text-[0.65rem] font-black bg-[#004a99] text-white px-3 py-1.5 rounded-full hover:bg-[#003a7a] transition-colors disabled:opacity-50 uppercase tracking-wide shadow-sm"
+                    >
+                      {isRunningThis ? 'Running...' : <><ChevronRight size={10} /> Run</>}
+                    </button>
+                  )}
+                </div>
+                {/* Card body */}
+                <div className="px-4 py-3 min-h-[56px]">
+                  {isRunningThis ? (
+                    <div className="flex items-center gap-2 text-[0.75rem] text-blue-600 italic">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                      Running agent via OpenRouter...
+                    </div>
+                  ) : isDone ? (
+                    <p className="text-[0.78rem] text-slate-600 leading-relaxed line-clamp-3">{agent.content}</p>
+                  ) : (
+                    <p className="text-[0.75rem] text-slate-400 italic">Waiting — click Run to execute this agent.</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* MITRE tags */}
+        {mitreTags.length > 0 && (
+          <div className="bg-white rounded-xl border border-[#d1d9e6] p-4">
+            <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest mb-3">MITRE ATT&CK</p>
+            <div className="flex flex-wrap gap-2">
+              {mitreTags.map((tag: string) => (
+                <span key={tag} className="px-3 py-1.5 bg-[#1a1a2e] text-[#e94560] border border-[#e94560]/30 rounded-lg text-[0.7rem] font-black font-mono tracking-wide">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Raw log */}
+        <div className="bg-white rounded-xl border border-[#d1d9e6] p-4">
+          <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest mb-3">Raw Wazuh Log</p>
+          <pre className="text-[0.68rem] bg-slate-950 text-emerald-400 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed">
+            {alert.full_log || 'No log data.'}
+          </pre>
+        </div>
+      </div>
+
+      {/* Action footer */}
+      <div className="bg-white border-t border-[#d1d9e6] px-6 py-3.5 flex items-center justify-between shrink-0">
+        <div className="text-[0.72rem] text-slate-500">
+          {aiData?.response?.actions?.length
+            ? <span className="font-semibold text-slate-700">Recommended: {aiData.response.actions[0]?.type?.replace('_', ' ')} → <span className="font-mono">{aiData.response.actions[0]?.target}</span></span>
+            : 'Run agents to generate recommended actions.'
+          }
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onAction(alert.id, { status: 'FALSE_POSITIVE' })}
+            className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-semibold text-[0.8rem] bg-white hover:bg-slate-50 transition-colors"
           >
             False Positive
           </button>
-          <button 
-            onClick={() => handleAction('ESCALATED')}
-            className="px-4 py-2 rounded-[4px] border border-[#004a99] text-[#004a99] font-semibold text-[0.85rem] bg-white hover:bg-slate-50 transition-colors"
+          <button
+            type="button"
+            onClick={() => onAction(alert.id, { status: 'ESCALATED' })}
+            className="px-4 py-2 rounded-lg border border-[#004a99] text-[#004a99] font-semibold text-[0.8rem] bg-white hover:bg-blue-50 transition-colors"
           >
-            Escalate Tier 2
+            Escalate
           </button>
-          <button 
-            onClick={() => handleAction('CLOSED')}
-            className="px-4 py-2 rounded-[4px] bg-[#004a99] text-white font-semibold text-[0.85rem] hover:bg-[#003366] transition-colors"
+          <button
+            type="button"
+            onClick={() => onAction(alert.id, { status: 'CLOSED' })}
+            className="px-4 py-2 rounded-lg bg-[#004a99] text-white font-bold text-[0.8rem] hover:bg-[#003a7a] transition-colors shadow-sm"
           >
-            Approve Isolation (Agent 6)
+            Close Incident
           </button>
         </div>
       </div>
+
       {showReport && (
-        <DetailedReport 
-          alert={alert} 
-          aiData={aiData} 
-          mitreTags={mitreTags} 
-          onClose={() => setShowReport(false)} 
-          onAgentTrigger={handleAgentTrigger}
+        <DetailedReport
+          alert={alert}
+          aiData={aiData}
+          mitreTags={mitreTags}
+          onClose={() => setShowReport(false)}
         />
       )}
     </div>

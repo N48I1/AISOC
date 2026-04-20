@@ -6,3 +6,12 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local databases and runtime artifacts
+*.db
+*.db-shm
+*.db-wal
+
+# Local agent/editor state
+.claude/
+.codex

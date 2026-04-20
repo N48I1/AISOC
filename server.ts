@@ -9,8 +9,8 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import helmet from 'helmet';
-import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { runPhase, runOrchestration } from './agents.js';
 
 dotenv.config();
 
@@ -18,7 +18,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'black-box-soc-secret-2026';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // --- Database Setup ---
 const db = new Database('soc.db');
@@ -197,10 +196,58 @@ async function startServer() {
     }
   });
 
+  // ── AI: run a single agent phase ──────────────────────────────────────────
+  app.post('/api/ai/agent', authenticate, async (req: any, res) => {
+    const { phase, state } = req.body;
+    if (!phase || !state) return res.status(400).json({ error: 'phase and state are required' });
+    try {
+      const result = await runPhase(phase, state);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[AI Agent Error]', err?.message);
+      res.status(500).json({ error: err?.message || 'Agent failed' });
+    }
+  });
+
+  // ── AI: run full 7-agent swarm for an alert ────────────────────────────────
+  app.post('/api/ai/orchestrate', authenticate, async (req: any, res) => {
+    const { alertId } = req.body;
+    if (!alertId) return res.status(400).json({ error: 'alertId is required' });
+    try {
+      const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId);
+      if (!alert) return res.status(404).json({ error: 'Alert not found' });
+      const recentAlerts = db.prepare('SELECT * FROM alerts WHERE id != ? ORDER BY timestamp DESC LIMIT 50').all(alertId);
+
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
+
+      const update = await runOrchestration(alert, recentAlerts);
+
+      db.prepare(`
+        UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?
+        WHERE id=?
+      `).run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+
+      io.emit('alert_updated', { id: alertId, ...update });
+      res.json({ id: alertId, ...update });
+    } catch (err: any) {
+      console.error('[Orchestration Error]', err?.message);
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'NEW' });
+      res.status(500).json({ error: err?.message || 'Orchestration failed' });
+    }
+  });
+
   // Vite Integration
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // Give Vite HMR its own WebSocket port so it doesn't share port 3000
+        // with Socket.io — they compete for the same WS upgrade event and
+        // Socket.io messages can trigger Vite full-page reloads.
+        hmr: { port: 24678 },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
