@@ -1,0 +1,60 @@
+import { z } from "zod";
+import { callStructuredLLM } from "../shared/llm.js";
+import { DEFAULT_AGENT_MODELS } from "../config.js";
+
+const CorrelationSchema = z.object({
+  campaign_detected: z.boolean(),
+  campaign_name: z.string(),
+  campaign_description: z.string(),
+  related_alert_count: z.number(),
+  escalation_needed: z.boolean(),
+  kill_chain_stage: z.enum([
+    "Reconnaissance",
+    "Weaponization",
+    "Delivery",
+    "Exploitation",
+    "Installation",
+    "C2",
+    "Actions on Objectives",
+  ]),
+  confidence: z.number().min(0).max(1),
+});
+
+export async function correlationNode(state: any, model: string = DEFAULT_AGENT_MODELS.correlation) {
+  const recentSummary = (state.recentAlerts || []).slice(0, 10).map((a: any) => ({
+    id: a.id,
+    description: a.description,
+    source_ip: a.source_ip,
+    timestamp: a.timestamp,
+    status: a.status,
+  }));
+
+  const correlation = await callStructuredLLM({
+    phase: "correlation",
+    model,
+    schema: CorrelationSchema,
+    systemPrompt: `You are a Security Correlation Agent. Analyse the current alert against recent alerts to detect multi-stage campaigns. Respond ONLY with valid JSON:
+
+{
+  "campaign_detected": false,
+  "campaign_name": "<descriptive name or 'Isolated Incident'>",
+  "campaign_description": "<what the campaign appears to be>",
+  "related_alert_count": 0,
+  "escalation_needed": false,
+  "kill_chain_stage": "<Reconnaissance|Weaponization|Delivery|Exploitation|Installation|C2|Actions on Objectives>",
+  "confidence": 0.8
+}`,
+    userPrompt: `Current alert:\n${JSON.stringify(state.alert, null, 2)}\n\nRecent alerts:\n${JSON.stringify(recentSummary, null, 2)}`,
+    fallback: {
+      campaign_detected: false,
+      campaign_name: "Isolated Incident",
+      campaign_description: "No multi-stage campaign pattern detected.",
+      related_alert_count: 0,
+      escalation_needed: false,
+      kill_chain_stage: "Exploitation",
+      confidence: 0,
+    },
+  });
+
+  return { correlation };
+}

@@ -6,6 +6,22 @@
 
 const API = "/api/ai";
 
+export type AgentPhase =
+  | "analysis"
+  | "intel"
+  | "knowledge"
+  | "correlation"
+  | "ticketing"
+  | "response"
+  | "validation";
+
+export interface AgentModelConfig {
+  agents: Array<{ phase: AgentPhase; name: string; desc: string }>;
+  defaults: Record<AgentPhase, string>;
+  assignments: Record<AgentPhase, string>;
+  availableModels: string[];
+}
+
 function getToken(): string {
   return localStorage.getItem("soc_token") || "";
 }
@@ -65,4 +81,58 @@ export async function orchestrateAnalysis(
     console.error("[orchestrateAnalysis]", err?.message);
     onUpdate({ status: "NEW" }); // revert on failure so analyst can retry
   }
+}
+
+export async function getAlertRuns(alertId: string): Promise<any[]> {
+  const res = await fetch(`/api/alerts/${alertId}/runs`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function saveAlertRun(alertId: string, data: {
+  ai_analysis?: string;
+  mitre_attack?: string;
+  remediation_steps?: string;
+  status?: string;
+}): Promise<{ id: number; run_at: string }> {
+  const res = await fetch(`/api/alerts/${alertId}/runs`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Failed to save run snapshot');
+  return res.json();
+}
+
+export async function getAgentModelConfig(): Promise<AgentModelConfig> {
+  const res = await fetch(`${API}/models`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to load agent models (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function updateAgentModel(phase: AgentPhase, model: string): Promise<AgentModelConfig> {
+  const res = await fetch(`${API}/models/${phase}`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ model }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to update model (${res.status})`);
+  }
+
+  const data = await res.json();
+  const cfg = await getAgentModelConfig();
+  return {
+    ...cfg,
+    assignments: data.assignments || cfg.assignments,
+  };
 }

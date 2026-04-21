@@ -19,7 +19,7 @@ export interface Alert {
   hostname?: string;
   agent_name: string;
   full_log: string;
-  status: 'NEW' | 'ANALYZING' | 'TRIAGED' | 'FALSE_POSITIVE' | 'ESCALATED' | 'CLOSED' | 'INCIDENT';
+  status: 'NEW' | 'ANALYZING' | 'TRIAGED' | 'FALSE_POSITIVE' | 'ESCALATED' | 'CLOSED' | 'INCIDENT' | 'FAILED';
   ai_analysis?: string;
   mitre_attack?: string[];
   remediation_steps?: string;
@@ -33,11 +33,28 @@ export interface Incident {
   status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED';
   created_at: string;
   updated_at: string;
-  assigned_to?: number;
-  alerts: string[]; // IDs of alerts
-  analysis: string;
-  action_plan: string;
-  audit_logs: AuditLog[];
+  assigned_to?: number | null;
+  alerts: string[];
+  analysis?: string | null;
+  action_plan?: string | null;
+}
+
+export interface Stats {
+  activeIncidents: number;
+  mttr: string;
+  automationRate: string;
+  totalAlerts: number;
+  analyzedAlerts: number;
+}
+
+export interface AgentRun {
+  id: number;
+  alert_id: string;
+  run_at: string;
+  ai_analysis?: string | null;
+  mitre_attack?: string | null;
+  remediation_steps?: string | null;
+  status?: string | null;
 }
 
 export interface AuditLog {
