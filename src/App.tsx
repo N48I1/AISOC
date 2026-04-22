@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
@@ -90,19 +90,22 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
         ))}
       </nav>
 
-      <div className="px-5 pt-4 border-t border-[#d1d9e6]">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-8 h-8 rounded-full bg-[#003366] flex items-center justify-center text-white text-xs font-bold border border-white/30">
+      <div className="px-5 pt-4 border-t border-[#d1d9e6] space-y-2">
+        <button
+          onClick={() => setActiveTab('settings')}
+          className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-[#f0f7ff] transition-colors group text-left"
+        >
+          <div className="w-8 h-8 rounded-full bg-[#003366] flex items-center justify-center text-white text-xs font-bold border border-white/30 shrink-0">
             {user?.username?.substring(0, 2).toUpperCase()}
           </div>
           <div className="overflow-hidden">
-            <p className="text-xs font-semibold text-[#1a1a1b] truncate">{user?.username}</p>
+            <p className="text-xs font-semibold text-[#1a1a1b] truncate group-hover:text-[#004a99]">{user?.username}</p>
             <p className="text-[10px] text-[#5f6368] uppercase">{user?.role}</p>
           </div>
-        </div>
-        <button 
+        </button>
+        <button
           onClick={logout}
-          className="w-full flex items-center gap-2 text-[0.8rem] font-semibold text-[#5f6368] hover:text-[#d93025] transition-all"
+          className="w-full flex items-center gap-2 px-2 py-1.5 text-[0.8rem] font-semibold text-[#5f6368] hover:text-[#d93025] transition-all"
         >
           <LogOut className="w-4 h-4" />
           <span>Sign Out</span>
@@ -113,19 +116,31 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 };
 
 const Header = () => {
+  const { user, logout } = useAuth();
   return (
-    <header className="h-[60px] bg-[#004a99] text-white flex items-center justify-between px-5 shadow-md z-[100]">
-      <div className="flex items-center gap-2 font-bold text-[1.2rem] tracking-tight">
-        🛡️ AEGIS SOC PLATFORM
+    <header className="h-[48px] bg-[#004a99] text-white flex items-center justify-between px-5 shadow-md z-[100]">
+      <div className="flex items-center gap-2.5 font-bold text-[1.05rem] tracking-tight">
+        <div className="w-7 h-7 rounded-full bg-white flex items-center justify-center overflow-hidden shadow-sm shrink-0">
+          <img src="/logo-BBS.png" className="h-5 w-5 object-contain" alt="BBS Logo" />
+        </div>
+        BBS AISOC
       </div>
-      
-      <div className="flex items-center gap-4 text-[0.85rem] opacity-90">
+
+      <div className="flex items-center gap-4 text-[0.8rem] opacity-90">
         <span className="flex items-center gap-2">
           <div className="w-2 h-2 bg-[#1e8e3e] rounded-full" />
           Wazuh Cluster: Healthy
         </span>
         <span className="opacity-40">|</span>
-        <span>ga.tr.na.el.6@gmail.com (SOC Analyst)</span>
+        <span className="opacity-80">{user?.username} <span className="opacity-60">({user?.role})</span></span>
+        <button
+          onClick={logout}
+          title="Sign out"
+          className="flex items-center gap-1.5 ml-1 px-2.5 py-1 rounded hover:bg-white/15 hover:text-red-300 transition-colors text-[0.78rem] font-semibold"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          Sign Out
+        </button>
       </div>
     </header>
   );
@@ -449,6 +464,104 @@ const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, a
           </Section>
 
           <Section title="4 — Threat Intelligence">
+            {(() => {
+              const misp = aiData?.phaseData?.intel?.misp;
+              if (!misp) return null;
+              if (!misp.available) {
+                return <div className="mb-3 text-[0.72rem] text-slate-500 italic">MISP: unavailable (no API key configured or instance unreachable)</div>;
+              }
+              if (misp.hits === 0) {
+                return <div className="mb-3 text-[0.72rem] text-slate-500">MISP: queried — no matches for these IOCs.</div>;
+              }
+              const lvlColor: Record<string, string> = {
+                High: 'bg-red-100 text-red-800 border-red-200',
+                Medium: 'bg-orange-100 text-orange-800 border-orange-200',
+                Low: 'bg-amber-50 text-amber-700 border-amber-200',
+                Undefined: 'bg-slate-100 text-slate-600 border-slate-200',
+              };
+              const tagColor = (t: string) => {
+                if (t.startsWith('tlp:')) {
+                  if (t.includes('red')) return 'bg-red-600 text-white';
+                  if (t.includes('amber')) return 'bg-amber-500 text-white';
+                  if (t.includes('green')) return 'bg-green-600 text-white';
+                  if (t.includes('white')) return 'bg-slate-200 text-slate-800 border border-slate-300';
+                }
+                return 'bg-blue-50 text-blue-800 border border-blue-200';
+              };
+              return (
+                <div className="mb-3 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-600 text-white text-[0.7rem] font-black uppercase tracking-wider">
+                      ✓ MISP — {misp.hits} match{misp.hits === 1 ? '' : 'es'}
+                    </span>
+                    <span className={`px-2.5 py-1 rounded-full border font-black uppercase text-[0.62rem] tracking-wide ${lvlColor[misp.highest_threat_level]}`}>
+                      Threat Level: {misp.highest_threat_level}
+                    </span>
+                  </div>
+
+                  {(misp.threat_actors?.length > 0 || misp.malware_families?.length > 0) && (
+                    <div className="grid grid-cols-2 gap-3">
+                      {misp.threat_actors?.length > 0 && (
+                        <div>
+                          <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Threat Actors</p>
+                          <div className="flex flex-wrap gap-1">
+                            {misp.threat_actors.map((a: string) => (
+                              <span key={a} className="px-2 py-0.5 rounded bg-red-100 text-red-800 text-[0.7rem] font-bold">{a}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {misp.malware_families?.length > 0 && (
+                        <div>
+                          <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Malware / Tools</p>
+                          <div className="flex flex-wrap gap-1">
+                            {misp.malware_families.map((m: string) => (
+                              <span key={m} className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.7rem] font-bold">{m}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {misp.events?.length > 0 && (
+                    <div>
+                      <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Related MISP Events</p>
+                      <div className="space-y-1">
+                        {misp.events.slice(0, 5).map((e: any) => (
+                          <div key={e.id} className="flex items-center gap-2 text-[0.72rem] bg-white/60 rounded px-2 py-1 border border-blue-100">
+                            <span className="font-mono font-bold text-blue-700">#{e.id}</span>
+                            <span className="flex-1 truncate text-slate-700">{e.info}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[0.6rem] font-bold border ${lvlColor[e.threat_level]}`}>{e.threat_level}</span>
+                            {e.date && <span className="text-[0.62rem] text-slate-500 font-mono">{e.date}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {misp.tags?.length > 0 && (
+                    <div>
+                      <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Tags</p>
+                      <div className="flex flex-wrap gap-1">
+                        {misp.tags.map((t: string) => (
+                          <span key={t} className={`px-1.5 py-0.5 rounded text-[0.62rem] font-bold font-mono ${tagColor(t)}`}>{t}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {misp.matched_iocs?.length > 0 && (
+                    <div>
+                      <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Matched IOCs ({misp.matched_iocs.length})</p>
+                      <div className="text-[0.68rem] font-mono text-slate-600 bg-white/50 rounded px-2 py-1 break-all">
+                        {misp.matched_iocs.slice(0, 10).join(' · ')}{misp.matched_iocs.length > 10 ? ` +${misp.matched_iocs.length - 10} more` : ''}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div className="bg-slate-900 rounded-xl p-4 text-slate-200 text-[0.8rem] leading-relaxed whitespace-pre-wrap font-mono">
               {aiData?.intel || <span className="italic text-slate-500">No intel data. Run the Threat Intel agent.</span>}
             </div>
@@ -552,6 +665,388 @@ const getRawPhaseResult = (phase: string, result: any) => {
   }
 };
 
+// ==== SOC Console components (dense info-dense layout) =====================
+
+const RiskGauge = ({ value, size = 96 }: { value: number | null, size?: number }) => {
+  const v = typeof value === 'number' ? Math.max(0, Math.min(100, value)) : 0;
+  const stroke = 8;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const off = c - (v / 100) * c;
+  const color = value == null ? '#cbd5e1' : v >= 80 ? '#ef4444' : v >= 60 ? '#f97316' : v >= 40 ? '#f59e0b' : '#10b981';
+  const label = value == null ? '—' : v >= 80 ? 'CRITICAL' : v >= 60 ? 'HIGH' : v >= 40 ? 'MEDIUM' : 'LOW';
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg width={size} height={size} className="-rotate-90">
+          <circle cx={size/2} cy={size/2} r={r} stroke="#e2e8f0" strokeWidth={stroke} fill="none" />
+          <circle cx={size/2} cy={size/2} r={r} stroke={color} strokeWidth={stroke} fill="none" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={off} className="transition-all duration-700" />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-[1.4rem] font-black" style={{ color }}>{value == null ? '—' : Math.round(v)}</span>
+          <span className="text-[0.55rem] font-bold text-slate-400 uppercase tracking-widest">/100</span>
+        </div>
+      </div>
+      <span className="text-[0.6rem] font-black uppercase tracking-widest" style={{ color }}>{label}</span>
+    </div>
+  );
+};
+
+const MiniBar = ({ value, color }: { value: number, color: string }) => (
+  <div className="h-1 w-full bg-slate-100 rounded-full overflow-hidden">
+    <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
+  </div>
+);
+
+type HeroProps = {
+  alert: Alert;
+  aiData: any;
+  mitreTags: string[];
+  severity: string;
+  sevStyle: Record<string, string>;
+  agentDefs: { id: string; label: string; icon: any }[];
+  agentConfidence: (id: string) => number | null;
+  scrollToAgents: () => void;
+};
+
+const AlertHeroStrip = ({ alert, aiData, severity, sevStyle, agentDefs, agentConfidence, scrollToAgents }: HeroProps) => {
+  const pd = aiData?.phaseData || {};
+  const analysis = pd.analysis;
+  const intel = pd.intel;
+  const risk = typeof analysis?.risk_score === 'number' ? analysis.risk_score : null;
+  const attackCat = analysis?.attack_category;
+  const killChain = analysis?.kill_chain_stage;
+  const threatActors: string[] = intel?.misp?.threat_actors || [];
+  const actorLabel = threatActors[0] || intel?.campaign_family || null;
+  const threatLabel = [actorLabel, attackCat?.replace(/_/g,' ')].filter(Boolean).join(' · ') || alert.description;
+
+  return (
+    <div className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
+      <div className="grid grid-cols-12 gap-0 divide-x divide-slate-100">
+        {/* Identity */}
+        <div className="col-span-12 md:col-span-6 p-4 space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-[0.68rem] font-bold text-slate-400">#{alert.id.substring(0,10).toUpperCase()}</span>
+            <span className={`px-2 py-0.5 rounded-full border font-black uppercase text-[0.6rem] tracking-wider ${sevStyle[severity]}`}>{severity}</span>
+            {analysis?.is_false_positive && <span className="px-2 py-0.5 rounded-full border bg-slate-50 text-slate-500 border-slate-200 font-black uppercase text-[0.6rem] tracking-wider">FP</span>}
+            {killChain && <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 font-bold text-[0.6rem] uppercase tracking-wide">{killChain.replace(/_/g,' ')}</span>}
+            {alert.email_sent === 1 && <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 font-bold text-[0.6rem] uppercase">✓ Emailed</span>}
+          </div>
+          <p className="text-[0.95rem] font-bold text-slate-800 leading-snug">{threatLabel}</p>
+          <p className="text-[0.78rem] text-slate-500 leading-snug line-clamp-2">{alert.description}</p>
+          <div className="flex items-center gap-4 pt-1 text-[0.68rem] text-slate-500">
+            {alert.source_ip && <span>SRC <span className="font-mono font-bold text-slate-700">{alert.source_ip}</span></span>}
+            <span>HOST <span className="font-mono font-bold text-slate-700">{alert.agent_name}</span></span>
+            <span>RULE <span className="font-mono font-bold text-slate-700">{alert.rule_id}</span></span>
+            <span className="font-mono">{new Date(alert.timestamp).toLocaleString()}</span>
+          </div>
+        </div>
+
+        {/* Risk gauge */}
+        <div className="col-span-6 md:col-span-3 p-4 flex items-center justify-center bg-slate-50/50">
+          <RiskGauge value={risk} size={110} />
+        </div>
+
+        {/* Agent pipeline */}
+        <div className="col-span-6 md:col-span-3 p-4">
+          <button type="button" onClick={scrollToAgents} className="w-full text-left group">
+            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-2">Agent Pipeline</p>
+            <div className="space-y-1">
+              {agentDefs.map((a) => {
+                const c = agentConfidence(a.id);
+                const pct = c == null ? null : Math.round(c * 100);
+                const color = pct == null ? 'bg-slate-200' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+                return (
+                  <div key={a.id} className="flex items-center gap-2 group-hover:opacity-90">
+                    <a.icon size={10} className="text-slate-400 shrink-0" />
+                    <span className="text-[0.62rem] text-slate-600 w-20 truncate">{a.label}</span>
+                    <div className="flex-1"><MiniBar value={pct ?? 0} color={color} /></div>
+                    <span className="text-[0.58rem] font-mono font-bold text-slate-500 w-8 text-right">{pct == null ? '—' : `${pct}%`}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[] }) => {
+  const pd = aiData?.phaseData || {};
+  const misp = pd.intel?.misp;
+  const iocs = aiData?.iocs || {};
+  const iocCount = ['ips','users','hosts','domains','hashes','files','processes'].reduce((a, k) => a + (Array.isArray(iocs[k]) ? iocs[k].length : 0), 0);
+  const iocTypes = ['ips','users','hosts','domains','hashes','files','processes'].filter(k => Array.isArray(iocs[k]) && iocs[k].length > 0).length;
+  const actions = pd.response?.actions || aiData?.response?.actions || [];
+  const approvalRequired = pd.response?.approval_required ?? aiData?.response?.approval_required;
+  const sla = pd.validation?.sla_status || aiData?.validation;
+  const slaTone = sla ? (String(sla).toLowerCase().includes('breach') ? 'text-red-700 bg-red-50 border-red-200' : String(sla).toLowerCase().includes('risk') ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-green-700 bg-green-50 border-green-200') : 'text-slate-500 bg-slate-50 border-slate-200';
+  const confidences = ['analysis','intel','knowledge','correlation','ticket','response','validation'].map(k => pd[k]?.confidence).filter((v): v is number => typeof v === 'number');
+  const avgConf = confidences.length ? Math.round(confidences.reduce((a,b) => a+b, 0) / confidences.length * 100) : null;
+  const mispLevelCls: Record<string,string> = { High: 'text-red-700 bg-red-50 border-red-200', Medium: 'text-orange-700 bg-orange-50 border-orange-200', Low: 'text-amber-700 bg-amber-50 border-amber-200', Undefined: 'text-slate-600 bg-slate-50 border-slate-200' };
+
+  const Chip = ({ title, value, sub, tone = 'text-slate-700 bg-white border-slate-200' }: { title: string, value: React.ReactNode, sub?: React.ReactNode, tone?: string }) => (
+    <div className={`rounded-xl border px-3 py-2.5 ${tone} flex flex-col gap-0.5 min-w-0`}>
+      <p className="text-[0.55rem] font-black uppercase tracking-widest opacity-70">{title}</p>
+      <div className="text-[1rem] font-black leading-tight truncate">{value}</div>
+      {sub && <div className="text-[0.62rem] opacity-80 truncate">{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+      <Chip title="MITRE" value={`${mitreTags.length} technique${mitreTags.length===1?'':'s'}`} sub={mitreTags.slice(0,3).join(' · ') || '—'} />
+      <Chip title="MISP" value={misp?.available ? `${misp.hits || 0} hits` : 'n/a'} sub={misp?.highest_threat_level || (misp?.available ? 'no matches' : 'unavailable')} tone={misp?.available && misp.hits > 0 ? mispLevelCls[misp.highest_threat_level] : 'text-slate-600 bg-slate-50 border-slate-200'} />
+      <Chip title="IOCs" value={iocCount} sub={`${iocTypes} type${iocTypes===1?'':'s'}`} />
+      <Chip title="Actions" value={actions.length} sub={approvalRequired ? 'approval required' : 'auto-executable'} tone={approvalRequired ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-700 bg-white border-slate-200'} />
+      <Chip title="Actors" value={(misp?.threat_actors || []).length ? misp.threat_actors[0] : '—'} sub={(misp?.threat_actors?.length || 0) > 1 ? `+${misp.threat_actors.length - 1} more` : ''} tone={misp?.threat_actors?.length ? 'text-red-700 bg-red-50 border-red-200' : 'text-slate-500 bg-slate-50 border-slate-200'} />
+      <Chip title="Avg Confidence" value={avgConf == null ? '—' : `${avgConf}%`} sub={avgConf == null ? 'no runs' : `${confidences.length}/7 agents`} tone={avgConf == null ? 'text-slate-500 bg-slate-50 border-slate-200' : avgConf >= 80 ? 'text-green-700 bg-green-50 border-green-200' : avgConf >= 60 ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-red-700 bg-red-50 border-red-200'} />
+      <Chip title="SLA" value={sla || 'pending'} sub={pd.validation?.recommendation || ''} tone={slaTone} />
+    </div>
+  );
+};
+
+const IocTable = ({ iocs }: { iocs: any }) => {
+  const groups = [
+    { key: 'ips', label: 'IP', tone: 'text-red-700 bg-red-50' },
+    { key: 'users', label: 'User', tone: 'text-orange-700 bg-orange-50' },
+    { key: 'hosts', label: 'Host', tone: 'text-purple-700 bg-purple-50' },
+    { key: 'domains', label: 'Domain', tone: 'text-sky-700 bg-sky-50' },
+    { key: 'processes', label: 'Proc', tone: 'text-emerald-700 bg-emerald-50' },
+    { key: 'files', label: 'File', tone: 'text-yellow-700 bg-yellow-50' },
+    { key: 'hashes', label: 'Hash', tone: 'text-zinc-700 bg-zinc-50' },
+  ];
+  const rows: { type: string; value: string; tone: string }[] = [];
+  for (const g of groups) {
+    const arr = Array.isArray(iocs?.[g.key]) ? iocs[g.key] : [];
+    for (const v of arr) rows.push({ type: g.label, value: String(v), tone: g.tone });
+  }
+  if (iocs?.ports?.length) rows.push({ type: 'Ports', value: iocs.ports.join(', '), tone: 'text-indigo-700 bg-indigo-50' });
+  if (rows.length === 0) return <p className="text-[0.72rem] text-slate-400 italic">No IOCs extracted yet.</p>;
+  return (
+    <div className="overflow-hidden rounded border border-slate-200">
+      <table className="w-full text-[0.72rem]">
+        <tbody className="divide-y divide-slate-100">
+          {rows.map((r, i) => (
+            <tr key={i} className="hover:bg-slate-50">
+              <td className={`px-2 py-1 font-black uppercase tracking-wide text-[0.58rem] ${r.tone} w-16`}>{r.type}</td>
+              <td className="px-2 py-1 font-mono text-slate-700 break-all">{r.value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData: any, mitreTags: string[] }) => {
+  const pd = aiData?.phaseData || {};
+  const misp = pd.intel?.misp;
+  const actions = pd.response?.actions || aiData?.response?.actions || [];
+  const approvalRequired = pd.response?.approval_required ?? aiData?.response?.approval_required;
+  const playbookSteps = (alert.remediation_steps || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const correlation = aiData?.correlation;
+  const validation = aiData?.validation;
+
+  const lvlColor: Record<string, string> = {
+    High: 'bg-red-100 text-red-800 border-red-200',
+    Medium: 'bg-orange-100 text-orange-800 border-orange-200',
+    Low: 'bg-amber-50 text-amber-700 border-amber-200',
+    Undefined: 'bg-slate-100 text-slate-600 border-slate-200',
+  };
+  const tagColor = (t: string) => {
+    if (t.startsWith('tlp:')) {
+      if (t.includes('red')) return 'bg-red-600 text-white';
+      if (t.includes('amber')) return 'bg-amber-500 text-white';
+      if (t.includes('green')) return 'bg-green-600 text-white';
+      if (t.includes('white')) return 'bg-slate-200 text-slate-800 border border-slate-300';
+    }
+    return 'bg-blue-50 text-blue-800 border border-blue-200';
+  };
+  const actionTone: Record<string,string> = {
+    BLOCK_IP: 'bg-red-100 text-red-700',
+    ISOLATE_HOST: 'bg-orange-100 text-orange-700',
+    DISABLE_USER: 'bg-purple-100 text-purple-700',
+    KILL_PROCESS: 'bg-red-100 text-red-700',
+    RESET_CREDENTIALS: 'bg-indigo-100 text-indigo-700',
+  };
+
+  const Panel = ({ title, accent, children, right }: { title: string, accent: string, children: React.ReactNode, right?: React.ReactNode }) => (
+    <div className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden flex flex-col min-h-[220px]">
+      <div className={`flex items-center justify-between px-4 py-2 border-b border-slate-100 ${accent}`}>
+        <p className="text-[0.62rem] font-black uppercase tracking-widest">{title}</p>
+        {right}
+      </div>
+      <div className="p-4 flex-1 overflow-y-auto space-y-3 text-[0.78rem] text-slate-700">{children}</div>
+    </div>
+  );
+
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+      {/* Column 1 — Threat Context */}
+      <Panel title="Threat Context" accent="bg-slate-50 text-[#004a99]">
+        {aiData?.summary ? (
+          <div className="bg-[#f0f7ff] border border-[#c8ddf7] rounded-lg px-3 py-2 text-[0.78rem] text-[#003a7a] italic leading-snug">
+            {aiData.summary}
+          </div>
+        ) : (
+          <p className="text-slate-400 italic text-[0.72rem]">No AI summary yet. Run the Alert Triage agent.</p>
+        )}
+
+        <div>
+          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">MITRE ATT&CK</p>
+          {mitreTags.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {mitreTags.map(t => (
+                <span key={t} className="px-2 py-0.5 bg-[#1a1a2e] text-[#e94560] border border-[#e94560]/30 rounded text-[0.62rem] font-black font-mono">{t}</span>
+              ))}
+            </div>
+          ) : <p className="text-slate-400 italic text-[0.68rem]">None mapped. Run Threat Intel agent.</p>}
+        </div>
+
+        <div>
+          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">IOCs</p>
+          <IocTable iocs={aiData?.iocs || {}} />
+        </div>
+
+        {correlation && (
+          <div>
+            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Correlation</p>
+            <div className={`rounded-lg border px-3 py-2 text-[0.74rem] ${correlation !== 'None detected' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
+              {correlation}
+            </div>
+          </div>
+        )}
+      </Panel>
+
+      {/* Column 2 — MISP Enrichment */}
+      <Panel
+        title="Threat Intelligence"
+        accent="bg-gradient-to-r from-blue-50 to-indigo-50 text-[#004a99]"
+        right={misp?.available && misp.hits > 0 ? (
+          <span className={`px-2 py-0.5 rounded-full border font-black uppercase text-[0.55rem] tracking-wider ${lvlColor[misp.highest_threat_level]}`}>{misp.highest_threat_level}</span>
+        ) : misp?.available ? (
+          <span className="text-[0.58rem] font-semibold text-slate-400">queried · 0 hits</span>
+        ) : (
+          <span className="text-[0.58rem] font-semibold text-slate-400">unavailable</span>
+        )}
+      >
+        {misp?.available && misp.hits > 0 ? (
+          <>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="px-2.5 py-0.5 rounded-full bg-blue-600 text-white text-[0.6rem] font-black uppercase tracking-wider">✓ {misp.hits} MISP match{misp.hits === 1 ? '' : 'es'}</span>
+              {misp.matched_iocs?.length > 0 && <span className="text-[0.62rem] text-slate-500 font-mono">{misp.matched_iocs.length} IOC{misp.matched_iocs.length===1?'':'s'}</span>}
+            </div>
+
+            {misp.threat_actors?.length > 0 && (
+              <div>
+                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Threat Actors</p>
+                <div className="flex flex-wrap gap-1">
+                  {misp.threat_actors.map((a: string) => (
+                    <span key={a} className="px-2 py-0.5 rounded bg-red-100 text-red-800 text-[0.68rem] font-bold">{a}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {misp.malware_families?.length > 0 && (
+              <div>
+                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Malware / Tools</p>
+                <div className="flex flex-wrap gap-1">
+                  {misp.malware_families.map((m: string) => (
+                    <span key={m} className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.68rem] font-bold">{m}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {misp.events?.length > 0 && (
+              <div>
+                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Related Events</p>
+                <div className="space-y-1">
+                  {misp.events.slice(0, 5).map((e: any) => (
+                    <div key={e.id} className="flex items-center gap-2 text-[0.7rem] bg-slate-50 rounded px-2 py-1 border border-slate-100">
+                      <span className="font-mono font-bold text-blue-700">#{e.id}</span>
+                      <span className="flex-1 truncate text-slate-700">{e.info}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[0.56rem] font-bold border ${lvlColor[e.threat_level]}`}>{e.threat_level}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {misp.tags?.length > 0 && (
+              <div>
+                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Tags</p>
+                <div className="flex flex-wrap gap-1">
+                  {misp.tags.map((t: string) => (
+                    <span key={t} className={`px-1.5 py-0.5 rounded text-[0.58rem] font-bold font-mono ${tagColor(t)}`}>{t}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="text-slate-400 italic text-[0.72rem]">No MISP matches for these IOCs.</p>
+        )}
+
+        {aiData?.intel && (
+          <div>
+            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Analyst Summary</p>
+            <div className="bg-slate-900 text-emerald-300 rounded-lg p-3 text-[0.72rem] leading-relaxed whitespace-pre-wrap font-mono">
+              {aiData.intel}
+            </div>
+          </div>
+        )}
+      </Panel>
+
+      {/* Column 3 — Response Pipeline */}
+      <Panel title="Response Pipeline" accent="bg-slate-50 text-[#004a99]">
+        <div>
+          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Playbook</p>
+          {playbookSteps.length > 0 ? (
+            <ol className="space-y-1">
+              {playbookSteps.map((s, i) => (
+                <li key={i} className="flex gap-2 items-start text-[0.74rem] leading-snug">
+                  <span className="w-4 h-4 rounded-full bg-green-200 text-green-800 font-black text-[0.58rem] flex items-center justify-center shrink-0 mt-0.5">{i+1}</span>
+                  <span className="text-slate-700">{s.replace(/^\d+[\.\)]\s*/, '').replace(/^[-•]\s*/, '')}</span>
+                </li>
+              ))}
+            </ol>
+          ) : <p className="text-slate-400 italic text-[0.68rem]">No playbook retrieved. Run RAG Knowledge agent.</p>}
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest">Response Actions</p>
+            {approvalRequired && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[0.56rem] font-black uppercase tracking-wider">⚠ Approval</span>}
+          </div>
+          {actions.length > 0 ? (
+            <div className="space-y-1">
+              {actions.map((a: any, i: number) => (
+                <div key={i} className="flex items-center gap-2 bg-slate-50 rounded px-2 py-1.5 border border-slate-100">
+                  <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wider ${actionTone[a.type] || 'bg-blue-100 text-blue-700'}`}>{(a.type || '').replace(/_/g,' ')}</span>
+                  <span className="flex-1 text-[0.7rem] font-mono font-bold text-slate-700 truncate">{a.target || '—'}</span>
+                </div>
+              ))}
+              {actions[0]?.reason && <p className="text-[0.65rem] text-slate-500 italic leading-snug">{actions[0].reason}</p>}
+            </div>
+          ) : <p className="text-slate-400 italic text-[0.68rem]">No response plan. Run Response agent.</p>}
+        </div>
+
+        <div>
+          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Validation / SLA</p>
+          <div className={`rounded-lg border px-3 py-2 text-[0.72rem] leading-snug ${validation ? 'bg-green-50 border-green-200 text-green-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
+            {validation || 'SLA validation pending. Run Validation agent.'}
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+};
+
 const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () => void, onAction: (id: string, update: any) => void }) => {
   const [showReport, setShowReport] = useState(false);
   const [runningPhase, setRunningPhase] = useState<string | null>(null);
@@ -562,6 +1057,9 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [isSavingSnapshot, setIsSavingSnapshot] = useState(false);
+
+  const agentsRef = useRef<HTMLDivElement>(null);
+  const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
 
   // Per-agent run history: phase → array of raw phase results (newest = last)
   const [agentRunHistory, setAgentRunHistory] = useState<Record<string, any[]>>(() => {
@@ -1070,194 +1568,117 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
           </div>
         )}
 
-        {/* Agent cards grid */}
-        <div className="grid grid-cols-2 gap-3">
-          {agentDefs.map((agent) => {
-            const isRunningThis = runningPhase === agent.id;
-            const hist = agentRunHistory[agent.id] || [];
-            const runCount = hist.length;
-            const isDone = runCount > 0;
-            const currentIdx = isDone ? (agentRunIndex[agent.id] ?? runCount - 1) : 0;
-            const displayResult = isDone ? hist[Math.min(currentIdx, runCount - 1)] : null;
-            const content = displayResult ? agent.getContent(displayResult) : null;
-            const confidence = getAgentConfidence(agent.id);
-            const confidenceStatus = getConfidenceStatus(confidence);
-            const isViewingLatest = currentIdx === runCount - 1;
+        {/* NEW: Hero strip — identity · risk gauge · agent pipeline */}
+        <AlertHeroStrip
+          alert={alert}
+          aiData={aiData}
+          mitreTags={mitreTags}
+          severity={severity}
+          sevStyle={sevStyle}
+          agentDefs={agentDefs}
+          agentConfidence={getAgentConfidence}
+          scrollToAgents={() => agentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        />
 
-            return (
-              <div
-                key={agent.id}
-                className={`bg-white rounded-xl border transition-all ${
-                  isRunningThis
-                    ? 'border-[#004a99] ring-2 ring-[#004a99]/20'
-                    : isDone
-                    ? isViewingLatest ? 'border-green-200' : 'border-amber-200'
-                    : 'border-[#d1d9e6]'
-                }`}
-              >
-                {/* Card header */}
-                <div className={`flex items-center justify-between px-4 py-3 rounded-t-xl border-b ${
-                  isRunningThis ? 'bg-blue-50 border-blue-100' :
-                  isDone ? (isViewingLatest ? 'bg-green-50 border-green-100' : 'bg-amber-50 border-amber-100') :
-                  'bg-slate-50 border-slate-100'
-                }`}>
-                  <div className="flex items-center gap-2.5">
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+        {/* NEW: Evidence strip — 7 KPI chips */}
+        <EvidenceStrip aiData={aiData} mitreTags={mitreTags} />
+
+        {/* NEW: Investigation grid — 3-col dense info */}
+        <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} />
+
+        {/* Compact agent pipeline strip — click a card to expand raw details */}
+        <div ref={agentsRef} className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100 bg-slate-50">
+            <p className="text-[0.62rem] font-black uppercase tracking-widest text-[#004a99]">Agent Pipeline · click a card to expand</p>
+            <span className="text-[0.6rem] font-semibold text-slate-400">{completedCount}/{agentDefs.length} completed</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 divide-x divide-slate-100">
+            {agentDefs.map((agent) => {
+              const isRunningThis = runningPhase === agent.id;
+              const hist = agentRunHistory[agent.id] || [];
+              const runCount = hist.length;
+              const isDone = runCount > 0;
+              const currentIdx = isDone ? (agentRunIndex[agent.id] ?? runCount - 1) : 0;
+              const confidence = getAgentConfidence(agent.id);
+              const pct = confidence == null ? null : Math.round(confidence * 100);
+              const isViewingLatest = currentIdx === runCount - 1;
+              const isExpanded = expandedAgent === agent.id;
+              const bar = pct == null ? 'bg-slate-200' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
+                  className={`p-3 text-left transition-colors relative ${
+                    isExpanded ? 'bg-blue-50/50' : 'hover:bg-slate-50'
+                  } ${isRunningThis ? 'bg-blue-50' : ''}`}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
                       isRunningThis ? 'bg-[#004a99]' : isDone ? 'bg-green-600' : 'bg-slate-200'
                     }`}>
                       {isRunningThis
-                        ? <div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                        : <agent.icon size={14} className={isDone ? 'text-white' : 'text-slate-500'} />
+                        ? <div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                        : <agent.icon size={12} className={isDone ? 'text-white' : 'text-slate-500'} />
                       }
                     </div>
-                    <div>
-                      <p className="text-[0.8rem] font-bold text-slate-800">{agent.label}</p>
-                      <p className="text-[0.65rem] text-slate-400">{agent.desc}</p>
+                    <p className="text-[0.7rem] font-bold text-slate-800 truncate flex-1">{agent.label}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <MiniBar value={pct ?? 0} color={bar} />
+                    <div className="flex items-center justify-between text-[0.6rem] font-mono">
+                      <span className={pct == null ? 'text-slate-400' : 'text-slate-600 font-bold'}>{pct == null ? '— waiting' : `${pct}%`}</span>
+                      {runCount > 0 && <span className={`${isViewingLatest ? 'text-green-600' : 'text-amber-600'} font-black`}>{currentIdx + 1}/{runCount}</span>}
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleAgentRun(agent.id); }}
+                    disabled={isAnalyzing || isRerunning}
+                    className={`mt-2 w-full flex items-center justify-center gap-1 text-[0.58rem] font-black px-2 py-1 rounded transition-colors disabled:opacity-50 uppercase tracking-wider ${
+                      isDone ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-[#004a99] text-white hover:bg-[#003a7a]'
+                    }`}
+                  >
+                    {isRunningThis ? 'Running' : isDone ? '↺ Rerun' : 'Run'}
+                  </button>
+                </button>
+              );
+            })}
+          </div>
 
-                  {/* Right side: run counter + nav + run/rerun button */}
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    {/* Run counter with prev/next navigation */}
-                    {runCount > 0 && (
-                      <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded-full px-1.5 py-0.5">
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }}
-                          disabled={currentIdx <= 0}
-                          className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
-                        >
-                          ‹
-                        </button>
-                        <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>
-                          {currentIdx + 1}/{runCount}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }}
-                          disabled={currentIdx >= runCount - 1}
-                          className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
-                        >
-                          ›
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Run / Rerun button */}
-                    <button
-                      type="button"
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleAgentRun(agent.id); }}
-                      disabled={isAnalyzing || isRerunning}
-                      className={`flex items-center gap-1 text-[0.65rem] font-black px-3 py-1.5 rounded-full transition-colors disabled:opacity-50 uppercase tracking-wide shadow-sm ${
-                        isDone
-                          ? 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200'
-                          : 'bg-[#004a99] text-white hover:bg-[#003a7a]'
-                      }`}
-                    >
-                      {isRunningThis
-                        ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-current/40 border-t-current animate-spin" /> Running</>
-                        : isDone
-                        ? <>↺ Rerun</>
-                        : <><ChevronRight size={10} /> Run</>
-                      }
-                    </button>
+          {/* Expanded per-agent detail */}
+          {expandedAgent && (() => {
+            const agent = agentDefs.find(a => a.id === expandedAgent)!;
+            const hist = agentRunHistory[agent.id] || [];
+            const runCount = hist.length;
+            const currentIdx = runCount > 0 ? (agentRunIndex[agent.id] ?? runCount - 1) : 0;
+            const displayResult = runCount > 0 ? hist[Math.min(currentIdx, runCount - 1)] : null;
+            const isViewingLatest = currentIdx === runCount - 1;
+            if (!displayResult) {
+              return <div className="p-4 border-t border-slate-100 text-[0.75rem] text-slate-400 italic">No results yet for <span className="font-bold">{agent.label}</span>. Click Run on the card above.</div>;
+            }
+            return (
+              <div className="border-t border-slate-100 p-4 bg-slate-50/60 space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <agent.icon size={14} className="text-[#004a99]" />
+                    <p className="text-[0.75rem] font-black uppercase tracking-wider text-slate-700">{agent.label}</p>
+                    <span className="text-[0.62rem] text-slate-500">{agent.desc}</span>
                   </div>
-                </div>
-
-                {/* Card body */}
-                <div className="px-4 py-3 min-h-[56px]">
-                  {isRunningThis ? (
-                    <div className="flex items-center gap-2 text-[0.75rem] text-blue-600 italic">
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                      Running agent via OpenRouter...
+                  {runCount > 0 && (
+                    <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded-full px-1.5 py-0.5">
+                      <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">‹</button>
+                      <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>{currentIdx + 1}/{runCount}</span>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">›</button>
                     </div>
-                  ) : isDone ? (
-                    <div className="space-y-2">
-                      {!isViewingLatest && (
-                        <div className="flex items-center gap-1.5 text-[0.65rem] text-amber-600 font-semibold">
-                          <Clock size={10} />
-                          Viewing run {currentIdx + 1} of {runCount} — <button type="button" className="underline" onClick={() => setAgentRunIndex(prev => ({ ...prev, [agent.id]: runCount - 1 }))}>jump to latest</button>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <span className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wide ${confidenceStatus.cls}`}>
-                          Confidence: {confidenceStatus.label}
-                        </span>
-                        <span className="text-[0.68rem] font-mono text-slate-500">
-                          {confidence === null ? '--' : `${Math.round(confidence * 100)}%`}
-                        </span>
-                      </div>
-                      {agent.id === 'analysis' && displayResult && (() => {
-                        const ac = displayResult.attack_category as string | undefined;
-                        const kc = displayResult.kill_chain_stage as string | undefined;
-                        const rs = displayResult.risk_score as number | undefined;
-                        const ra = displayResult.recommended_action as string | undefined;
-                        const isFP = displayResult.is_false_positive as boolean | undefined;
-                        const fpReason = displayResult.false_positive_reason as string | undefined;
-                        const fpConf = displayResult.false_positive_confidence as number | undefined;
-                        const rsColor = rs == null ? 'bg-slate-300' : rs >= 80 ? 'bg-red-500' : rs >= 60 ? 'bg-orange-500' : rs >= 40 ? 'bg-amber-400' : 'bg-emerald-500';
-                        const raColor: Record<string, string> = {
-                          IGNORE: 'bg-slate-100 text-slate-500 border-slate-200',
-                          MONITOR: 'bg-blue-50 text-blue-700 border-blue-200',
-                          INVESTIGATE: 'bg-cyan-50 text-cyan-700 border-cyan-200',
-                          ESCALATE: 'bg-amber-50 text-amber-700 border-amber-200',
-                          CONTAIN: 'bg-orange-50 text-orange-700 border-orange-200',
-                          BLOCK: 'bg-red-50 text-red-700 border-red-200',
-                        };
-                        return (
-                          <div className="space-y-1.5">
-                            {(ac || kc) && (
-                              <div className="flex flex-wrap gap-1">
-                                {ac && <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 text-[0.58rem] font-bold uppercase tracking-wide">{ac.replace(/_/g, ' ')}</span>}
-                                {kc && <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.58rem] font-bold uppercase tracking-wide">{kc.replace(/_/g, ' ')}</span>}
-                              </div>
-                            )}
-                            {rs != null && (
-                              <div className="space-y-0.5">
-                                <div className="flex items-center justify-between text-[0.62rem] text-slate-500">
-                                  <span>Risk Score</span><span className="font-mono font-bold">{rs}/100</span>
-                                </div>
-                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                  <div className={`h-full rounded-full transition-all ${rsColor}`} style={{ width: `${rs}%` }} />
-                                </div>
-                              </div>
-                            )}
-                            <div className="flex items-center gap-2">
-                              {ra && <span className={`px-2 py-0.5 rounded-full border text-[0.6rem] font-black uppercase tracking-wide ${raColor[ra] ?? 'bg-slate-50 text-slate-600 border-slate-200'}`}>{ra}</span>}
-                              <span className={`px-2 py-0.5 rounded-full border font-black uppercase tracking-wide text-[0.6rem] ${isFP ? 'bg-red-50 text-red-700 border-red-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
-                                FP: {isFP ? 'Yes' : 'No'} ({Math.round(((fpConf ?? 0)) * 100)}%)
-                              </span>
-                            </div>
-                            {isFP && fpReason && (
-                              <p className="text-[0.65rem] text-slate-500 italic leading-snug">{fpReason}</p>
-                            )}
-                          </div>
-                        );
-                      })()}
-                      <p className="text-[0.78rem] text-slate-600 leading-relaxed line-clamp-3">{content}</p>
-                    </div>
-                  ) : (
-                    <p className="text-[0.75rem] text-slate-400 italic">Waiting — click Run to execute this agent.</p>
                   )}
                 </div>
+                <pre className="bg-slate-950 text-emerald-300 rounded p-3 text-[0.65rem] leading-relaxed font-mono overflow-x-auto max-h-64 overflow-y-auto">{JSON.stringify(displayResult, null, 2)}</pre>
               </div>
             );
-          })}
+          })()}
         </div>
-
-        {/* MITRE tags */}
-        {mitreTags.length > 0 && (
-          <div className="bg-white rounded-xl border border-[#d1d9e6] p-4">
-            <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest mb-3">MITRE ATT&CK</p>
-            <div className="flex flex-wrap gap-2">
-              {mitreTags.map((tag: string) => (
-                <span key={tag} className="px-3 py-1.5 bg-[#1a1a2e] text-[#e94560] border border-[#e94560]/30 rounded-lg text-[0.7rem] font-black font-mono tracking-wide">
-                  {tag}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* Raw log */}
         <div className="bg-white rounded-xl border border-[#d1d9e6] p-4">
@@ -1891,6 +2312,31 @@ const SettingsTab = () => {
   const [createSuccess, setCreateOk]  = useState('');
   const isAdmin = user?.role === 'ADMIN';
 
+  const [pwForm, setPwForm]   = useState({ current: '', next: '', confirm: '' });
+  const [pwError, setPwError] = useState('');
+  const [pwOk, setPwOk]       = useState('');
+  const [pwLoading, setPwLoading] = useState(false);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError(''); setPwOk('');
+    if (pwForm.next !== pwForm.confirm) { setPwError('New passwords do not match.'); return; }
+    if (pwForm.next.length < 6) { setPwError('New password must be at least 6 characters.'); return; }
+    setPwLoading(true);
+    try {
+      const res = await fetch('/api/users/me/password', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword: pwForm.current, newPassword: pwForm.next }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPwError(data.message || 'Failed to update password.'); return; }
+      setPwOk('Password updated successfully.');
+      setPwForm({ current: '', next: '', confirm: '' });
+    } catch { setPwError('Connection error.'); }
+    finally { setPwLoading(false); }
+  };
+
   useEffect(() => {
     if (!isAdmin || !token) return;
     setLoadingUsers(true);
@@ -1939,6 +2385,37 @@ const SettingsTab = () => {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="bg-white border border-[#d1d9e6] rounded-lg p-6 shadow-sm">
+        <h3 className="text-[0.85rem] font-bold text-[#5f6368] uppercase mb-4">Security — Change Password</h3>
+        <form onSubmit={handleChangePassword} className="space-y-3 max-w-sm">
+          {pwError && <p className="text-[0.8rem] text-[#d93025] bg-red-50 border border-red-100 rounded px-3 py-2">{pwError}</p>}
+          {pwOk    && <p className="text-[0.8rem] text-[#1e8e3e] bg-green-50 border border-green-100 rounded px-3 py-2">✓ {pwOk}</p>}
+          {[
+            { label: 'Current Password', key: 'current' },
+            { label: 'New Password',     key: 'next' },
+            { label: 'Confirm New Password', key: 'confirm' },
+          ].map(({ label, key }) => (
+            <div key={key} className="space-y-1">
+              <label className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">{label}</label>
+              <input
+                type="password"
+                required
+                value={(pwForm as any)[key]}
+                onChange={e => setPwForm(prev => ({ ...prev, [key]: e.target.value }))}
+                className="w-full px-3 py-2 bg-slate-50 border border-[#d1d9e6] rounded text-[0.88rem] outline-none focus:border-[#004a99] transition-colors"
+              />
+            </div>
+          ))}
+          <button
+            type="submit"
+            disabled={pwLoading}
+            className="mt-1 px-4 py-2 bg-[#004a99] text-white text-[0.82rem] font-bold rounded hover:bg-[#003366] transition-colors disabled:opacity-50"
+          >
+            {pwLoading ? 'Updating…' : 'Update Password'}
+          </button>
+        </form>
       </div>
 
       {isAdmin ? (
@@ -2019,8 +2496,8 @@ const SettingsTab = () => {
 
 const LoginPage = () => {
   const { login } = useAuth();
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -2052,11 +2529,11 @@ const LoginPage = () => {
         className="w-full max-w-md bg-white rounded-lg shadow-xl border border-[#d1d9e6] overflow-hidden"
       >
         <div className="bg-[#004a99] p-8 text-white text-center">
-          <div className="bg-white/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border border-white/20">
-            <Shield className="w-8 h-8" />
+          <div className="w-20 h-20 rounded-full bg-white flex items-center justify-center mx-auto mb-4 shadow-md overflow-hidden">
+            <img src="/logo-BBS.png" className="h-14 w-14 object-contain" alt="Black Box Solutions" />
           </div>
-          <h1 className="text-[1.4rem] font-bold tracking-tight">AEGIS SOC PLATFORM</h1>
-          <p className="text-blue-100/70 text-[0.85rem] mt-1 uppercase tracking-widest font-semibold">Secure Access Gateway</p>
+          <h1 className="text-[1.4rem] font-bold tracking-tight">BBS AISOC</h1>
+          <p className="text-blue-100/70 text-[0.85rem] mt-1 uppercase tracking-widest font-semibold">Black Box Solutions · Cybersecurity</p>
         </div>
         
         <form onSubmit={handleSubmit} className="p-8 space-y-6">

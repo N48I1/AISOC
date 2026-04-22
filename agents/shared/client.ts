@@ -19,7 +19,8 @@ export function getModelClient(model: string): ChatOpenAI {
   const client = new ChatOpenAI({
     model,
     temperature: 0.1,
-    maxRetries: 0,
+    maxRetries: 3,
+    timeout: 30000,
     configuration: {
       apiKey: API_KEY,
       baseURL: "https://openrouter.ai/api/v1",

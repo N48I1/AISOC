@@ -22,13 +22,13 @@ export const OPENROUTER_FREE_MODELS = [
 export type OpenRouterFreeModel = (typeof OPENROUTER_FREE_MODELS)[number];
 
 export const DEFAULT_AGENT_MODELS: Record<AgentPhase, OpenRouterFreeModel> = {
-  analysis:    "openai/gpt-oss-120b:free",
-  intel:       "openai/gpt-oss-120b:free",
-  knowledge:   "openai/gpt-oss-120b:free",
-  correlation: "openai/gpt-oss-120b:free",
-  ticketing:   "openai/gpt-oss-120b:free",
-  response:    "openai/gpt-oss-120b:free",
-  validation:  "openai/gpt-oss-120b:free",
+  analysis:    "google/gemma-2-9b-it:free",
+  intel:       "google/gemma-2-9b-it:free",
+  knowledge:   "google/gemma-2-9b-it:free",
+  correlation: "google/gemma-2-9b-it:free",
+  ticketing:   "google/gemma-2-9b-it:free",
+  response:    "google/gemma-2-9b-it:free",
+  validation:  "google/gemma-2-9b-it:free",
 };
 
 export const AGENT_METADATA: Record<AgentPhase, { name: string; desc: string }> = {

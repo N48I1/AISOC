@@ -30,94 +30,100 @@ const __dirname = path.dirname(__filename);
 const JWT_SECRET = process.env.JWT_SECRET || 'black-box-soc-secret-2026';
 
 // --- Database Setup ---
-const db = new Database('soc.db');
-db.pragma('journal_mode = WAL');
+let db: Database.Database;
+try {
+  db = new Database('soc.db');
+  db.pragma('journal_mode = WAL');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
-    email TEXT,
-    role TEXT DEFAULT 'ANALYST'
-  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE,
+      password TEXT,
+      email TEXT,
+      role TEXT DEFAULT 'ANALYST'
+    );
 
-  CREATE TABLE IF NOT EXISTS alerts (
-    id TEXT PRIMARY KEY,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    rule_id TEXT,
-    description TEXT,
-    severity INTEGER,
-    source_ip TEXT,
-    dest_ip TEXT,
-    user TEXT,
-    hostname TEXT,
-    agent_name TEXT,
-    full_log TEXT,
-    status TEXT DEFAULT 'NEW',
-    ai_analysis TEXT,
-    mitre_attack TEXT,
-    remediation_steps TEXT,
-    email_sent BOOLEAN DEFAULT 0
-  );
+    CREATE TABLE IF NOT EXISTS alerts (
+      id TEXT PRIMARY KEY,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      rule_id TEXT,
+      description TEXT,
+      severity INTEGER,
+      source_ip TEXT,
+      dest_ip TEXT,
+      user TEXT,
+      hostname TEXT,
+      agent_name TEXT,
+      full_log TEXT,
+      status TEXT DEFAULT 'NEW',
+      ai_analysis TEXT,
+      mitre_attack TEXT,
+      remediation_steps TEXT,
+      email_sent BOOLEAN DEFAULT 0
+    );
 
-  CREATE TABLE IF NOT EXISTS incidents (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    severity TEXT,
-    status TEXT DEFAULT 'OPEN',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    assigned_to INTEGER,
-    analysis TEXT,
-    action_plan TEXT,
-    FOREIGN KEY(assigned_to) REFERENCES users(id)
-  );
+    CREATE TABLE IF NOT EXISTS incidents (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      severity TEXT,
+      status TEXT DEFAULT 'OPEN',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      assigned_to INTEGER,
+      analysis TEXT,
+      action_plan TEXT,
+      FOREIGN KEY(assigned_to) REFERENCES users(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS incident_alerts (
-    incident_id TEXT,
-    alert_id TEXT,
-    PRIMARY KEY(incident_id, alert_id),
-    FOREIGN KEY(incident_id) REFERENCES incidents(id),
-    FOREIGN KEY(alert_id) REFERENCES alerts(id)
-  );
+    CREATE TABLE IF NOT EXISTS incident_alerts (
+      incident_id TEXT,
+      alert_id TEXT,
+      PRIMARY KEY(incident_id, alert_id),
+      FOREIGN KEY(incident_id) REFERENCES incidents(id),
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS audit_logs (
-    id TEXT PRIMARY KEY,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    user_id INTEGER,
-    action TEXT,
-    details TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      user_id INTEGER,
+      action TEXT,
+      details TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS agent_settings (
-    phase TEXT PRIMARY KEY,
-    model TEXT NOT NULL
-  );
+    CREATE TABLE IF NOT EXISTS agent_settings (
+      phase TEXT PRIMARY KEY,
+      model TEXT NOT NULL
+    );
 
-  CREATE TABLE IF NOT EXISTS agent_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    alert_id TEXT NOT NULL,
-    run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    ai_analysis TEXT,
-    mitre_attack TEXT,
-    remediation_steps TEXT,
-    status TEXT,
-    FOREIGN KEY(alert_id) REFERENCES alerts(id)
-  );
-`);
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id TEXT NOT NULL,
+      run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      ai_analysis TEXT,
+      mitre_attack TEXT,
+      remediation_steps TEXT,
+      status TEXT,
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
+  `);
 
-// Seed admin user if not exists
-const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
-if (!adminExists) {
-  const hashedPassword = bcrypt.hashSync('admin123', 10);
-  db.prepare('INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)').run('admin', hashedPassword, 'admin@blackbox.com', 'ADMIN');
-}
+  // Seed admin user if not exists
+  const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
+  if (!adminExists) {
+    const hashedPassword = bcrypt.hashSync('admin123', 10);
+    db.prepare('INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)').run('admin', hashedPassword, 'admin@blackbox.com', 'ADMIN');
+  }
 
-const seedAgentSetting = db.prepare('INSERT OR IGNORE INTO agent_settings (phase, model) VALUES (?, ?)');
-for (const phase of AGENT_PHASES) {
-  seedAgentSetting.run(phase, DEFAULT_AGENT_MODELS[phase]);
+  const seedAgentSetting = db.prepare('INSERT OR IGNORE INTO agent_settings (phase, model) VALUES (?, ?)');
+  for (const phase of AGENT_PHASES) {
+    seedAgentSetting.run(phase, DEFAULT_AGENT_MODELS[phase]);
+  }
+} catch (err) {
+  console.error('Database initialization failed:', err);
+  process.exit(1);
 }
 
 const getAgentModelAssignments = (): ModelAssignments => {
@@ -348,6 +354,18 @@ async function startServer() {
     }
   });
 
+  app.patch('/api/users/me/password', authenticate, (req: any, res) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword || newPassword.length < 6)
+      return res.status(400).json({ message: 'Invalid input — new password must be at least 6 characters.' });
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
+    if (!bcrypt.compareSync(currentPassword, user.password))
+      return res.status(401).json({ message: 'Current password is incorrect.' });
+    const hashed = bcrypt.hashSync(newPassword, 10);
+    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashed, req.user.id);
+    res.json({ message: 'Password updated.' });
+  });
+
   app.post('/api/ingest', (req, res) => {
     // Wazuh Alert Ingestion Mock
     const alert = req.body;
@@ -499,10 +517,30 @@ async function startServer() {
     });
   }
 
-  const PORT = 3000;
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`SOC Server running on http://localhost:${PORT}`);
-  });
+  const PORT = Number(process.env.PORT) || 3000;
+
+  function listen(port: number) {
+    httpServer.listen(port, '0.0.0.0', () => {
+      console.log(`SOC Server running on http://localhost:${port}`);
+    }).on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.log(`Port ${port} is busy, trying ${port + 1}...`);
+        listen(port + 1);
+      } else {
+        console.error('Server error:', err);
+      }
+    });
+  }
+
+  listen(PORT);
 }
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 startServer();
