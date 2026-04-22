@@ -205,6 +205,11 @@ const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, a
     iocs.ips?.length ? `**IPs:** \`${iocs.ips.join('`  `')}\`` : `**IPs:** ${alert.source_ip || 'N/A'}`,
     iocs.users?.length ? `**Users:** ${iocs.users.join(', ')}` : '',
     iocs.hosts?.length ? `**Hosts:** ${iocs.hosts.join(', ')}` : `**Hosts:** ${alert.agent_name || 'N/A'}`,
+    iocs.domains?.length ? `**Domains:** ${iocs.domains.join(', ')}` : '',
+    iocs.processes?.length ? `**Processes:** ${iocs.processes.join(', ')}` : '',
+    iocs.files?.length ? `**Files:** ${iocs.files.join(', ')}` : '',
+    iocs.hashes?.length ? `**Hashes:** \`${iocs.hashes.join('`  `')}\`` : '',
+    iocs.ports?.length ? `**Ports:** ${iocs.ports.join(', ')}` : '',
     ``,
     `---`,
     `## 3. MITRE ATT&CK Mapping`,
@@ -339,6 +344,45 @@ const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, a
             <div className="bg-[#f0f7ff] border border-[#c8ddf7] rounded-xl p-4 text-slate-700 leading-relaxed italic text-[0.85rem]">
               {aiData?.summary || 'No AI summary available. Run the Alert Triage agent first.'}
             </div>
+            {(() => {
+              const pd = aiData?.phaseData?.analysis;
+              if (!pd) return null;
+              const ac = pd.attack_category as string | undefined;
+              const kc = pd.kill_chain_stage as string | undefined;
+              const rs = pd.risk_score as number | undefined;
+              const ra = pd.recommended_action as string | undefined;
+              const sv = pd.severity_validation as string | undefined;
+              const isFP = pd.is_false_positive as boolean | undefined;
+              const fpReason = pd.false_positive_reason as string | undefined;
+              if (!ac && !kc && rs == null && !ra) return null;
+              const rsColor = rs == null ? 'bg-slate-300' : rs >= 80 ? 'bg-red-500' : rs >= 60 ? 'bg-orange-500' : rs >= 40 ? 'bg-amber-400' : 'bg-emerald-500';
+              const svColor: Record<string, string> = { CRITICAL: 'bg-red-100 text-red-800 border-red-300', HIGH: 'bg-orange-100 text-orange-800 border-orange-300', MEDIUM: 'bg-blue-100 text-blue-800 border-blue-300', LOW: 'bg-green-100 text-green-800 border-green-300' };
+              const raColor: Record<string, string> = { IGNORE: 'bg-slate-100 text-slate-600 border-slate-300', MONITOR: 'bg-blue-100 text-blue-700 border-blue-300', INVESTIGATE: 'bg-cyan-100 text-cyan-700 border-cyan-300', ESCALATE: 'bg-amber-100 text-amber-700 border-amber-300', CONTAIN: 'bg-orange-100 text-orange-700 border-orange-300', BLOCK: 'bg-red-100 text-red-700 border-red-300' };
+              return (
+                <div className="mt-3 space-y-2.5">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {ac && <span className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-800 border border-blue-200 text-[0.68rem] font-bold uppercase tracking-wide">{ac.replace(/_/g, ' ')}</span>}
+                    {kc && <span className="px-2.5 py-1 rounded-lg bg-purple-100 text-purple-800 border border-purple-200 text-[0.68rem] font-bold uppercase tracking-wide">{kc.replace(/_/g, ' ')}</span>}
+                    {sv && <span className={`px-2.5 py-1 rounded-lg border text-[0.68rem] font-bold uppercase tracking-wide ${svColor[sv] ?? ''}`}>{sv} (validated)</span>}
+                    {ra && <span className={`px-2.5 py-1 rounded-lg border text-[0.68rem] font-bold uppercase tracking-wide ${raColor[ra] ?? ''}`}>Action: {ra}</span>}
+                    {isFP && <span className="px-2.5 py-1 rounded-lg bg-red-100 text-red-700 border border-red-300 text-[0.68rem] font-bold uppercase tracking-wide">False Positive</span>}
+                  </div>
+                  {rs != null && (
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[0.65rem] text-slate-500 font-semibold">
+                        <span>Risk Score</span><span>{rs}/100</span>
+                      </div>
+                      <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${rsColor}`} style={{ width: `${rs}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {isFP && fpReason && (
+                    <p className="text-[0.72rem] text-slate-500 italic">{fpReason}</p>
+                  )}
+                </div>
+              );
+            })()}
           </Section>
 
           <Section title="2 — Indicators of Compromise">
@@ -358,7 +402,33 @@ const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, a
                   <span className="w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0" />Host: {h}
                 </span>
               ))}
-              {!iocs.ips?.length && !alert.source_ip && !iocs.users?.length && !iocs.hosts?.length && !alert.agent_name && (
+              {(iocs.domains || []).map((d: string) => (
+                <span key={d} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-sky-50 border border-sky-200 rounded-lg text-sky-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />Domain: {d}
+                </span>
+              ))}
+              {(iocs.processes || []).map((p: string) => (
+                <span key={p} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />Proc: {p}
+                </span>
+              ))}
+              {(iocs.files || []).map((f: string) => (
+                <span key={f} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 shrink-0" />File: {f}
+                </span>
+              ))}
+              {(iocs.hashes || []).map((h: string) => (
+                <span key={h} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-50 border border-zinc-300 rounded-lg text-zinc-700 font-mono text-[0.75rem] font-bold" title={h}>
+                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0" />Hash: {h.length > 12 ? h.slice(0, 12) + '…' : h}
+                </span>
+              ))}
+              {(iocs.ports || []).length > 0 && (
+                <span className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-800 font-mono text-[0.75rem] font-bold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />Ports: {iocs.ports.join(', ')}
+                </span>
+              )}
+              {!iocs.ips?.length && !alert.source_ip && !iocs.users?.length && !iocs.hosts?.length && !alert.agent_name &&
+               !iocs.domains?.length && !iocs.processes?.length && !iocs.files?.length && !iocs.hashes?.length && !iocs.ports?.length && (
                 <p className="text-slate-400 text-xs italic">No IOCs extracted yet.</p>
               )}
             </div>
@@ -614,7 +684,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
       currentAiData?.summary || currentAiData?.iocs
         ? {
             analysis_summary: currentAiData?.summary || '',
-            iocs: currentAiData?.iocs || { ips: [], users: [], hosts: [] },
+            iocs: currentAiData?.iocs || { ips: [], users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [] },
           }
         : null;
 
@@ -1117,20 +1187,53 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
                           {confidence === null ? '--' : `${Math.round(confidence * 100)}%`}
                         </span>
                       </div>
-                      {agent.id === 'analysis' && (
-                        <div className="flex items-center gap-2 text-[0.68rem]">
-                          <span className={`px-2 py-0.5 rounded-full border font-black uppercase tracking-wide ${
-                            displayResult?.is_false_positive
-                              ? 'bg-red-50 text-red-700 border-red-200'
-                              : 'bg-slate-50 text-slate-600 border-slate-200'
-                          }`}>
-                            False Positive: {displayResult?.is_false_positive ? 'Yes' : 'No'}
-                          </span>
-                          <span className="font-mono text-slate-500">
-                            FP Conf: {Math.round(((displayResult?.false_positive_confidence ?? confidence ?? 0) as number) * 100)}%
-                          </span>
-                        </div>
-                      )}
+                      {agent.id === 'analysis' && displayResult && (() => {
+                        const ac = displayResult.attack_category as string | undefined;
+                        const kc = displayResult.kill_chain_stage as string | undefined;
+                        const rs = displayResult.risk_score as number | undefined;
+                        const ra = displayResult.recommended_action as string | undefined;
+                        const isFP = displayResult.is_false_positive as boolean | undefined;
+                        const fpReason = displayResult.false_positive_reason as string | undefined;
+                        const fpConf = displayResult.false_positive_confidence as number | undefined;
+                        const rsColor = rs == null ? 'bg-slate-300' : rs >= 80 ? 'bg-red-500' : rs >= 60 ? 'bg-orange-500' : rs >= 40 ? 'bg-amber-400' : 'bg-emerald-500';
+                        const raColor: Record<string, string> = {
+                          IGNORE: 'bg-slate-100 text-slate-500 border-slate-200',
+                          MONITOR: 'bg-blue-50 text-blue-700 border-blue-200',
+                          INVESTIGATE: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+                          ESCALATE: 'bg-amber-50 text-amber-700 border-amber-200',
+                          CONTAIN: 'bg-orange-50 text-orange-700 border-orange-200',
+                          BLOCK: 'bg-red-50 text-red-700 border-red-200',
+                        };
+                        return (
+                          <div className="space-y-1.5">
+                            {(ac || kc) && (
+                              <div className="flex flex-wrap gap-1">
+                                {ac && <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 text-[0.58rem] font-bold uppercase tracking-wide">{ac.replace(/_/g, ' ')}</span>}
+                                {kc && <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.58rem] font-bold uppercase tracking-wide">{kc.replace(/_/g, ' ')}</span>}
+                              </div>
+                            )}
+                            {rs != null && (
+                              <div className="space-y-0.5">
+                                <div className="flex items-center justify-between text-[0.62rem] text-slate-500">
+                                  <span>Risk Score</span><span className="font-mono font-bold">{rs}/100</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full transition-all ${rsColor}`} style={{ width: `${rs}%` }} />
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex items-center gap-2">
+                              {ra && <span className={`px-2 py-0.5 rounded-full border text-[0.6rem] font-black uppercase tracking-wide ${raColor[ra] ?? 'bg-slate-50 text-slate-600 border-slate-200'}`}>{ra}</span>}
+                              <span className={`px-2 py-0.5 rounded-full border font-black uppercase tracking-wide text-[0.6rem] ${isFP ? 'bg-red-50 text-red-700 border-red-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                                FP: {isFP ? 'Yes' : 'No'} ({Math.round(((fpConf ?? 0)) * 100)}%)
+                              </span>
+                            </div>
+                            {isFP && fpReason && (
+                              <p className="text-[0.65rem] text-slate-500 italic leading-snug">{fpReason}</p>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <p className="text-[0.78rem] text-slate-600 leading-relaxed line-clamp-3">{content}</p>
                     </div>
                   ) : (
