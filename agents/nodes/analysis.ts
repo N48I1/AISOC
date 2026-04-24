@@ -16,16 +16,8 @@ const IocSchema = z.object({
 const AnalysisSchema = z.object({
   analysis_summary:          z.string(),
   iocs:                      IocSchema,
-  attack_category:           z.enum([
-    "INITIAL_ACCESS", "EXECUTION", "PERSISTENCE", "PRIVILEGE_ESCALATION",
-    "DEFENSE_EVASION", "CREDENTIAL_ACCESS", "DISCOVERY", "LATERAL_MOVEMENT",
-    "COLLECTION", "EXFILTRATION", "COMMAND_AND_CONTROL", "IMPACT",
-    "RECONNAISSANCE", "RESOURCE_DEVELOPMENT",
-  ]),
-  kill_chain_stage:          z.enum([
-    "RECONNAISSANCE", "WEAPONIZATION", "DELIVERY",
-    "EXPLOITATION", "INSTALLATION", "C2", "ACTIONS_ON_OBJECTIVES",
-  ]),
+  attack_category:           z.string(),
+  kill_chain_stage:          z.string(),
   risk_score:                z.number().min(0).max(100),
   severity_validation:       z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]),
   recommended_action:        z.enum(["MONITOR", "INVESTIGATE", "CONTAIN", "ESCALATE", "BLOCK", "IGNORE"]),
@@ -99,6 +91,10 @@ Respond with this exact JSON structure:
 
 export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGENT_MODELS.analysis) {
   const a = state.alert;
+  const logs: string[] = [];
+
+  logs.push(`[Analysis] Initializing triage for alert ${a.id}`);
+
   const related = (state.recentAlerts || [])
     .filter((r: any) => r.id !== a.id)
     .slice(0, 5)
@@ -111,6 +107,10 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
       agent: r.data?.agent?.name,
       timestamp: r.timestamp,
     }));
+
+  if (related.length > 0) {
+    logs.push(`[Analysis] Correlating against ${related.length} historical alerts from same source/agent.`);
+  }
 
   const userPrompt = `ALERT TO TRIAGE:
 - ID: ${a.id}
@@ -134,8 +134,8 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
     fallback: {
       analysis_summary: "Alert analysis unavailable — LLM did not respond.",
       iocs: { ips: [], users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [] },
-      attack_category: "EXECUTION" as const,
-      kill_chain_stage: "DELIVERY" as const,
+      attack_category: "EXECUTION",
+      kill_chain_stage: "DELIVERY",
       risk_score: 0,
       severity_validation: "MEDIUM" as const,
       recommended_action: "INVESTIGATE" as const,
@@ -150,5 +150,11 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
     analysis.false_positive_confidence = analysis.is_false_positive ? analysis.confidence : 0;
   }
 
-  return { analysis };
+  if (analysis.is_false_positive) {
+    logs.push(`[Analysis] Potential False Positive detected (${Math.round(analysis.false_positive_confidence * 100)}% confidence): ${analysis.false_positive_reason}`);
+  } else {
+    logs.push(`[Analysis] Triage complete. Risk: ${analysis.risk_score}/100. Category: ${analysis.attack_category}.`);
+  }
+
+  return { analysis, agentLogs: logs };
 }

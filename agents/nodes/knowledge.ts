@@ -11,6 +11,9 @@ const KnowledgeSchema = z.object({
 });
 
 export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT_MODELS.knowledge) {
+  const logs: string[] = [];
+  logs.push(`[Knowledge] Fetching playbooks for tactic: ${state.analysis?.attack_category || "Unknown"}`);
+
   const knowledge = await callStructuredLLM({
     phase: "knowledge",
     model,
@@ -26,14 +29,15 @@ export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT
 }`,
     userPrompt: `Alert: ${state.alert?.description || ""}\nLog: ${(state.alert?.full_log || "").slice(0, 500)}\nAnalysis: ${state.analysis?.analysis_summary || ""}`,
     fallback: {
-      remediation_steps:
-        "1. Isolate the affected host from the network\n2. Block the source IP at the perimeter firewall\n3. Preserve logs and memory for forensics\n4. Reset credentials for any affected accounts\n5. Apply relevant patches and harden configuration",
-      playbook_reference: "IRP-GEN-001",
+      remediation_steps: "Playbook retrieval unavailable — LLM did not respond.",
+      playbook_reference: "N/A",
       containment_priority: "HIGH",
-      estimated_effort_minutes: 30,
+      estimated_effort_minutes: 0,
       confidence: 0,
     },
   });
 
-  return { knowledge };
+  logs.push(`[Knowledge] Playbook identified: ${knowledge.playbook_reference}. Priority: ${knowledge.containment_priority}.`);
+
+  return { knowledge, agentLogs: logs };
 }

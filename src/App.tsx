@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye } from 'lucide-react';
+import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, type AgentModelConfig, type AgentPhase } from './services/aiService';
@@ -162,11 +162,22 @@ const StatCard = ({ label, value, icon: Icon, trend, color }: any) => (
 );
 
 const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () => void, isSelected?: boolean, key?: any }) => {
+  let aiData: any = null;
+  try { aiData = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch (e) {}
+
+  const riskScore = aiData?.phaseData?.analysis?.risk_score;
+  const isFP = aiData?.phaseData?.analysis?.is_false_positive;
+  const summary = aiData?.summary || alert.description;
+  const pd = aiData?.phaseData || {};
+  const agents = ['analysis', 'intel', 'knowledge', 'correlation', 'ticketing', 'response', 'validation'];
+
   const getSeverityColor = (level: number) => {
     if (level >= 12) return '#d93025';
     if (level >= 7) return '#f29900';
     return '#1a73e8';
   };
+
+  const riskColor = riskScore == null ? '#cbd5e1' : riskScore >= 80 ? '#ef4444' : riskScore >= 60 ? '#f97316' : riskScore >= 40 ? '#f59e0b' : '#10b981';
 
   return (
     <motion.div 
@@ -176,14 +187,37 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
       onClick={onClick}
       className={`alert-item p-[12px_15px] border-b border-[#f0f0f0] cursor-pointer transition-colors ${isSelected ? 'bg-[#f0f7ff]' : 'hover:bg-slate-50'}`}
     >
-      <div className="flex items-center gap-2 mb-1">
-        <div className="w-1 h-3 rounded-sm" style={{ backgroundColor: getSeverityColor(alert.severity) }} />
-        <h4 className="text-[0.85rem] font-semibold text-[#1a1a1b] truncate">{alert.description}</h4>
-      </div>
-      
-      <div className="flex justify-between text-[0.75rem] text-[#5f6368]">
-        <span>{alert.source_ip || alert.agent_name}</span>
-        <span>{new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+      <div className="flex items-start gap-3">
+        <div className="flex flex-col items-center gap-1 mt-0.5 shrink-0">
+          <div className="w-7 h-7 rounded-full flex items-center justify-center border-2" style={{ borderColor: riskColor, backgroundColor: `${riskColor}15` }}>
+            <span className="text-[0.6rem] font-black" style={{ color: riskColor }}>
+              {riskScore != null ? riskScore : alert.severity}
+            </span>
+          </div>
+          <span className="text-[0.5rem] font-bold text-slate-400 uppercase tracking-wider">{riskScore != null ? 'Risk' : 'Lvl'}</span>
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+            {isFP && <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 text-[0.55rem] font-black uppercase tracking-wider shrink-0">FP</span>}
+            <h4 className="text-[0.78rem] font-bold text-[#1a1a1b] truncate" title={summary}>{summary}</h4>
+          </div>
+          
+          <div className="flex justify-between items-center text-[0.7rem] text-[#5f6368] mt-0.5">
+            <span className="truncate">{alert.source_ip || alert.agent_name}</span>
+            <span className="shrink-0">{new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </div>
+
+          <div className="flex items-center gap-1 mt-2">
+            {agents.map(a => {
+              const isDone = !!pd[a];
+              const isRunning = alert.status === 'ANALYZING' && !isDone && (a === 'analysis' || pd[agents[agents.indexOf(a)-1]]);
+              return (
+                <div key={a} title={a} className={`w-1.5 h-1.5 rounded-full ${isDone ? 'bg-[#004a99]' : isRunning ? 'bg-blue-400 animate-pulse' : 'bg-slate-200'}`} />
+              );
+            })}
+          </div>
+        </div>
       </div>
     </motion.div>
   );
@@ -1050,7 +1084,6 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
 const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () => void, onAction: (id: string, update: any) => void }) => {
   const [showReport, setShowReport] = useState(false);
   const [runningPhase, setRunningPhase] = useState<string | null>(null);
-  const [runningAll, setRunningAll] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -1060,6 +1093,33 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
 
   const agentsRef = useRef<HTMLDivElement>(null);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
+  const [feedbackLoading, setFeedbackLoading] = useState<Record<string, boolean>>({});
+
+  const { user, token } = useAuth(); // Moved inside to be available to handleFeedback if needed
+
+  const handleFeedback = async (phase: string, isAccurate: boolean) => {
+    const key = `${phase}-${isAccurate}`;
+    setFeedbackLoading(prev => ({ ...prev, [key]: true }));
+    try {
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          alert_id: alert.id,
+          phase,
+          is_accurate: isAccurate,
+          comment: isAccurate ? 'Confirmed by analyst' : 'Flagged as inaccurate by analyst'
+        })
+      });
+    } catch (err) {
+      console.error('Feedback failed:', err);
+    } finally {
+      setFeedbackLoading(prev => ({ ...prev, [key]: false }));
+    }
+  };
 
   // Per-agent run history: phase → array of raw phase results (newest = last)
   const [agentRunHistory, setAgentRunHistory] = useState<Record<string, any[]>>(() => {
@@ -1087,7 +1147,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
   try { aiData = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch (e) {}
   try { mitreTags = alert.mitre_attack ? JSON.parse(alert.mitre_attack as any) : []; } catch (e) {}
 
-  const isAnalyzing = runningPhase !== null || runningAll;
+  const isAnalyzing = runningPhase !== null || isRerunning;
 
   const severity = alert.severity >= 13 ? 'CRITICAL' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MEDIUM' : 'LOW';
   const sevStyle: Record<string, string> = {
@@ -1139,8 +1199,15 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
     const updatedAiData = {
       ...base,
       phaseData: { ...(base?.phaseData || {}) },
+      agentLogs: [...(base?.agentLogs || [])],
     };
     const extra: any = {};
+
+    if (result.agentLogs && Array.isArray(result.agentLogs)) {
+      // Append logs from this phase run
+      updatedAiData.agentLogs = [...updatedAiData.agentLogs, ...result.agentLogs];
+    }
+
     if (phase === 'analysis' && result.analysis) {
       updatedAiData.phaseData.analysis = result.analysis;
       updatedAiData.summary = result.analysis.analysis_summary;
@@ -1208,7 +1275,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
   };
 
   const handleAgentRun = async (phase: string) => {
-    if (runningPhase !== null || runningAll) return;
+    if (isAnalyzing) return;
     setRunningPhase(phase);
     setRunError(null);
     const baseAiData = aiData || {};
@@ -1240,8 +1307,8 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
 
   const handleRunAll = async (e: React.MouseEvent) => {
     e.preventDefault();
-    if (runningPhase !== null || runningAll) return;
-    setRunningAll(true);
+    if (isAnalyzing) return;
+    setIsRerunning(true);
     setRunError(null);
     let currentAiData = aiData || {};
     let cumulativeExtra: any = {};
@@ -1272,7 +1339,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
       }
     }
     setRunningPhase(null);
-    setRunningAll(false);
+    setIsRerunning(false);
 
     // Batch-update history for all agents that ran
     if (Object.keys(newResults).length > 0) {
@@ -1403,24 +1470,12 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
           <button
             type="button"
             onClick={handleRerunFresh}
-            disabled={isAnalyzing || isRerunning}
-            title="Re-run all 7 agents from scratch and save to history"
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.75rem] font-bold transition-colors border border-slate-200 disabled:opacity-50"
-          >
-            {isRerunning ? (
-              <><div className="w-3 h-3 rounded-full border-2 border-slate-400/40 border-t-slate-600 animate-spin" /> Rerunning...</>
-            ) : (
-              <><Activity size={14} /> Rerun All</>
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={handleRunAll}
-            disabled={isAnalyzing || isRerunning}
+            disabled={isAnalyzing}
+            title="Run all 7 agents on this alert"
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] hover:bg-[#003a7a] text-white text-[0.75rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
           >
-            {runningAll ? (
-              <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running Swarm...</>
+            {isRerunning ? (
+              <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running...</>
             ) : (
               <><Activity size={14} /> Run Agents</>
             )}
@@ -1446,6 +1501,29 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
         </div>
       )}
 
+      {(() => {
+        const fallbackPhases: string[] = Array.isArray(aiData?.fallback_phases) ? aiData.fallback_phases : [];
+        const quotaExhausted = aiData?.quota_exhausted === true;
+        const allFallback = aiData && fallbackPhases.length >= 7;
+        if (!quotaExhausted && !allFallback) return null;
+        return (
+          <div className="mx-5 mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3">
+            <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
+            <div className="flex-1 text-[0.78rem] text-red-800 leading-relaxed">
+              <p className="font-black uppercase tracking-wider text-[0.7rem] mb-0.5">
+                {quotaExhausted ? 'LLM Daily Quota Exhausted' : 'All agents returned fallback data'}
+              </p>
+              <p>
+                {quotaExhausted
+                  ? 'Real analysis could not run — OpenRouter\'s free-tier daily limit (50 req/day) is used up on both API keys. '
+                  : `${fallbackPhases.length}/7 agents failed — the data shown below is placeholder fallback, not a real assessment. `}
+                Add credits at <span className="font-mono font-bold">openrouter.ai</span> or wait until midnight UTC for the quota to reset. Then click <span className="font-bold">Run Agents</span> again.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Main scrollable content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
 
@@ -1462,7 +1540,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
             </div>
             {runs.length === 0 ? (
               <div className="bg-white rounded-xl border border-[#d1d9e6] p-6 text-center text-[0.8rem] text-slate-400">
-                No saved runs yet. Use <span className="font-bold text-slate-600">Rerun All</span> to run all agents fresh, or <span className="font-bold text-slate-600">Save Snapshot</span> to record the current state.
+                No saved runs yet. Use <span className="font-bold text-slate-600">Run Agents</span> to run all agents, or <span className="font-bold text-slate-600">Save Snapshot</span> to record the current state.
               </div>
             ) : (
               runs.map((run) => {
@@ -1586,6 +1664,37 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
         {/* NEW: Investigation grid — 3-col dense info */}
         <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} />
 
+        {/* NEW: Swarm Monologue terminal */}
+        <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-lg">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/50">
+            <div className="flex items-center gap-2">
+              <Terminal size={12} className="text-emerald-500" />
+              <p className="text-[0.6rem] font-black uppercase tracking-widest text-emerald-500/80">Swarm Inner Monologue</p>
+            </div>
+            <div className="flex gap-1">
+              <div className="w-2 h-2 rounded-full bg-red-500/20" />
+              <div className="w-2 h-2 rounded-full bg-amber-500/20" />
+              <div className="w-2 h-2 rounded-full bg-emerald-500/20" />
+            </div>
+          </div>
+          <div className="p-4 h-48 overflow-y-auto font-mono text-[0.7rem] leading-relaxed space-y-1 scrollbar-thin scrollbar-thumb-emerald-500/20 scrollbar-track-transparent">
+            {(aiData?.agentLogs || []).length > 0 ? (
+              aiData.agentLogs.map((log: string, i: number) => (
+                <div key={i} className="flex gap-3 text-emerald-400/90 animate-in fade-in slide-in-from-left-2 duration-300">
+                  <span className="text-emerald-500/40 shrink-0 select-none">[{new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
+                  <span className="flex-1">{log}</span>
+                </div>
+              ))
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-slate-600 italic gap-2 opacity-50">
+                <Activity size={24} className={isAnalyzing ? 'animate-pulse' : ''} />
+                <p>{isAnalyzing ? 'Agents are communicating...' : 'Standby — Waiting for swarm activation'}</p>
+              </div>
+            )}
+            <div className="h-1" /> {/* Spacer for bottom scroll */}
+          </div>
+        </div>
+
         {/* Compact agent pipeline strip — click a card to expand raw details */}
         <div ref={agentsRef} className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100 bg-slate-50">
@@ -1666,13 +1775,33 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
                     <p className="text-[0.75rem] font-black uppercase tracking-wider text-slate-700">{agent.label}</p>
                     <span className="text-[0.62rem] text-slate-500">{agent.desc}</span>
                   </div>
-                  {runCount > 0 && (
-                    <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded-full px-1.5 py-0.5">
-                      <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">‹</button>
-                      <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>{currentIdx + 1}/{runCount}</span>
-                      <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">›</button>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1 border-r border-slate-200 pr-3 mr-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, true); }}
+                        disabled={feedbackLoading[`${agent.id}-true`]}
+                        className="p-1 rounded hover:bg-green-100 text-slate-400 hover:text-green-600 transition-colors disabled:opacity-50"
+                        title="Mark as accurate"
+                      >
+                        <ThumbsUp size={14} className={feedbackLoading[`${agent.id}-true`] ? 'animate-pulse' : ''} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, false); }}
+                        disabled={feedbackLoading[`${agent.id}-false`]}
+                        className="p-1 rounded hover:bg-red-100 text-slate-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                        title="Mark as inaccurate"
+                      >
+                        <ThumbsDown size={14} className={feedbackLoading[`${agent.id}-false`] ? 'animate-pulse' : ''} />
+                      </button>
                     </div>
-                  )}
+                    {runCount > 0 && (
+                      <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded-full px-1.5 py-0.5">
+                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">‹</button>
+                        <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>{currentIdx + 1}/{runCount}</span>
+                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">›</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <pre className="bg-slate-950 text-emerald-300 rounded p-3 text-[0.65rem] leading-relaxed font-mono overflow-x-auto max-h-64 overflow-y-auto">{JSON.stringify(displayResult, null, 2)}</pre>
               </div>
@@ -1769,7 +1898,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
       try { return !!(JSON.parse(a.ai_analysis)?.phaseData?.[phaseKey]); } catch { return false; }
     }).length;
     const isAnalyzing = alerts.some(a => a.status === 'ANALYZING');
-    if (isAnalyzing && phaseKey === 'analysis') return { label: 'Analyzing', load: '88%' };
+    if (isAnalyzing && phaseKey === 'analysis') return { label: 'Analyzing', load: `${Math.round((runCount / Math.max(alerts.length, 1)) * 100)}%` };
     if (runCount === 0) return { label: 'Standby', load: '0%' };
     const loadPct = Math.min(95, Math.round((runCount / Math.max(alerts.length, 1)) * 100));
     return { label: 'Online', load: `${loadPct}%` };
@@ -1835,7 +1964,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
             <div className="mt-2 p-3 bg-[#f0f7ff] rounded-lg border border-[#d1d9e6]">
               <div className="text-[0.8rem] font-bold text-[#004a99] mb-1">System Health</div>
               <div className="text-[0.7rem] text-[#5f6368] leading-relaxed">
-                All 7 agents operational. Mistral 7B (1-6) · Phi-3 Mini (validation).
+                {swarmAgents.filter(a => getAgentStatus(a.phaseKey).label !== 'Standby').length}/{swarmAgents.length} agents have processed alerts. Model assignments are configurable below.
               </div>
             </div>
           </div>
@@ -1874,86 +2003,141 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
   const hasFilters = !!filterSeverity || !!filterStatus;
   const clearFilters = () => { setFilterSev(''); setFilterStatus(''); };
 
-  return (
-    <div className="flex h-full overflow-hidden">
-      <section className="w-[320px] border-r border-[#d1d9e6] bg-white flex flex-col overflow-hidden">
-        <div className="p-[15px] border-b border-[#d1d9e6] font-semibold text-[0.9rem] flex justify-between items-center relative">
-          <span>WAZUH ALERTS ({filteredAlerts.length}{hasFilters ? ' filtered' : ''})</span>
-          <button
-            onClick={() => setFilterOpen(!filterOpen)}
-            className={`flex items-center gap-1 text-[0.7rem] font-bold px-2 py-1 rounded transition-colors ${
-              hasFilters ? 'bg-[#004a99] text-white' : 'text-[#004a99] hover:bg-[#f0f7ff]'
-            }`}
-          >
-            <Filter className="w-3 h-3" />
-            {hasFilters ? 'Filtered ●' : 'Filter'}
-          </button>
+  const handleBulkAIClean = () => {
+    const fps = alerts.filter(a => {
+      if (a.status === 'FALSE_POSITIVE' || a.status === 'CLOSED') return false;
+      let aiData: any = null;
+      try { aiData = JSON.parse(a.ai_analysis || ''); } catch(e) {}
+      return aiData?.phaseData?.analysis?.is_false_positive;
+    });
+    fps.forEach(a => onAlertAction(a.id, { status: 'FALSE_POSITIVE' }));
+  };
 
-          {filterOpen && (
-            <div className="absolute top-full right-0 z-20 w-56 bg-white border border-[#d1d9e6] rounded-lg shadow-lg p-4 space-y-3">
-              <div>
-                <label className="text-[0.65rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Severity</label>
-                <select
-                  value={filterSeverity}
-                  onChange={e => setFilterSev(e.target.value)}
-                  className="w-full text-[0.8rem] border border-[#d1d9e6] rounded px-2 py-1.5 outline-none focus:border-[#004a99]"
-                >
-                  <option value="">All</option>
-                  <option value="CRITICAL">Critical (13+)</option>
-                  <option value="HIGH">High (10-12)</option>
-                  <option value="MEDIUM">Medium (7-9)</option>
-                  <option value="LOW">Low (&lt;7)</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-[0.65rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Status</label>
-                <select
-                  value={filterStatus}
-                  onChange={e => setFilterStatus(e.target.value)}
-                  className="w-full text-[0.8rem] border border-[#d1d9e6] rounded px-2 py-1.5 outline-none focus:border-[#004a99]"
-                >
-                  <option value="">All</option>
-                  {['NEW','ANALYZING','TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED'].map(s => (
-                    <option key={s} value={s}>{s.replace('_', ' ')}</option>
-                  ))}
-                </select>
-              </div>
-              {hasFilters && (
-                <button
-                  onClick={clearFilters}
-                  className="w-full text-[0.75rem] font-bold text-[#d93025] hover:bg-red-50 py-1 rounded transition-colors"
-                >
-                  Clear Filters
-                </button>
+  const highRiskCount = alerts.filter(a => {
+    if (a.status === 'CLOSED' || a.status === 'FALSE_POSITIVE') return false;
+    let aiData: any = null;
+    try { aiData = JSON.parse(a.ai_analysis || ''); } catch(e) {}
+    const risk = aiData?.phaseData?.analysis?.risk_score;
+    return risk && risk >= 80;
+  }).length;
+
+  const totalAutoTriagedFP = alerts.filter(a => {
+    let aiData: any = null;
+    try { aiData = JSON.parse(a.ai_analysis || ''); } catch(e) {}
+    return aiData?.phaseData?.analysis?.is_false_positive;
+  }).length;
+  
+  const activeCount = alerts.filter(a => a.status === 'ANALYZING').length;
+
+  return (
+    <div className="flex flex-col h-full bg-[#f0f4f9]">
+      {/* Analyst HUD */}
+      <div className="bg-white border-b border-[#d1d9e6] px-6 py-3 flex gap-6 shrink-0 shadow-sm z-10 relative">
+        <div className="flex-1 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
+          <div>
+            <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-widest mb-0.5">Noise Reduction</p>
+            <p className="text-[0.8rem] font-bold text-green-900">AI identified {totalAutoTriagedFP} False Positives</p>
+          </div>
+          <button onClick={handleBulkAIClean} className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-[0.7rem] font-bold transition-colors shadow-sm">
+            Clean All ({totalAutoTriagedFP})
+          </button>
+        </div>
+        <div className="flex-1 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
+          <p className="text-[0.65rem] font-black text-red-700 uppercase tracking-widest mb-0.5">High-Priority Focus</p>
+          <p className="text-[0.8rem] font-bold text-red-900">{highRiskCount} Alerts require immediate containment</p>
+        </div>
+        <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
+          <p className="text-[0.65rem] font-black text-blue-700 uppercase tracking-widest mb-0.5">Swarm Health</p>
+          <p className="text-[0.8rem] font-bold text-blue-900">{activeCount > 0 ? `Agents processing ${activeCount} alerts` : 'Agents standing by'}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+        <section className="w-[340px] border-r border-[#d1d9e6] bg-white flex flex-col overflow-hidden shrink-0 shadow-sm z-0">
+          <div className="p-3 border-b border-[#d1d9e6] bg-slate-50 flex flex-col gap-2">
+            <div className="flex justify-between items-center relative">
+              <span className="font-bold text-[0.8rem] text-[#004a99]">ALERT QUEUE ({filteredAlerts.length})</span>
+              <button
+                onClick={() => setFilterOpen(!filterOpen)}
+                className={`flex items-center gap-1 text-[0.65rem] font-black uppercase tracking-wider px-2 py-1 rounded transition-colors ${
+                  hasFilters ? 'bg-[#004a99] text-white' : 'text-[#004a99] hover:bg-[#f0f7ff]'
+                }`}
+              >
+                <Filter className="w-3 h-3" />
+                {hasFilters ? 'Filtered ●' : 'Filter'}
+              </button>
+
+              {filterOpen && (
+                <div className="absolute top-full right-0 mt-1 z-20 w-56 bg-white border border-[#d1d9e6] rounded-xl shadow-xl p-4 space-y-3">
+                  <div>
+                    <label className="text-[0.6rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Severity</label>
+                    <select
+                      value={filterSeverity}
+                      onChange={e => setFilterSev(e.target.value)}
+                      className="w-full text-[0.8rem] border border-[#d1d9e6] rounded px-2 py-1.5 outline-none focus:border-[#004a99]"
+                    >
+                      <option value="">All</option>
+                      <option value="CRITICAL">Critical (13+)</option>
+                      <option value="HIGH">High (10-12)</option>
+                      <option value="MEDIUM">Medium (7-9)</option>
+                      <option value="LOW">Low (&lt;7)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[0.6rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Status</label>
+                    <select
+                      value={filterStatus}
+                      onChange={e => setFilterStatus(e.target.value)}
+                      className="w-full text-[0.8rem] border border-[#d1d9e6] rounded px-2 py-1.5 outline-none focus:border-[#004a99]"
+                    >
+                      <option value="">All</option>
+                      {['NEW','ANALYZING','TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED'].map(s => (
+                        <option key={s} value={s}>{s.replace('_', ' ')}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {hasFilters && (
+                    <button
+                      onClick={clearFilters}
+                      className="w-full text-[0.7rem] font-bold text-[#d93025] hover:bg-red-50 py-1.5 rounded transition-colors uppercase tracking-wider"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-        <div className="flex-1 overflow-y-auto">
-          {filteredAlerts.length > 0 ? (
-            filteredAlerts.map(alert => (
-              <AlertRow
-                key={alert.id}
-                alert={alert}
-                onClick={() => setSelectedAlert(alert)}
-                isSelected={selectedAlert?.id === alert.id}
-              />
-            ))
-          ) : (
-            <div className="p-10 text-center text-slate-400 text-sm">No alerts match the current filters.</div>
-          )}
-        </div>
-      </section>
-      <section className="flex-1 overflow-hidden">
-        {selectedAlert ? (
-          <AlertDetail alert={selectedAlert} onClose={() => setSelectedAlert(null)} onAction={onAlertAction} />
-        ) : (
-          <div className="flex items-center justify-center h-full text-slate-400 flex-col gap-4">
-            <Shield className="w-16 h-16 opacity-10" />
-            <p className="font-semibold text-sm">Select an alert from the queue to start investigation</p>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input type="text" placeholder="Search alerts..." className="w-full bg-white border border-slate-200 rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all" />
+            </div>
           </div>
-        )}
-      </section>
+          <div className="flex-1 overflow-y-auto">
+            {filteredAlerts.length > 0 ? (
+              filteredAlerts.map(alert => (
+                <AlertRow
+                  key={alert.id}
+                  alert={alert}
+                  onClick={() => setSelectedAlert(alert)}
+                  isSelected={selectedAlert?.id === alert.id}
+                />
+              ))
+            ) : (
+              <div className="p-10 text-center text-slate-400 text-sm">No alerts match the current filters.</div>
+            )}
+          </div>
+        </section>
+        <section className="flex-1 overflow-hidden">
+          {selectedAlert ? (
+            <AlertDetail alert={selectedAlert} onClose={() => setSelectedAlert(null)} onAction={onAlertAction} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-slate-400 flex-col gap-4">
+              <Shield className="w-16 h-16 opacity-10" />
+              <p className="font-semibold text-sm">Select an alert from the queue to start investigation</p>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 };
@@ -2622,23 +2806,9 @@ export default function App() {
       .then(data => {
         if (!Array.isArray(data)) return;
         setAlerts(data);
-        // Trigger analysis for any NEW alerts found on load
-        data.forEach((alert: any) => {
-          if (alert.status === 'NEW') {
-            const recent = data.filter((a: any) => a.id !== alert.id).slice(0, 50);
-            orchestrateAnalysis(alert, recent, (update) => {
-              setAlerts(prev => Array.isArray(prev) ? prev.map(a => a.id === alert.id ? { ...a, ...update } : a) : prev);
-              fetch(`/api/alerts/${alert.id}`, {
-                method: 'PATCH',
-                headers: { 
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${socToken}`
-                },
-                body: JSON.stringify(update)
-              });
-            });
-          }
-        });
+        // NOTE: Page-load auto-orchestration intentionally disabled.
+        // Users click "Run Agents" on the alert they want to analyze.
+        // Socket-triggered orchestration (for fresh incoming alerts) is still active below.
       });
 
     const newSocket = io();

@@ -12,6 +12,9 @@ const ValidationSchema = z.object({
 });
 
 export async function validationNode(state: any, model: string = DEFAULT_AGENT_MODELS.validation) {
+  const logs: string[] = [];
+  logs.push(`[Validation] Running final SLA and quality assurance checks.`);
+
   const ctx = {
     ticket: state.ticket,
     responsePlan: state.responsePlan,
@@ -37,14 +40,17 @@ export async function validationNode(state: any, model: string = DEFAULT_AGENT_M
 }`,
     userPrompt: `Incident context:\n${JSON.stringify(ctx, null, 2)}`,
     fallback: {
-      is_valid: true,
-      sla_status: "SLA_MET",
-      completeness_score: 70,
-      missing_elements: [],
-      recommendation: "MONITOR",
+      is_valid: false,
+      sla_status: "SLA_BREACHED",
+      completeness_score: 0,
+      missing_elements: ["Validation unavailable — LLM did not respond"],
+      recommendation: "INVESTIGATE_FURTHER",
       confidence: 0,
     },
   });
 
-  return { validation };
+  logs.push(`[Validation] Quality Score: ${validation.completeness_score}%. SLA Status: ${validation.sla_status}. Recommendation: ${validation.recommendation}.`);
+  logs.push(`[Swarm] All agents finished. Finalizing state.`);
+
+  return { validation, agentLogs: logs };
 }

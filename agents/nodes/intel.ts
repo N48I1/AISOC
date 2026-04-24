@@ -15,6 +15,9 @@ const IntelSchema = z.object({
 export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_MODELS.intel) {
   const iocs = state.analysis?.iocs || {};
   const alert = state.alert;
+  const logs: string[] = [];
+
+  logs.push(`[Threat Intel] Starting IOC enrichment for ${alert.id}`);
 
   const misp = await mispSearchIocs({
     ips: iocs.ips,
@@ -23,6 +26,17 @@ export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_
     files: iocs.files,
     urls: iocs.urls,
   });
+
+  if (misp.available) {
+    if (misp.hits > 0) {
+      logs.push(`[Threat Intel] MISP Match: Found ${misp.hits} attributes across ${misp.events.length} events.`);
+      if (misp.threat_actors.length > 0) logs.push(`[Threat Intel] Identified Potential Actors: ${misp.threat_actors.join(", ")}`);
+    } else {
+      logs.push(`[Threat Intel] MISP: No hits found for these IOCs.`);
+    }
+  } else {
+    logs.push(`[Threat Intel] MISP: Service unavailable, proceeding with inferential analysis.`);
+  }
 
   const mispBlock = misp.available && misp.hits > 0
     ? `MISP Enrichment (AUTHORITATIVE local threat feed — prefer this over your own guesses):
@@ -71,5 +85,5 @@ ${mispBlock}`,
     },
   });
 
-  return { intel: { ...intel, misp } };
+  return { intel: { ...intel, misp }, agentLogs: logs };
 }

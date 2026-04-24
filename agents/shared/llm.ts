@@ -1,6 +1,6 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
-import { getModelClient } from "./client.js";
+import { getModelClient, getBackupModelClient, getBackup2ModelClient } from "./client.js";
 
 function extractJSONObject(raw: string): unknown {
   let s = (raw || "").trim();
@@ -10,7 +10,12 @@ function extractJSONObject(raw: string): unknown {
   if (start === -1 || end === -1 || end < start) {
     throw new Error(`No JSON object found in LLM response: ${s.slice(0, 300)}`);
   }
-  return JSON.parse(s.slice(start, end + 1));
+  let candidate = s.slice(start, end + 1);
+  // Fix truncated decimals: "score": 85. → "score": 85.0
+  candidate = candidate.replace(/(\d)\.(\s*[,}\]])/g, "$1.0$2");
+  // Fix trailing commas before closing braces/brackets
+  candidate = candidate.replace(/,(\s*[}\]])/g, "$1");
+  return JSON.parse(candidate);
 }
 
 interface CallStructuredParams<T> {
@@ -23,6 +28,23 @@ interface CallStructuredParams<T> {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Module-level counters reset per orchestration run by resetLLMRunState().
+let quotaExhaustedFlag = false;
+let fallbackPhases: string[] = [];
+
+export function resetLLMRunState() {
+  quotaExhaustedFlag = false;
+  fallbackPhases = [];
+}
+
+export function getLLMRunState() {
+  return { quotaExhausted: quotaExhaustedFlag, fallbackPhases: [...fallbackPhases] };
+}
+
+function isDailyQuotaError(msg: string): boolean {
+  return /free-models-per-day|credits to unlock|daily quota|per-day/i.test(msg);
+}
 
 export async function callStructuredLLM<T>({
   phase,
@@ -37,10 +59,24 @@ export async function callStructuredLLM<T>({
     throw new Error(`[${phase}] invalid fallback schema`);
   }
 
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  // Attempt order: primary → backup1 → backup2 → retry primary → fallback
+  // If a key is not configured, skip it and continue to next.
+  const clientGetters = [
+    { label: "primary",  fn: () => getModelClient(model) },
+    { label: "backup1",  fn: () => getBackupModelClient(model) },
+    { label: "backup2",  fn: () => getBackup2ModelClient(model) },
+    { label: "primary2", fn: () => getModelClient(model) },  // final retry on primary
+  ];
+
+  for (let i = 0; i < clientGetters.length; i++) {
+    const { label, fn } = clientGetters[i];
+    const client = fn();
+    if (!client) {
+      // Key not configured — skip silently
+      continue;
+    }
+
     try {
-      const client = getModelClient(model);
       const resp = await client.invoke([
         new SystemMessage(systemPrompt),
         new HumanMessage(userPrompt),
@@ -50,22 +86,27 @@ export async function callStructuredLLM<T>({
       if (!parsed.success) {
         const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
         console.error(`[LLM Schema Error][${phase}] ${issues}`);
+        fallbackPhases.push(phase);
         return fallbackParsed.data;
       }
       return parsed.data;
     } catch (err: any) {
       const msg: string = err?.message ?? String(err);
-      const isRateLimit = msg.includes("429") || msg.includes("rate") || msg.includes("Rate");
-      if (isRateLimit && attempt < maxAttempts) {
-        const delay = attempt * 8000; // 8s, 16s
-        console.warn(`[LLM][${phase}] rate-limited (attempt ${attempt}/${maxAttempts}), retrying in ${delay / 1000}s…`);
+      const isRateLimit = msg.includes("429") || /rate.?limit/i.test(msg);
+      if (isDailyQuotaError(msg)) quotaExhaustedFlag = true;
+
+      if (isRateLimit && i < clientGetters.length - 1) {
+        const delay = (i + 1) * 2000;
+        console.warn(`[LLM][${phase}] rate-limited on ${label} key, trying next in ${delay / 1000}s…`);
         await sleep(delay);
         continue;
       }
-      console.error(`[LLM Error][${phase}]`, msg.slice(0, 300));
+      console.error(`[LLM Error][${phase}][${label}]`, msg.slice(0, 300));
+      fallbackPhases.push(phase);
       return fallbackParsed.data;
     }
   }
+
+  fallbackPhases.push(phase);
   return fallbackParsed.data;
 }
-

@@ -13,6 +13,9 @@ const TicketSchema = z.object({
 });
 
 export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MODELS.ticketing) {
+  const logs: string[] = [];
+  logs.push(`[Ticketing] Drafting official incident report and assessing business impact.`);
+
   const ctx = {
     alert: {
       description: state.alert?.description,
@@ -43,16 +46,20 @@ export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MO
 }`,
     userPrompt: `Context:\n${JSON.stringify(ctx, null, 2)}`,
     fallback: {
-      title: "Security Incident — Investigation Required",
+      title: "Incident Ticket — Generation Failed",
       priority: "HIGH",
-      report_body:
-        "An automated security incident was detected and requires manual investigation. Refer to the attached logs for details.",
+      report_body: "Ticket generation unavailable — LLM did not respond.",
       email_notification_sent: false,
       affected_systems: [],
-      business_impact: "Unknown — pending investigation.",
+      business_impact: "Unknown — ticket generation failed.",
       confidence: 0,
     },
   });
 
-  return { ticket, emailSent: ticket.email_notification_sent || false };
+  logs.push(`[Ticketing] Ticket created: "${ticket.title}". Priority: ${ticket.priority}.`);
+  if (ticket.email_notification_sent) {
+    logs.push(`[Ticketing] 📧 Email notification queued for delivery.`);
+  }
+
+  return { ticket, emailSent: ticket.email_notification_sent || false, agentLogs: logs };
 }

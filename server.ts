@@ -108,6 +108,18 @@ try {
       status TEXT,
       FOREIGN KEY(alert_id) REFERENCES alerts(id)
     );
+
+    CREATE TABLE IF NOT EXISTS feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id TEXT,
+      phase TEXT,
+      user_id INTEGER,
+      is_accurate BOOLEAN,
+      comment TEXT,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(alert_id) REFERENCES alerts(id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
   `);
 
   // Seed admin user if not exists
@@ -117,9 +129,10 @@ try {
     db.prepare('INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)').run('admin', hashedPassword, 'admin@blackbox.com', 'ADMIN');
   }
 
-  const seedAgentSetting = db.prepare('INSERT OR IGNORE INTO agent_settings (phase, model) VALUES (?, ?)');
+  // Upsert model assignments — always sync from config so code changes take effect on restart
+  const upsertAgentSetting = db.prepare('INSERT INTO agent_settings (phase, model) VALUES (?, ?) ON CONFLICT(phase) DO UPDATE SET model = excluded.model');
   for (const phase of AGENT_PHASES) {
-    seedAgentSetting.run(phase, DEFAULT_AGENT_MODELS[phase]);
+    upsertAgentSetting.run(phase, DEFAULT_AGENT_MODELS[phase]);
   }
 } catch (err) {
   console.error('Database initialization failed:', err);
@@ -366,6 +379,18 @@ async function startServer() {
     res.json({ message: 'Password updated.' });
   });
 
+  app.post('/api/admin/reset-alerts', authenticate, requireAdmin, (_req, res) => {
+    const result = db.prepare(`
+      UPDATE alerts
+      SET status = 'NEW',
+          ai_analysis = NULL,
+          mitre_attack = NULL,
+          remediation_steps = NULL,
+          email_sent = 0
+    `).run();
+    res.json({ reset: result.changes });
+  });
+
   app.post('/api/ingest', (req, res) => {
     // Wazuh Alert Ingestion Mock
     const alert = req.body;
@@ -480,6 +505,22 @@ async function startServer() {
       'SELECT * FROM agent_runs WHERE alert_id = ? ORDER BY run_at DESC LIMIT 20'
     ).all(alertId);
     res.json(runs);
+  });
+
+  app.post('/api/feedback', authenticate, (req: any, res) => {
+    const { alert_id, phase, is_accurate, comment } = req.body;
+    if (!alert_id || !phase) return res.status(400).json({ error: 'alert_id and phase are required' });
+    
+    try {
+      db.prepare(`
+        INSERT INTO feedback (alert_id, phase, user_id, is_accurate, comment)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(alert_id, phase, req.user.id, is_accurate ? 1 : 0, comment || null);
+      res.json({ status: 'ok' });
+    } catch (err) {
+      console.error('Feedback error:', err);
+      res.status(500).json({ error: 'Failed to save feedback' });
+    }
   });
 
   app.post('/api/alerts/:alertId/runs', authenticate, (req: any, res) => {

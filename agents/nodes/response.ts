@@ -18,6 +18,9 @@ const ResponseSchema = z.object({
 });
 
 export async function responseNode(state: any, model: string = DEFAULT_AGENT_MODELS.response) {
+  const logs: string[] = [];
+  logs.push(`[Response] Formulating containment strategy and response actions.`);
+
   const ctx = {
     alert: {
       description: state.alert?.description,
@@ -58,5 +61,12 @@ export async function responseNode(state: any, model: string = DEFAULT_AGENT_MOD
     },
   });
 
-  return { responsePlan };
+  if (responsePlan.actions.length > 0) {
+    logs.push(`[Response] Proposed ${responsePlan.actions.length} action(s). Approval Required: ${responsePlan.approval_required}.`);
+    responsePlan.actions.forEach((a: any) => logs.push(`[Response] Recommended: ${a.type} on ${a.target}`));
+  } else {
+    logs.push(`[Response] No automated containment actions recommended at this time.`);
+  }
+
+  return { responsePlan, agentLogs: logs };
 }

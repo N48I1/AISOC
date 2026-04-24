@@ -8,19 +8,15 @@ const CorrelationSchema = z.object({
   campaign_description: z.string(),
   related_alert_count: z.number(),
   escalation_needed: z.boolean(),
-  kill_chain_stage: z.enum([
-    "Reconnaissance",
-    "Weaponization",
-    "Delivery",
-    "Exploitation",
-    "Installation",
-    "C2",
-    "Actions on Objectives",
-  ]),
+  kill_chain_stage: z.string(),
   confidence: z.number().min(0).max(1),
 });
 
 export async function correlationNode(state: any, model: string = DEFAULT_AGENT_MODELS.correlation) {
+  const logs: string[] = [];
+  const recentAlertsCount = (state.recentAlerts || []).length;
+  logs.push(`[Correlation] Scanning ${recentAlertsCount} recent alerts for multi-stage patterns.`);
+
   const recentSummary = (state.recentAlerts || []).slice(0, 10).map((a: any) => ({
     id: a.id,
     description: a.description,
@@ -56,5 +52,11 @@ export async function correlationNode(state: any, model: string = DEFAULT_AGENT_
     },
   });
 
-  return { correlation };
+  if (correlation.campaign_detected) {
+    logs.push(`[Correlation] CAMPAIGN DETECTED: "${correlation.campaign_name}". Linked to ${correlation.related_alert_count} other alerts.`);
+  } else {
+    logs.push(`[Correlation] No campaign pattern detected. Treating as isolated event.`);
+  }
+
+  return { correlation, agentLogs: logs };
 }

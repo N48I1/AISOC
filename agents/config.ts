@@ -12,23 +12,26 @@ export type AgentPhase = (typeof AGENT_PHASES)[number];
 
 export const OPENROUTER_FREE_MODELS = [
   "openai/gpt-oss-120b:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
+  "openai/gpt-oss-20b:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
   "meta-llama/llama-3.2-3b-instruct:free",
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "google/gemma-3-27b-it:free",
   "google/gemma-3-12b-it:free",
-  "google/gemma-2-9b-it:free",
-  "mistralai/mistral-7b-instruct:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "qwen/qwen3-coder:free",
 ] as const;
 
 export type OpenRouterFreeModel = (typeof OPENROUTER_FREE_MODELS)[number];
 
 export const DEFAULT_AGENT_MODELS: Record<AgentPhase, OpenRouterFreeModel> = {
-  analysis:    "google/gemma-2-9b-it:free",
-  intel:       "google/gemma-2-9b-it:free",
-  knowledge:   "google/gemma-2-9b-it:free",
-  correlation: "google/gemma-2-9b-it:free",
-  ticketing:   "google/gemma-2-9b-it:free",
-  response:    "google/gemma-2-9b-it:free",
-  validation:  "google/gemma-2-9b-it:free",
+  analysis:    "openai/gpt-oss-120b:free",
+  intel:       "nvidia/nemotron-3-super-120b-a12b:free",
+  knowledge:   "qwen/qwen3-coder:free",
+  correlation: "openai/gpt-oss-20b:free",
+  ticketing:   "openai/gpt-oss-120b:free",
+  response:    "nvidia/nemotron-3-super-120b-a12b:free",
+  validation:  "qwen/qwen3-coder:free",
 };
 
 export const AGENT_METADATA: Record<AgentPhase, { name: string; desc: string }> = {

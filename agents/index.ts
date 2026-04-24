@@ -7,6 +7,7 @@ import { ticketingNode } from "./nodes/ticketing.js";
 import { responseNode } from "./nodes/response.js";
 import { validationNode } from "./nodes/validation.js";
 import { buildSwarmGraph } from "./workflow.js";
+import { resetLLMRunState, getLLMRunState } from "./shared/llm.js";
 
 interface RunOptions {
   modelAssignments?: ModelAssignments;
@@ -47,7 +48,9 @@ export async function runOrchestration(
   email_sent: number;
   status: string;
 }> {
+  resetLLMRunState();
   const result = await buildSwarmGraph(options.modelAssignments).invoke({ alert, recentAlerts });
+  const runState = getLLMRunState();
 
   const aiAnalysis = {
     summary: result.analysis?.analysis_summary,
@@ -57,6 +60,9 @@ export async function runOrchestration(
     ticket: result.ticket,
     response: result.responsePlan,
     validation: result.validation?.sla_status,
+    agentLogs: result.agentLogs || [],
+    quota_exhausted: runState.quotaExhausted,
+    fallback_phases: runState.fallbackPhases,
     phaseData: {
       analysis: result.analysis,
       intel: result.intel,
