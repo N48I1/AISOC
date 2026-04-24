@@ -2,19 +2,34 @@ import { z } from "zod";
 import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
+const ACTION_TYPE_MAP: Record<string, string> = {
+  BLOCK_HOST:        "ISOLATE_HOST",
+  KILL_PROCESS:      "QUARANTINE_FILE",
+  ALERT_TEAM:        "NOTIFY_TEAM",
+  BLOCK_USER:        "DISABLE_USER",
+  RESET_CREDENTIALS: "RESET_PASSWORD",
+  QUARANTINE_HOST:   "ISOLATE_HOST",
+  TERMINATE_SESSION: "DISABLE_USER",
+};
+
+const VALID_TYPES = new Set([
+  "BLOCK_IP", "DISABLE_USER", "ISOLATE_HOST",
+  "QUARANTINE_FILE", "RESET_PASSWORD", "NOTIFY_TEAM",
+]);
+
 const ResponseSchema = z.object({
   actions: z.array(
     z.object({
-      type: z.enum(["BLOCK_IP", "DISABLE_USER", "ISOLATE_HOST", "QUARANTINE_FILE", "RESET_PASSWORD", "NOTIFY_TEAM"]),
-      target: z.string(),
-      reason: z.string(),
-      priority: z.number(),
+      type:      z.string(),
+      target:    z.string(),
+      reason:    z.string(),
+      priority:  z.number(),
       automated: z.boolean(),
     }),
   ),
-  approval_required: z.boolean(),
+  approval_required:          z.boolean(),
   estimated_containment_time: z.string(),
-  confidence: z.number().min(0).max(1),
+  confidence:                 z.number().min(0).max(1),
 });
 
 export async function responseNode(state: any, model: string = DEFAULT_AGENT_MODELS.response) {
@@ -24,15 +39,15 @@ export async function responseNode(state: any, model: string = DEFAULT_AGENT_MOD
   const ctx = {
     alert: {
       description: state.alert?.description,
-      source_ip: state.alert?.source_ip,
-      agent_name: state.alert?.agent_name,
+      source_ip:   state.alert?.source_ip,
+      agent_name:  state.alert?.agent_name,
     },
-    analysis: state.analysis,
-    intel: state.intel,
+    analysis:    state.analysis,
+    intel:       state.intel,
     correlation: state.correlation,
   };
 
-  const responsePlan = await callStructuredLLM({
+  const raw = await callStructuredLLM({
     phase: "response",
     model,
     schema: ResponseSchema,
@@ -54,12 +69,21 @@ export async function responseNode(state: any, model: string = DEFAULT_AGENT_MOD
 }`,
     userPrompt: `Context:\n${JSON.stringify(ctx, null, 2)}`,
     fallback: {
-      actions: [],
-      approval_required: true,
+      actions:                    [],
+      approval_required:          true,
       estimated_containment_time: "unknown",
-      confidence: 0,
+      confidence:                 0,
     },
   });
+
+  // Normalise action types — map LLM synonyms to canonical enum values
+  const responsePlan = {
+    ...raw,
+    actions: raw.actions.map((a: any) => ({
+      ...a,
+      type: ACTION_TYPE_MAP[a.type] ?? (VALID_TYPES.has(a.type) ? a.type : "NOTIFY_TEAM"),
+    })),
+  };
 
   if (responsePlan.actions.length > 0) {
     logs.push(`[Response] Proposed ${responsePlan.actions.length} action(s). Approval Required: ${responsePlan.approval_required}.`);

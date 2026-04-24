@@ -24,20 +24,32 @@ export const OPENROUTER_FREE_MODELS = [
 
 export type OpenRouterFreeModel = (typeof OPENROUTER_FREE_MODELS)[number];
 
+export const OPENROUTER_MODEL_LABELS: Record<string, string> = {
+  "openai/gpt-oss-120b:free":                  "GPT-OSS 120B (Free)",
+  "openai/gpt-oss-20b:free":                   "GPT-OSS 20B (Free)",
+  "meta-llama/llama-3.3-70b-instruct:free":    "Llama 3.3 70B Instruct (Free)",
+  "meta-llama/llama-3.2-3b-instruct:free":     "Llama 3.2 3B Instruct (Free)",
+  "nousresearch/hermes-3-llama-3.1-405b:free": "Hermes 3 Llama 405B (Free)",
+  "google/gemma-3-27b-it:free":                "Gemma 3 27B IT (Free)",
+  "google/gemma-3-12b-it:free":                "Gemma 3 12B IT (Free)",
+  "nvidia/nemotron-3-super-120b-a12b:free":    "Nemotron Super 120B (Free)",
+  "qwen/qwen3-coder:free":                     "Qwen3 Coder (Free)",
+};
+
 export const DEFAULT_AGENT_MODELS: Record<AgentPhase, OpenRouterFreeModel> = {
-  analysis:    "openai/gpt-oss-120b:free",
+  analysis:    "nvidia/nemotron-3-super-120b-a12b:free",
   intel:       "nvidia/nemotron-3-super-120b-a12b:free",
-  knowledge:   "qwen/qwen3-coder:free",
-  correlation: "openai/gpt-oss-20b:free",
-  ticketing:   "openai/gpt-oss-120b:free",
+  knowledge:   "nvidia/nemotron-3-super-120b-a12b:free",
+  correlation: "nvidia/nemotron-3-super-120b-a12b:free",
+  ticketing:   "nvidia/nemotron-3-super-120b-a12b:free",
   response:    "nvidia/nemotron-3-super-120b-a12b:free",
-  validation:  "qwen/qwen3-coder:free",
+  validation:  "nvidia/nemotron-3-super-120b-a12b:free",
 };
 
 export const AGENT_METADATA: Record<AgentPhase, { name: string; desc: string }> = {
   analysis: {
     name: "Alert Triage Agent",
-    desc: "Interprets Wazuh alerts, extracts IOCs (IP, user, host), validates severity, and detects false positives.",
+    desc: "Interprets Wazuh alerts, extracts IOCs (IP, user, host, URL), validates severity, and detects false positives.",
   },
   intel: {
     name: "Threat Intelligence Agent",
@@ -49,7 +61,7 @@ export const AGENT_METADATA: Record<AgentPhase, { name: string; desc: string }> 
   },
   correlation: {
     name: "Correlation Agent",
-    desc: "Detects multi-alert patterns, identifies campaign links, and escalates risk.",
+    desc: "Detects multi-alert patterns within 72-hour windows, identifies campaign links, and escalates risk.",
   },
   ticketing: {
     name: "Ticketing Agent",

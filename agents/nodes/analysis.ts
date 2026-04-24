@@ -11,6 +11,7 @@ const IocSchema = z.object({
   ports:     z.array(z.number()),
   domains:   z.array(z.string()),
   processes: z.array(z.string()),
+  urls:      z.array(z.string()),
 });
 
 const AnalysisSchema = z.object({
@@ -73,11 +74,12 @@ IOC extraction:
   ports:     data.dstport, data.srcport as integers (omit 0)
   domains:   data.win.eventdata.destinationHostname, DNS query names in data.*
   processes: data.win.eventdata.parentImage, data.win.eventdata.originalFileName, data.audit.command
+  urls:      any http/https URLs in data.win.eventdata.destinationUrl, data.url, data.http.url, data.web.url
 
 Respond with this exact JSON structure:
 {
   "analysis_summary": "<2-4 sentence technical description>",
-  "iocs": { "ips": [], "users": [], "hosts": [], "hashes": [], "files": [], "ports": [], "domains": [], "processes": [] },
+  "iocs": { "ips": [], "users": [], "hosts": [], "hashes": [], "files": [], "ports": [], "domains": [], "processes": [], "urls": [] },
   "attack_category": "<MITRE tactic enum>",
   "kill_chain_stage": "<kill chain enum>",
   "risk_score": 0,
@@ -97,15 +99,15 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
 
   const related = (state.recentAlerts || [])
     .filter((r: any) => r.id !== a.id)
-    .slice(0, 5)
+    .slice(0, 10)
     .map((r: any) => ({
-      id: r.id,
-      rule_id: r.data?.rule?.id,
+      id:          r.id,
+      rule_id:     r.data?.rule?.id,
       description: r.data?.rule?.description,
-      level: r.data?.rule?.level,
-      src_ip: r.data?.srcip,
-      agent: r.data?.agent?.name,
-      timestamp: r.timestamp,
+      level:       r.data?.rule?.level,
+      src_ip:      r.data?.srcip,
+      agent:       r.data?.agent?.name,
+      timestamp:   r.timestamp,
     }));
 
   if (related.length > 0) {
@@ -122,7 +124,7 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
 - Program: ${a.data?.program_name ?? 'N/A'}
 - Full data: ${JSON.stringify(a.data ?? {}, null, 2)}
 
-RECENT RELATED ALERTS (same agent or source IP):
+RECENT RELATED ALERTS (same agent or source IP — last 72 hours):
 ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
 
   const analysis = await callStructuredLLM({
@@ -132,17 +134,17 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
     systemPrompt: SYSTEM_PROMPT,
     userPrompt,
     fallback: {
-      analysis_summary: "Alert analysis unavailable — LLM did not respond.",
-      iocs: { ips: [], users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [] },
-      attack_category: "EXECUTION",
-      kill_chain_stage: "DELIVERY",
-      risk_score: 0,
-      severity_validation: "MEDIUM" as const,
-      recommended_action: "INVESTIGATE" as const,
-      is_false_positive: false,
-      false_positive_reason: undefined,
+      analysis_summary:          "Alert analysis unavailable — LLM did not respond.",
+      iocs:                      { ips: [], users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] },
+      attack_category:           "EXECUTION",
+      kill_chain_stage:          "DELIVERY",
+      risk_score:                0,
+      severity_validation:       "MEDIUM" as const,
+      recommended_action:        "INVESTIGATE" as const,
+      is_false_positive:         false,
+      false_positive_reason:     undefined,
       false_positive_confidence: 0,
-      confidence: 0,
+      confidence:                0,
     },
   });
 

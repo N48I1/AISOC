@@ -3,13 +3,13 @@ import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const CorrelationSchema = z.object({
-  campaign_detected: z.boolean(),
-  campaign_name: z.string(),
-  campaign_description: z.string(),
+  campaign_detected:   z.boolean(),
+  campaign_name:       z.string(),
+  campaign_description:z.string(),
   related_alert_count: z.number(),
-  escalation_needed: z.boolean(),
-  kill_chain_stage: z.string(),
-  confidence: z.number().min(0).max(1),
+  escalation_needed:   z.boolean(),
+  kill_chain_stage:    z.string(),
+  confidence:          z.number().min(0).max(1),
 });
 
 export async function correlationNode(state: any, model: string = DEFAULT_AGENT_MODELS.correlation) {
@@ -17,12 +17,12 @@ export async function correlationNode(state: any, model: string = DEFAULT_AGENT_
   const recentAlertsCount = (state.recentAlerts || []).length;
   logs.push(`[Correlation] Scanning ${recentAlertsCount} recent alerts for multi-stage patterns.`);
 
-  const recentSummary = (state.recentAlerts || []).slice(0, 10).map((a: any) => ({
-    id: a.id,
+  const recentSummary = (state.recentAlerts || []).slice(0, 20).map((a: any) => ({
+    id:          a.id,
     description: a.description,
-    source_ip: a.source_ip,
-    timestamp: a.timestamp,
-    status: a.status,
+    source_ip:   a.source_ip,
+    timestamp:   a.timestamp,
+    status:      a.status,
   }));
 
   const correlation = await callStructuredLLM({
@@ -39,16 +39,18 @@ export async function correlationNode(state: any, model: string = DEFAULT_AGENT_
   "escalation_needed": false,
   "kill_chain_stage": "<Reconnaissance|Weaponization|Delivery|Exploitation|Installation|C2|Actions on Objectives>",
   "confidence": 0.8
-}`,
-    userPrompt: `Current alert:\n${JSON.stringify(state.alert, null, 2)}\n\nRecent alerts:\n${JSON.stringify(recentSummary, null, 2)}`,
+}
+
+IMPORTANT: Only set campaign_detected=true if multiple related alerts appeared within a 72-hour window of the current alert. Alerts older than 72 hours should be treated as background noise and not used to declare a campaign.`,
+    userPrompt: `Current alert:\n${JSON.stringify(state.alert, null, 2)}\n\nRecent alerts (last 72 hours):\n${JSON.stringify(recentSummary, null, 2)}`,
     fallback: {
-      campaign_detected: false,
-      campaign_name: "Isolated Incident",
+      campaign_detected:    false,
+      campaign_name:        "Isolated Incident",
       campaign_description: "No multi-stage campaign pattern detected.",
-      related_alert_count: 0,
-      escalation_needed: false,
-      kill_chain_stage: "Exploitation",
-      confidence: 0,
+      related_alert_count:  0,
+      escalation_needed:    false,
+      kill_chain_stage:     "Exploitation",
+      confidence:           0,
     },
   });
 

@@ -1,9 +1,63 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown } from 'lucide-react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, type AgentModelConfig, type AgentPhase } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Incident, Stats, UserRole } from './types';
+
+// --- Toast System ---
+interface ToastItem { id: string; message: string; type: 'success' | 'error' | 'info'; }
+const ToastContext = createContext<(msg: string, type?: ToastItem['type']) => void>(() => {});
+const useToast = () => useContext(ToastContext);
+
+const ToastContainer = ({ toasts }: { toasts: ToastItem[] }) => (
+  <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+    <AnimatePresence>
+      {toasts.map(t => (
+        <motion.div
+          key={t.id}
+          initial={{ opacity: 0, x: 60, scale: 0.9 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: 60, scale: 0.9 }}
+          transition={{ duration: 0.2 }}
+          className={`px-4 py-3 rounded-lg shadow-lg text-[0.82rem] font-semibold text-white max-w-[320px] pointer-events-auto ${
+            t.type === 'success' ? 'bg-[#1e8e3e]' :
+            t.type === 'error'   ? 'bg-[#d93025]' :
+            'bg-[#004a99]'
+          }`}
+        >
+          {t.type === 'success' ? '✓ ' : t.type === 'error' ? '✕ ' : 'ℹ '}{t.message}
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </div>
+);
+
+// --- Confirm Modal ---
+interface ConfirmModalProps {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  confirmClass?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+const ConfirmModal = ({ title, message, confirmLabel = 'Confirm', confirmClass = 'bg-[#d93025] hover:bg-red-700', onConfirm, onCancel }: ConfirmModalProps) => (
+  <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/50 backdrop-blur-sm">
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4"
+    >
+      <h3 className="text-[1rem] font-black text-slate-800">{title}</h3>
+      <p className="text-[0.85rem] text-slate-600 leading-relaxed">{message}</p>
+      <div className="flex gap-3 pt-2 justify-end">
+        <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-semibold text-[0.82rem] hover:bg-slate-50 transition-colors">Cancel</button>
+        <button onClick={onConfirm} className={`px-4 py-2 rounded-lg text-white font-bold text-[0.82rem] transition-colors ${confirmClass}`}>{confirmLabel}</button>
+      </div>
+    </motion.div>
+  </div>
+);
 
 // --- Auth Context ---
 interface AuthContextType {
@@ -829,15 +883,21 @@ const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[]
     </div>
   );
 
+  const riskScore = pd.analysis?.risk_score;
+  const riskTone  = riskScore == null ? 'text-slate-500 bg-slate-50 border-slate-200'
+    : riskScore >= 80 ? 'text-red-700 bg-red-50 border-red-200'
+    : riskScore >= 60 ? 'text-orange-700 bg-orange-50 border-orange-200'
+    : riskScore >= 40 ? 'text-amber-700 bg-amber-50 border-amber-200'
+    : 'text-green-700 bg-green-50 border-green-200';
+
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-      <Chip title="MITRE" value={`${mitreTags.length} technique${mitreTags.length===1?'':'s'}`} sub={mitreTags.slice(0,3).join(' · ') || '—'} />
-      <Chip title="MISP" value={misp?.available ? `${misp.hits || 0} hits` : 'n/a'} sub={misp?.highest_threat_level || (misp?.available ? 'no matches' : 'unavailable')} tone={misp?.available && misp.hits > 0 ? mispLevelCls[misp.highest_threat_level] : 'text-slate-600 bg-slate-50 border-slate-200'} />
-      <Chip title="IOCs" value={iocCount} sub={`${iocTypes} type${iocTypes===1?'':'s'}`} />
-      <Chip title="Actions" value={actions.length} sub={approvalRequired ? 'approval required' : 'auto-executable'} tone={approvalRequired ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-700 bg-white border-slate-200'} />
-      <Chip title="Actors" value={(misp?.threat_actors || []).length ? misp.threat_actors[0] : '—'} sub={(misp?.threat_actors?.length || 0) > 1 ? `+${misp.threat_actors.length - 1} more` : ''} tone={misp?.threat_actors?.length ? 'text-red-700 bg-red-50 border-red-200' : 'text-slate-500 bg-slate-50 border-slate-200'} />
+      <Chip title="Risk Score"    value={riskScore != null ? `${riskScore}/100` : '—'} sub={pd.analysis?.severity_validation || 'not assessed'} tone={riskTone} />
+      <Chip title="MITRE"        value={`${mitreTags.length} technique${mitreTags.length===1?'':'s'}`} sub={mitreTags.slice(0,3).join(' · ') || '—'} />
+      <Chip title="MISP"         value={misp?.available ? `${misp.hits || 0} hits` : 'n/a'} sub={misp?.highest_threat_level || (misp?.available ? 'no matches' : 'unavailable')} tone={misp?.available && misp.hits > 0 ? mispLevelCls[misp.highest_threat_level] : 'text-slate-600 bg-slate-50 border-slate-200'} />
+      <Chip title="IOCs"         value={iocCount} sub={`${iocTypes} type${iocTypes===1?'':'s'}`} />
+      <Chip title="Actions"      value={actions.length} sub={approvalRequired ? 'approval required' : 'auto-executable'} tone={approvalRequired ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-700 bg-white border-slate-200'} />
       <Chip title="Avg Confidence" value={avgConf == null ? '—' : `${avgConf}%`} sub={avgConf == null ? 'no runs' : `${confidences.length}/7 agents`} tone={avgConf == null ? 'text-slate-500 bg-slate-50 border-slate-200' : avgConf >= 80 ? 'text-green-700 bg-green-50 border-green-200' : avgConf >= 60 ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-red-700 bg-red-50 border-red-200'} />
-      <Chip title="SLA" value={sla || 'pending'} sub={pd.validation?.recommendation || ''} tone={slaTone} />
     </div>
   );
 };
@@ -1072,50 +1132,105 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
 
         <div>
           <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Validation / SLA</p>
-          <div className={`rounded-lg border px-3 py-2 text-[0.72rem] leading-snug ${validation ? 'bg-green-50 border-green-200 text-green-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
-            {validation || 'SLA validation pending. Run Validation agent.'}
-          </div>
+          {(() => {
+            const v = pd.validation;
+            if (!v) return (
+              <div className="rounded-lg border px-3 py-2 text-[0.72rem] bg-slate-50 border-slate-200 text-slate-500 italic">
+                SLA validation pending. Run Validation agent.
+              </div>
+            );
+            const slaColor =
+              v.sla_status === 'SLA_MET'      ? 'bg-green-50 border-green-300 text-green-900' :
+              v.sla_status === 'SLA_AT_RISK'  ? 'bg-amber-50 border-amber-300 text-amber-900' :
+              'bg-red-50 border-red-300 text-red-900';
+            const recColor: Record<string,string> = {
+              CLOSE:               'bg-green-100 text-green-800',
+              MONITOR:             'bg-blue-100 text-blue-800',
+              ESCALATE:            'bg-red-100 text-red-800',
+              INVESTIGATE_FURTHER: 'bg-amber-100 text-amber-800',
+            };
+            return (
+              <div className={`rounded-lg border px-3 py-2.5 space-y-1.5 ${slaColor}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-[0.72rem] font-black uppercase tracking-wide">{v.sla_status?.replace(/_/g,' ')}</span>
+                  {v.recommendation && (
+                    <span className={`px-2 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wide ${recColor[v.recommendation] || 'bg-slate-100 text-slate-700'}`}>
+                      {v.recommendation.replace(/_/g,' ')}
+                    </span>
+                  )}
+                </div>
+                {typeof v.completeness_score === 'number' && (
+                  <div className="space-y-0.5">
+                    <div className="flex justify-between text-[0.6rem] font-semibold opacity-70">
+                      <span>Completeness</span><span>{v.completeness_score}%</span>
+                    </div>
+                    <div className="h-1 w-full bg-black/10 rounded-full overflow-hidden">
+                      <div className="h-full bg-current rounded-full opacity-50 transition-all duration-700" style={{ width: `${v.completeness_score}%` }} />
+                    </div>
+                  </div>
+                )}
+                {v.missing_elements?.length > 0 && (
+                  <p className="text-[0.62rem] opacity-75 italic">{v.missing_elements.slice(0,2).join(' · ')}</p>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </Panel>
     </div>
   );
 };
 
-const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () => void, onAction: (id: string, update: any) => void }) => {
+const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
+  alert: Alert;
+  onClose: () => void;
+  onAction: (id: string, update: any) => void;
+  returnTab?: string;
+  setActiveTab?: (t: string) => void;
+}) => {
+  const showToast = useToast();
   const [showReport, setShowReport] = useState(false);
   const [runningPhase, setRunningPhase] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [isSavingSnapshot, setIsSavingSnapshot] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{ status: string; label: string; message: string; cls?: string } | null>(null);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ rawlog: true });
 
   const agentsRef = useRef<HTMLDivElement>(null);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [feedbackLoading, setFeedbackLoading] = useState<Record<string, boolean>>({});
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState<Record<string, 'up' | 'down'>>({});
 
-  const { user, token } = useAuth(); // Moved inside to be available to handleFeedback if needed
+  const { user, token } = useAuth();
+
+  const toggleSection = (key: string) =>
+    setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }));
 
   const handleFeedback = async (phase: string, isAccurate: boolean) => {
+    if (feedbackSubmitted[phase]) return;
     const key = `${phase}-${isAccurate}`;
     setFeedbackLoading(prev => ({ ...prev, [key]: true }));
     try {
       await fetch('/api/feedback', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          alert_id: alert.id,
+          alert_id:    alert.id,
           phase,
           is_accurate: isAccurate,
-          comment: isAccurate ? 'Confirmed by analyst' : 'Flagged as inaccurate by analyst'
-        })
+          comment:     isAccurate ? 'Confirmed by analyst' : 'Flagged as inaccurate by analyst',
+        }),
       });
+      setFeedbackSubmitted(prev => ({ ...prev, [phase]: isAccurate ? 'up' : 'down' }));
+      showToast(isAccurate ? 'Feedback saved — marked as accurate' : 'Feedback saved — marked as inaccurate', isAccurate ? 'success' : 'info');
     } catch (err) {
       console.error('Feedback failed:', err);
+      showToast('Failed to save feedback', 'error');
     } finally {
       setFeedbackLoading(prev => ({ ...prev, [key]: false }));
     }
@@ -1130,7 +1245,8 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
   const [agentRunIndex, setAgentRunIndex] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    getAlertRuns(alert.id).then(setRuns).catch(() => {});
+    setRunsLoading(true);
+    getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
   }, [alert.id]);
 
   // Reset per-agent history when a different alert is opened
@@ -1387,18 +1503,18 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
     setIsSavingSnapshot(true);
     try {
       await saveAlertRun(alert.id, {
-        ai_analysis: alert.ai_analysis,
-        mitre_attack: Array.isArray(alert.mitre_attack)
-          ? JSON.stringify(alert.mitre_attack)
-          : (alert.mitre_attack as any),
+        ai_analysis:       alert.ai_analysis,
+        mitre_attack:      Array.isArray(alert.mitre_attack) ? JSON.stringify(alert.mitre_attack) : (alert.mitre_attack as any),
         remediation_steps: alert.remediation_steps,
-        status: alert.status,
+        status:            alert.status,
       });
       const updated = await getAlertRuns(alert.id);
       setRuns(updated);
       setShowHistory(true);
+      showToast('Snapshot saved successfully');
     } catch (err: any) {
       setRunError(err?.message || 'Failed to save snapshot.');
+      showToast('Failed to save snapshot', 'error');
     } finally {
       setIsSavingSnapshot(false);
     }
@@ -1449,10 +1565,16 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
           </button>
           <button
             type="button"
-            onClick={() => { setShowHistory(h => !h); if (!showHistory) getAlertRuns(alert.id).then(setRuns).catch(() => {}); }}
+            onClick={() => {
+              setShowHistory(h => !h);
+              if (!showHistory) {
+                setRunsLoading(true);
+                getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
+              }
+            }}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[0.75rem] font-bold transition-colors border ${showHistory ? 'bg-[#004a99] text-white border-[#004a99]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'}`}
           >
-            <Clock size={14} />
+            {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={14} />}
             History {runs.length > 0 ? `(${runs.length})` : ''}
           </button>
           {aiData && (
@@ -1483,9 +1605,22 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
         </div>
       </div>
 
+      {/* Breadcrumb + back nav */}
+      <div className="bg-slate-50 border-b border-[#d1d9e6] px-6 py-2 flex items-center gap-2 shrink-0 text-[0.72rem] text-slate-500">
+        <button
+          type="button"
+          onClick={() => { onClose(); if (returnTab && setActiveTab) setActiveTab(returnTab); }}
+          className="flex items-center gap-1 font-semibold hover:text-[#004a99] transition-colors"
+        >
+          ← Alerts Queue
+        </button>
+        <span className="text-slate-300">/</span>
+        <span className="font-mono text-slate-600">#{alert.id.substring(0,10).toUpperCase()}</span>
+      </div>
+
       {/* Progress bar */}
       <div className="bg-white border-b border-[#d1d9e6] px-6 py-2 flex items-center gap-3 shrink-0">
-        <span className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest shrink-0">Swarm Progress</span>
+        <span className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest shrink-0">Pipeline Progress</span>
         <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
           <div
             className="h-full bg-[#004a99] rounded-full transition-all duration-700"
@@ -1669,7 +1804,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/50">
             <div className="flex items-center gap-2">
               <Terminal size={12} className="text-emerald-500" />
-              <p className="text-[0.6rem] font-black uppercase tracking-widest text-emerald-500/80">Swarm Inner Monologue</p>
+              <p className="text-[0.6rem] font-black uppercase tracking-widest text-emerald-500/80">Agent Logs</p>
             </div>
             <div className="flex gap-1">
               <div className="w-2 h-2 rounded-full bg-red-500/20" />
@@ -1712,7 +1847,8 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
               const pct = confidence == null ? null : Math.round(confidence * 100);
               const isViewingLatest = currentIdx === runCount - 1;
               const isExpanded = expandedAgent === agent.id;
-              const bar = pct == null ? 'bg-slate-200' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+              const bar       = pct == null ? 'bg-slate-200' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+              const isFallback= Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
 
               return (
                 <button
@@ -1740,6 +1876,7 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
                       <span className={pct == null ? 'text-slate-400' : 'text-slate-600 font-bold'}>{pct == null ? '— waiting' : `${pct}%`}</span>
                       {runCount > 0 && <span className={`${isViewingLatest ? 'text-green-600' : 'text-amber-600'} font-black`}>{currentIdx + 1}/{runCount}</span>}
                     </div>
+                    {isFallback && <span className="text-[0.55rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5 font-bold uppercase tracking-wide">⚠ Unavailable</span>}
                   </div>
                   <button
                     type="button"
@@ -1779,16 +1916,16 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
                     <div className="flex items-center gap-1 border-r border-slate-200 pr-3 mr-1">
                       <button
                         onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, true); }}
-                        disabled={feedbackLoading[`${agent.id}-true`]}
-                        className="p-1 rounded hover:bg-green-100 text-slate-400 hover:text-green-600 transition-colors disabled:opacity-50"
+                        disabled={feedbackLoading[`${agent.id}-true`] || !!feedbackSubmitted[agent.id]}
+                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'up' ? 'text-green-600 bg-green-100' : 'hover:bg-green-100 text-slate-400 hover:text-green-600'}`}
                         title="Mark as accurate"
                       >
                         <ThumbsUp size={14} className={feedbackLoading[`${agent.id}-true`] ? 'animate-pulse' : ''} />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, false); }}
-                        disabled={feedbackLoading[`${agent.id}-false`]}
-                        className="p-1 rounded hover:bg-red-100 text-slate-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                        disabled={feedbackLoading[`${agent.id}-false`] || !!feedbackSubmitted[agent.id]}
+                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'down' ? 'text-red-600 bg-red-100' : 'hover:bg-red-100 text-slate-400 hover:text-red-600'}`}
                         title="Mark as inaccurate"
                       >
                         <ThumbsDown size={14} className={feedbackLoading[`${agent.id}-false`] ? 'animate-pulse' : ''} />
@@ -1809,12 +1946,23 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
           })()}
         </div>
 
-        {/* Raw log */}
-        <div className="bg-white rounded-xl border border-[#d1d9e6] p-4">
-          <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest mb-3">Raw Wazuh Log</p>
-          <pre className="text-[0.68rem] bg-slate-950 text-emerald-400 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed">
-            {alert.full_log || 'No log data.'}
-          </pre>
+        {/* Raw log — collapsible, closed by default */}
+        <div className="bg-white rounded-xl border border-[#d1d9e6] overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection('rawlog')}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+          >
+            <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest">Raw Wazuh Log</p>
+            <ChevronDown size={14} className={`text-slate-400 transition-transform ${collapsedSections.rawlog ? '' : 'rotate-180'}`} />
+          </button>
+          {!collapsedSections.rawlog && (
+            <div className="px-4 pb-4">
+              <pre className="text-[0.68rem] bg-slate-950 text-emerald-400 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed">
+                {alert.full_log || 'No log data.'}
+              </pre>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1829,27 +1977,42 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => onAction(alert.id, { status: 'FALSE_POSITIVE' })}
+            onClick={() => setConfirmAction({ status: 'FALSE_POSITIVE', label: 'Mark as False Positive', message: 'Mark this alert as a False Positive? This will suppress further notifications for this alert.', cls: 'bg-slate-600 hover:bg-slate-700' })}
             className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-semibold text-[0.8rem] bg-white hover:bg-slate-50 transition-colors"
           >
             False Positive
           </button>
           <button
             type="button"
-            onClick={() => onAction(alert.id, { status: 'ESCALATED' })}
+            onClick={() => setConfirmAction({ status: 'ESCALATED', label: 'Escalate', message: 'Escalate this alert to the incident queue for immediate analyst attention?', cls: 'bg-[#004a99] hover:bg-[#003a7a]' })}
             className="px-4 py-2 rounded-lg border border-[#004a99] text-[#004a99] font-semibold text-[0.8rem] bg-white hover:bg-blue-50 transition-colors"
           >
             Escalate
           </button>
           <button
             type="button"
-            onClick={() => onAction(alert.id, { status: 'CLOSED' })}
+            onClick={() => setConfirmAction({ status: 'CLOSED', label: 'Close Incident', message: 'Close this incident? This marks the alert as resolved.', cls: 'bg-[#1e8e3e] hover:bg-green-700' })}
             className="px-4 py-2 rounded-lg bg-[#004a99] text-white font-bold text-[0.8rem] hover:bg-[#003a7a] transition-colors shadow-sm"
           >
             Close Incident
           </button>
         </div>
       </div>
+
+      {confirmAction && (
+        <ConfirmModal
+          title={confirmAction.label}
+          message={confirmAction.message}
+          confirmLabel={confirmAction.label}
+          confirmClass={confirmAction.cls}
+          onConfirm={() => {
+            onAction(alert.id, { status: confirmAction.status });
+            showToast(`Alert marked as ${confirmAction.status.toLowerCase().replace('_', ' ')}`);
+            setConfirmAction(null);
+          }}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
 
       {showReport && (
         <DetailedReport
@@ -1863,23 +2026,27 @@ const AlertDetail = ({ alert, onClose, onAction }: { alert: Alert, onClose: () =
   );
 };
 
+const SkeletonVal = () => (
+  <div className="h-8 w-16 bg-slate-200 animate-pulse rounded mt-1" />
+);
+
 const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a: Alert) => void }) => {
   const { token } = useAuth();
-  const [stats, setStats] = useState<Stats | null>(null);
+  const [stats, setStats]   = useState<Stats | null>(null);
+  const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
 
   useEffect(() => {
     if (!token) return;
-    fetch('/api/stats', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json())
-      .then(data => { if (!data.error) setStats(data); })
-      .catch(() => {});
+    fetch('/api/stats',        { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (!data.error) setStats(data); }).catch(() => {});
+    fetch('/api/stats/trends', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (Array.isArray(data)) setTrends(data); }).catch(() => {});
   }, [token]);
 
   const statCards = [
-    { label: 'Critical Alerts',      value: alerts.filter(a => a.severity >= 12).length, icon: AlertTriangle, color: '#d93025' },
-    { label: 'Active Incidents',     value: stats ? stats.activeIncidents : '—',          icon: Shield,        color: '#004a99' },
-    { label: 'Mean Time to Triage',  value: stats ? stats.mttr : '—',                    icon: Clock,         color: '#1e8e3e' },
-    { label: 'AI Automation Rate',   value: stats ? stats.automationRate : '—',           icon: Activity,      color: '#1a73e8' },
+    { label: 'Critical Alerts',     value: alerts.filter(a => a.severity >= 12).length,                   icon: AlertTriangle, color: '#d93025', ready: true },
+    { label: 'Active Incidents',    value: stats ? stats.activeIncidents : null,                           icon: Shield,        color: '#004a99', ready: !!stats },
+    { label: 'Mean Time to Triage', value: stats ? stats.mttr : null,                                     icon: Clock,         color: '#1e8e3e', ready: !!stats },
+    { label: 'AI Automation Rate',  value: stats ? stats.automationRate : null,                            icon: Activity,      color: '#1a73e8', ready: !!stats },
+    { label: 'False Positive Rate', value: stats ? (stats as any).fpRate : null,                          icon: XCircle,       color: '#f29900', ready: !!stats },
   ];
 
   const swarmAgents = [
@@ -1904,13 +2071,50 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
     return { label: 'Online', load: `${loadPct}%` };
   };
 
+  // Trend chart max
+  const trendMax = trends ? Math.max(...trends.map(t => t.count), 1) : 1;
+
   return (
     <div className="p-6 flex flex-col gap-6 h-full overflow-y-auto">
-      <div className="grid grid-cols-4 gap-5">
-        {statCards.map((stat, i) => <StatCard key={i} {...stat} />)}
+      <div className="grid grid-cols-5 gap-4">
+        {statCards.map((stat, i) => (
+          <div key={i} className="bg-white border border-[#d1d9e6] rounded-lg p-5 flex flex-col gap-2 shadow-sm">
+            <div className="flex justify-between items-start">
+              <div className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">{stat.label}</div>
+              <stat.icon className="w-5 h-5 opacity-20" style={{ color: stat.color }} />
+            </div>
+            {stat.ready
+              ? <div className="text-[1.8rem] font-bold text-[#1a1a1b] leading-none">{stat.value}</div>
+              : <SkeletonVal />}
+          </div>
+        ))}
       </div>
 
       <div className="grid grid-cols-3 gap-5 flex-1 min-h-0">
+        {/* Trend chart */}
+        {trends && (
+          <div className="col-span-3 bg-white border border-[#d1d9e6] rounded-lg p-4 shadow-sm">
+            <div className="flex justify-between items-center mb-3">
+              <p className="text-[0.75rem] font-bold text-[#004a99] uppercase tracking-wider">7-Day Alert Volume</p>
+              <p className="text-[0.65rem] text-slate-400 font-mono">{trends.reduce((s, t) => s + t.count, 0)} total</p>
+            </div>
+            <div className="flex items-end gap-1.5 h-16">
+              {trends.map(t => (
+                <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
+                  <div className="w-full bg-slate-100 rounded-sm overflow-hidden flex flex-col-reverse" style={{ height: 48 }}>
+                    <div
+                      className="w-full bg-[#004a99] rounded-sm transition-all duration-700"
+                      style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 3 : 0 }}
+                    />
+                  </div>
+                  <span className="text-[0.55rem] text-slate-400 font-mono">{t.count}</span>
+                  <span className="text-[0.5rem] text-slate-300">{t.day.slice(5)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-lg flex flex-col overflow-hidden shadow-sm">
           <div className="p-4 border-b border-[#d1d9e6] flex justify-between items-center bg-slate-50/50">
             <h3 className="text-[0.9rem] font-bold text-[#004a99] flex items-center gap-2">
@@ -1935,7 +2139,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
 
         <div className="bg-white border border-[#d1d9e6] rounded-lg flex flex-col shadow-sm overflow-hidden">
           <div className="p-4 border-b border-[#d1d9e6] bg-slate-50/50">
-            <h3 className="text-[0.9rem] font-bold text-[#004a99]">AI AGENT SWARM STATUS</h3>
+            <h3 className="text-[0.9rem] font-bold text-[#004a99]">AI AGENT STATUS</h3>
           </div>
           <div className="p-4 flex flex-col gap-3 flex-1 overflow-y-auto">
             {swarmAgents.map((agent) => {
@@ -1974,16 +2178,18 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
   );
 };
 
-const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
+const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, setActiveTab }: {
   alerts: Alert[];
   selectedAlert: Alert | null;
   setSelectedAlert: (a: Alert | null) => void;
   onAlertAction: (id: string, update: any) => void;
+  setActiveTab: (t: string) => void;
 }) => {
-  const [filterOpen, setFilterOpen]       = useState(false);
-  const [filterSeverity, setFilterSev]    = useState('');
-  const [filterStatus, setFilterStatus]   = useState('');
-  const [filteredAlerts, setFiltered]     = useState<Alert[]>(alerts);
+  const [filterOpen, setFilterOpen]     = useState(false);
+  const [filterSeverity, setFilterSev]  = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [searchQuery, setSearchQuery]   = useState('');
+  const [filteredAlerts, setFiltered]   = useState<Alert[]>(alerts);
 
   useEffect(() => {
     let result = alerts;
@@ -1997,8 +2203,18 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
     if (filterStatus) {
       result = result.filter(a => a.status === filterStatus);
     }
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(a =>
+        a.description?.toLowerCase().includes(q) ||
+        a.source_ip?.includes(q) ||
+        a.agent_name?.toLowerCase().includes(q) ||
+        a.rule_id?.includes(q) ||
+        a.id?.toLowerCase().includes(q)
+      );
+    }
     setFiltered(result);
-  }, [alerts, filterSeverity, filterStatus]);
+  }, [alerts, filterSeverity, filterStatus, searchQuery]);
 
   const hasFilters = !!filterSeverity || !!filterStatus;
   const clearFilters = () => { setFilterSev(''); setFilterStatus(''); };
@@ -2032,7 +2248,9 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
   return (
     <div className="flex flex-col h-full bg-[#f0f4f9]">
       {/* Analyst HUD */}
-      <div className="bg-white border-b border-[#d1d9e6] px-6 py-3 flex gap-6 shrink-0 shadow-sm z-10 relative">
+      <div className="bg-white border-b border-[#d1d9e6] px-6 pt-2 pb-3 shrink-0 shadow-sm z-10 relative">
+        <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-2">Queue Intelligence</p>
+      <div className="flex gap-6">
         <div className="flex-1 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
           <div>
             <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-widest mb-0.5">Noise Reduction</p>
@@ -2047,9 +2265,10 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
           <p className="text-[0.8rem] font-bold text-red-900">{highRiskCount} Alerts require immediate containment</p>
         </div>
         <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
-          <p className="text-[0.65rem] font-black text-blue-700 uppercase tracking-widest mb-0.5">Swarm Health</p>
+          <p className="text-[0.65rem] font-black text-blue-700 uppercase tracking-widest mb-0.5">Agent Status</p>
           <p className="text-[0.8rem] font-bold text-blue-900">{activeCount > 0 ? `Agents processing ${activeCount} alerts` : 'Agents standing by'}</p>
         </div>
+      </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -2109,7 +2328,13 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
             </div>
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="Search alerts..." className="w-full bg-white border border-slate-200 rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search alerts, IPs, rules..."
+                className="w-full bg-white border border-slate-200 rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+              />
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -2129,7 +2354,13 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction }: {
         </section>
         <section className="flex-1 overflow-hidden">
           {selectedAlert ? (
-            <AlertDetail alert={selectedAlert} onClose={() => setSelectedAlert(null)} onAction={onAlertAction} />
+            <AlertDetail
+              alert={selectedAlert}
+              onClose={() => setSelectedAlert(null)}
+              onAction={onAlertAction}
+              returnTab="alerts"
+              setActiveTab={setActiveTab}
+            />
           ) : (
             <div className="flex items-center justify-center h-full text-slate-400 flex-col gap-4">
               <Shield className="w-16 h-16 opacity-10" />
@@ -2405,7 +2636,7 @@ const AgentsTab = () => {
 
   return (
     <div className="p-8 max-w-6xl mx-auto overflow-y-auto h-full">
-      <h2 className="text-2xl font-bold text-[#004a99] mb-1">AI Agent Swarm Configuration</h2>
+      <h2 className="text-2xl font-bold text-[#004a99] mb-1">AI Agent Configuration</h2>
       <p className="text-sm text-[#5f6368] mb-2">
         Runtime models are now configurable per agent (OpenRouter free-model list), persisted in SQLite, and used by both single-agent and full-orchestration runs.
       </p>
@@ -2437,10 +2668,10 @@ const AgentsTab = () => {
                   value={currentModel}
                   disabled={!isAdmin || loading || isSaving}
                   onChange={(e) => handleModelChange(agent.phase, e.target.value)}
-                  className="w-full border border-[#d1d9e6] rounded px-2.5 py-2 text-[0.72rem] font-mono outline-none focus:border-[#004a99] disabled:opacity-60"
+                  className="w-full border border-[#d1d9e6] rounded px-2.5 py-2 text-[0.72rem] outline-none focus:border-[#004a99] disabled:opacity-60"
                 >
                   {options.map((model) => (
-                    <option key={model} value={model}>{model}</option>
+                    <option key={model} value={model}>{config?.modelLabels?.[model] || model}</option>
                   ))}
                 </select>
                 <div className="flex justify-between items-center">
@@ -2486,7 +2717,14 @@ const AgentsTab = () => {
   );
 };
 
+const TACTIC_OPTIONS = [
+  'INITIAL_ACCESS','EXECUTION','PERSISTENCE','PRIVILEGE_ESCALATION','DEFENSE_EVASION',
+  'CREDENTIAL_ACCESS','DISCOVERY','LATERAL_MOVEMENT','COLLECTION','EXFILTRATION',
+  'COMMAND_AND_CONTROL','IMPACT','RECONNAISSANCE','RESOURCE_DEVELOPMENT',
+];
+
 const SettingsTab = () => {
+  const showToast = useToast();
   const { user, token } = useAuth();
   const [users, setUsers]              = useState<UserType[]>([]);
   const [loadingUsers, setLoadingUsers]= useState(false);
@@ -2495,6 +2733,41 @@ const SettingsTab = () => {
   const [createError, setCreateError]  = useState('');
   const [createSuccess, setCreateOk]  = useState('');
   const isAdmin = user?.role === 'ADMIN';
+
+  // Playbooks
+  const [playbooks, setPlaybooks]         = useState<any[]>([]);
+  const [showPBForm, setShowPBForm]       = useState(false);
+  const [pbForm, setPBForm]               = useState({ tactic: 'CREDENTIAL_ACCESS', title: '', steps: '' });
+  const [pbError, setPBError]             = useState('');
+
+  const fetchPlaybooks = () => {
+    if (!token) return;
+    fetch('/api/playbooks', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json()).then(data => { if (Array.isArray(data)) setPlaybooks(data); }).catch(() => {});
+  };
+
+  useEffect(() => { fetchPlaybooks(); }, [token]);
+
+  const handleCreatePlaybook = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPBError('');
+    if (!pbForm.title || !pbForm.steps) { setPBError('Title and steps are required.'); return; }
+    try {
+      const res  = await fetch('/api/playbooks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(pbForm) });
+      const data = await res.json();
+      if (data.error) { setPBError(data.error); return; }
+      fetchPlaybooks();
+      setShowPBForm(false);
+      setPBForm({ tactic: 'CREDENTIAL_ACCESS', title: '', steps: '' });
+      showToast('Playbook created successfully');
+    } catch { setPBError('Failed to create playbook.'); }
+  };
+
+  const handleDeletePlaybook = async (id: number) => {
+    await fetch(`/api/playbooks/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    fetchPlaybooks();
+    showToast('Playbook deleted', 'info');
+  };
 
   const [pwForm, setPwForm]   = useState({ current: '', next: '', confirm: '' });
   const [pwError, setPwError] = useState('');
@@ -2546,6 +2819,7 @@ const SettingsTab = () => {
       setUsers(prev => [...prev, data]);
       setForm({ username: '', password: '', email: '', role: 'ANALYST' });
       setShowCreate(false);
+      showToast(`User "${data.username}" created`);
     } catch (err: any) {
       setCreateError(err.message || 'Failed to create user');
     }
@@ -2674,6 +2948,73 @@ const SettingsTab = () => {
           User management is restricted to ADMIN role. Contact your SOC administrator.
         </div>
       )}
+
+      {/* Playbooks */}
+      <div className="bg-white border border-[#d1d9e6] rounded-lg overflow-hidden shadow-sm">
+        <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <BookOpen className="w-4 h-4 text-[#004a99]" />
+            <h3 className="text-[0.85rem] font-bold text-[#004a99]">SOC Playbooks</h3>
+            <span className="text-[0.65rem] text-slate-400">({playbooks.length} total)</span>
+          </div>
+          {isAdmin && (
+            <button
+              onClick={() => setShowPBForm(!showPBForm)}
+              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[#003a7a] transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              Add Playbook
+            </button>
+          )}
+        </div>
+
+        {showPBForm && isAdmin && (
+          <form onSubmit={handleCreatePlaybook} className="p-5 border-b bg-[#f0f7ff] space-y-3">
+            {pbError && <p className="text-[#d93025] text-sm font-semibold">{pbError}</p>}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[0.7rem] font-black text-slate-500 uppercase tracking-wider block mb-1">MITRE Tactic</label>
+                <select value={pbForm.tactic} onChange={e => setPBForm({...pbForm, tactic: e.target.value})} className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]">
+                  {TACTIC_OPTIONS.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[0.7rem] font-black text-slate-500 uppercase tracking-wider block mb-1">Title</label>
+                <input required value={pbForm.title} onChange={e => setPBForm({...pbForm, title: e.target.value})} placeholder="e.g. Brute Force Response" className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+              </div>
+            </div>
+            <div>
+              <label className="text-[0.7rem] font-black text-slate-500 uppercase tracking-wider block mb-1">Steps (one per line or numbered)</label>
+              <textarea required value={pbForm.steps} onChange={e => setPBForm({...pbForm, steps: e.target.value})} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account..." className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99] resize-none font-mono" />
+            </div>
+            <div className="flex gap-2">
+              <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[#003a7a]">Create</button>
+              <button type="button" onClick={() => setShowPBForm(false)} className="border border-slate-200 text-slate-600 px-4 py-1.5 rounded text-sm font-semibold hover:bg-slate-50">Cancel</button>
+            </div>
+          </form>
+        )}
+
+        <div className="divide-y divide-slate-100">
+          {playbooks.length === 0 ? (
+            <div className="p-6 text-center text-slate-400 text-sm">No playbooks yet. Add one above.</div>
+          ) : playbooks.map(pb => (
+            <div key={pb.id} className="px-5 py-3 flex items-start justify-between gap-4 hover:bg-slate-50">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[0.6rem] font-black uppercase tracking-wide">{pb.tactic?.replace(/_/g, ' ')}</span>
+                  <p className="text-[0.82rem] font-bold text-slate-800 truncate">{pb.title}</p>
+                </div>
+                <p className="text-[0.72rem] text-slate-500 line-clamp-2 whitespace-pre-line">{pb.steps}</p>
+              </div>
+              {isAdmin && (
+                <button onClick={() => handleDeletePlaybook(pb.id)} className="shrink-0 p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors">
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 };
@@ -2781,6 +3122,13 @@ export default function App() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => localStorage.getItem('soc_selected_alert_id'));
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const showToast = useCallback((msg: string, type: ToastItem['type'] = 'success') => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts(prev => [...prev, { id, message: msg, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
+  }, []);
 
   const selectedAlert = alerts.find((alert) => alert.id === selectedAlertId) || null;
 
@@ -2800,12 +3148,13 @@ export default function App() {
     const socToken = localStorage.getItem('soc_token');
     if (!socToken) return;
 
-    fetch('/api/alerts', {
+    fetch('/api/alerts?pageSize=100', {
       headers: { Authorization: `Bearer ${socToken}` }
     }).then(res => res.json())
       .then(data => {
-        if (!Array.isArray(data)) return;
-        setAlerts(data);
+        const list = Array.isArray(data) ? data : data?.alerts;
+        if (!Array.isArray(list)) return;
+        setAlerts(list);
         // NOTE: Page-load auto-orchestration intentionally disabled.
         // Users click "Run Agents" on the alert they want to analyze.
         // Socket-triggered orchestration (for fresh incoming alerts) is still active below.
@@ -2816,10 +3165,11 @@ export default function App() {
 
     newSocket.on('new_alert', (data) => {
       // Fetch the full alert to analyze it
-      fetch('/api/alerts', {
+      fetch('/api/alerts?pageSize=100', {
         headers: { Authorization: `Bearer ${socToken}` }
       }).then(res => res.json())
-        .then(dataList => {
+        .then(raw => {
+          const dataList = Array.isArray(raw) ? raw : raw?.alerts;
           if (!Array.isArray(dataList)) return;
           setAlerts(dataList);
           const newAlert = dataList.find((a: any) => a.id === data.id);
@@ -2874,16 +3224,19 @@ export default function App() {
   };
 
   return (
-    <AuthProvider>
-      <AuthConsumer 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
-        alerts={alerts}
-        selectedAlert={selectedAlert}
-        setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
-        onAlertAction={handleAlertAction}
-      />
-    </AuthProvider>
+    <ToastContext.Provider value={showToast}>
+      <AuthProvider>
+        <AuthConsumer
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          alerts={alerts}
+          selectedAlert={selectedAlert}
+          setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
+          onAlertAction={handleAlertAction}
+        />
+      </AuthProvider>
+      <ToastContainer toasts={toasts} />
+    </ToastContext.Provider>
   );
 }
 
@@ -3069,8 +3422,8 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[#f4f7fa]">
-          {activeTab === 'dashboard'  && <Dashboard alerts={alerts} onAlertClick={setSelectedAlert} />}
-          {activeTab === 'alerts'     && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} />}
+          {activeTab === 'dashboard'  && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
+          {activeTab === 'alerts'     && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
           {activeTab === 'incidents'  && <InvestigationsTab />}
           {activeTab === 'agents'     && <AgentsTab />}
           {activeTab === 'reports'    && <Reports alerts={alerts} />}

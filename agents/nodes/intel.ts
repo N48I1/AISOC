@@ -4,27 +4,27 @@ import { DEFAULT_AGENT_MODELS } from "../config.js";
 import { mispSearchIocs } from "../shared/misp.js";
 
 const IntelSchema = z.object({
-  mitre_attack: z.array(z.string()),
-  risk_score: z.number(),
-  intel_summary: z.string(),
+  mitre_attack:      z.array(z.string()),
+  risk_score:        z.number(),
+  intel_summary:     z.string(),
   threat_actor_type: z.enum(["nation-state", "cybercriminal", "insider", "hacktivist", "unknown"]),
-  campaign_family: z.string().nullable(),
-  confidence: z.number().min(0).max(1),
+  campaign_family:   z.string().nullable(),
+  confidence:        z.number().min(0).max(1),
 });
 
 export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_MODELS.intel) {
-  const iocs = state.analysis?.iocs || {};
+  const iocs  = state.analysis?.iocs || {};
   const alert = state.alert;
   const logs: string[] = [];
 
   logs.push(`[Threat Intel] Starting IOC enrichment for ${alert.id}`);
 
   const misp = await mispSearchIocs({
-    ips: iocs.ips,
+    ips:     iocs.ips,
     domains: iocs.domains,
-    hashes: iocs.hashes,
-    files: iocs.files,
-    urls: iocs.urls,
+    hashes:  iocs.hashes,
+    files:   iocs.files,
+    urls:    iocs.urls,
   });
 
   if (misp.available) {
@@ -76,12 +76,12 @@ Alert: ${alert?.description || ""} | Rule: ${alert?.rule_id || ""}
 
 ${mispBlock}`,
     fallback: {
-      mitre_attack: [],
-      risk_score: 5,
-      intel_summary: "Threat intelligence unavailable.",
+      mitre_attack:      [],
+      risk_score:        0,
+      intel_summary:     "[AGENT FAILED — threat intel data is placeholder, not a real assessment]",
       threat_actor_type: "unknown",
-      campaign_family: null,
-      confidence: 0,
+      campaign_family:   null,
+      confidence:        0,
     },
   });
 

@@ -20,6 +20,7 @@ export interface AgentModelConfig {
   defaults: Record<AgentPhase, string>;
   assignments: Record<AgentPhase, string>;
   availableModels: string[];
+  modelLabels?: Record<string, string>;
 }
 
 function getToken(): string {
