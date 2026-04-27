@@ -3,13 +3,13 @@ import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const TicketSchema = z.object({
-  title: z.string(),
-  priority: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]),
-  report_body: z.string(),
-  email_notification_sent: z.boolean(),
-  affected_systems: z.array(z.string()),
-  business_impact: z.string(),
-  confidence: z.number().min(0).max(1),
+  title:                   z.string(),
+  priority:                z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]).default("MEDIUM"),
+  report_body:             z.string(),
+  email_notification_sent: z.boolean().default(false),
+  affected_systems:        z.array(z.string()).default([]),
+  business_impact:         z.string().default("Unknown"),
+  confidence:              z.number().min(0).max(1).default(0),
 });
 
 export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MODELS.ticketing) {

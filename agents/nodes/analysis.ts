@@ -3,29 +3,29 @@ import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const IocSchema = z.object({
-  ips:       z.array(z.string()),
-  users:     z.array(z.string()),
-  hosts:     z.array(z.string()),
-  hashes:    z.array(z.string()),
-  files:     z.array(z.string()),
-  ports:     z.array(z.number()),
-  domains:   z.array(z.string()),
-  processes: z.array(z.string()),
-  urls:      z.array(z.string()),
+  ips:       z.array(z.string()).default([]),
+  users:     z.array(z.string()).default([]),
+  hosts:     z.array(z.string()).default([]),
+  hashes:    z.array(z.string()).default([]),
+  files:     z.array(z.string()).default([]),
+  ports:     z.array(z.number()).default([]),
+  domains:   z.array(z.string()).default([]),
+  processes: z.array(z.string()).default([]),
+  urls:      z.array(z.string()).default([]),
 });
 
 const AnalysisSchema = z.object({
   analysis_summary:          z.string(),
-  iocs:                      IocSchema,
-  attack_category:           z.string(),
-  kill_chain_stage:          z.string(),
-  risk_score:                z.number().min(0).max(100),
-  severity_validation:       z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]),
-  recommended_action:        z.enum(["MONITOR", "INVESTIGATE", "CONTAIN", "ESCALATE", "BLOCK", "IGNORE"]),
-  is_false_positive:         z.boolean(),
+  iocs:                      IocSchema.default({ ips: [], users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] }),
+  attack_category:           z.string().default("UNKNOWN"),
+  kill_chain_stage:          z.string().default("UNKNOWN"),
+  risk_score:                z.number().min(0).max(100).default(0),
+  severity_validation:       z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]).default("MEDIUM"),
+  recommended_action:        z.enum(["MONITOR", "INVESTIGATE", "CONTAIN", "ESCALATE", "BLOCK", "IGNORE"]).default("INVESTIGATE"),
+  is_false_positive:         z.boolean().default(false),
   false_positive_reason:     z.string().optional(),
-  false_positive_confidence: z.number().min(0).max(1),
-  confidence:                z.number().min(0).max(1),
+  false_positive_confidence: z.number().min(0).max(1).default(0),
+  confidence:                z.number().min(0).max(1).default(0),
 });
 
 const SYSTEM_PROMPT = `You are a SOC Alert Triage Agent specializing in Wazuh SIEM alerts.

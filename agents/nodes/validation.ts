@@ -3,12 +3,12 @@ import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const ValidationSchema = z.object({
-  is_valid:           z.boolean(),
-  sla_status:         z.enum(["SLA_MET", "SLA_AT_RISK", "SLA_BREACHED"]),
-  completeness_score: z.number(),
-  missing_elements:   z.array(z.string()),
-  recommendation:     z.enum(["CLOSE", "ESCALATE", "MONITOR", "INVESTIGATE_FURTHER"]),
-  confidence:         z.number().min(0).max(1),
+  is_valid:           z.boolean().default(false),
+  sla_status:         z.enum(["SLA_MET", "SLA_AT_RISK", "SLA_BREACHED"]).default("SLA_AT_RISK"),
+  completeness_score: z.number().default(0),
+  missing_elements:   z.array(z.string()).default([]),
+  recommendation:     z.enum(["CLOSE", "ESCALATE", "MONITOR", "INVESTIGATE_FURTHER"]).default("INVESTIGATE_FURTHER"),
+  confidence:         z.number().min(0).max(1).default(0),
 });
 
 const SLA_WINDOWS: Record<string, number> = {

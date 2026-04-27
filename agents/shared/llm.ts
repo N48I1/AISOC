@@ -1,35 +1,51 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
-import { getModelClient, getBackupModelClient, getBackup2ModelClient } from "./client.js";
+import {
+  getModelClient, getBackupModelClient, getBackup2ModelClient,
+  getLocalModelClient, isLocalModel, localModelName,
+} from "./client.js";
 
 function extractJSONObject(raw: string): unknown {
   let s = (raw || "").trim();
+  // Strip markdown code fences
   s = s.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
+
   const start = s.indexOf("{");
-  const end = s.lastIndexOf("}");
+  const end   = s.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) {
     throw new Error(`No JSON object found in LLM response: ${s.slice(0, 300)}`);
   }
-  let candidate = s.slice(start, end + 1);
-  // Fix truncated decimals: "score": 85. → "score": 85.0
-  candidate = candidate.replace(/(\d)\.(\s*[,}\]])/g, "$1.0$2");
-  // Fix trailing commas before closing braces/brackets
-  candidate = candidate.replace(/,(\s*[}\]])/g, "$1");
-  return JSON.parse(candidate);
+  let c = s.slice(start, end + 1);
+
+  // Remove // line comments (outside of strings — good enough approximation)
+  c = c.replace(/("[^"\\]*(?:\\.[^"\\]*)*")|\/\/[^\n]*/g, (m, str) => str ?? "");
+  // Remove /* block comments */
+  c = c.replace(/("[^"\\]*(?:\\.[^"\\]*)*")|\/\*[\s\S]*?\*\//g, (m, str) => str ?? "");
+  // Fix trailing decimals: 1. → 1.0
+  c = c.replace(/(\d)\.(\s*[,}\]])/g, "$1.0$2");
+  // Remove trailing commas before } or ]
+  c = c.replace(/,(\s*[}\]])/g, "$1");
+
+  try {
+    return JSON.parse(c);
+  } catch {
+    // Last-resort: strip non-printable control chars (except tab/newline/CR)
+    c = c.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+    return JSON.parse(c);
+  }
 }
 
 interface CallStructuredParams<T> {
-  phase: string;
-  model: string;
+  phase:        string;
+  model:        string;
   systemPrompt: string;
-  userPrompt: string;
-  schema: z.ZodType<T>;
-  fallback: T;
+  userPrompt:   string;
+  schema:       z.ZodType<T>;
+  fallback:     T;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Module-level counters reset per orchestration run by resetLLMRunState().
 let quotaExhaustedFlag = false;
 let fallbackPhases: string[] = [];
 
@@ -47,41 +63,52 @@ function isDailyQuotaError(msg: string): boolean {
 }
 
 export async function callStructuredLLM<T>({
-  phase,
-  model,
-  systemPrompt,
-  userPrompt,
-  schema,
-  fallback,
+  phase, model, systemPrompt, userPrompt, schema, fallback,
 }: CallStructuredParams<T>): Promise<T> {
   const fallbackParsed = schema.safeParse(fallback);
-  if (!fallbackParsed.success) {
-    throw new Error(`[${phase}] invalid fallback schema`);
+  if (!fallbackParsed.success) throw new Error(`[${phase}] invalid fallback schema`);
+
+  const messages = [new SystemMessage(systemPrompt), new HumanMessage(userPrompt)];
+
+  // ── Local Ollama path ─────────────────────────────────────────────────────
+  if (isLocalModel(model)) {
+    const name = localModelName(model);
+    console.log(`[LLM][${phase}] Using local Ollama model: ${name}`);
+    try {
+      const client = getLocalModelClient(name);
+      const resp   = await client.invoke(messages);
+      const json   = extractJSONObject(String(resp.content ?? ""));
+      const parsed = schema.safeParse(json);
+      if (!parsed.success) {
+        const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+        console.error(`[LLM Schema Error][${phase}][local] ${issues}`);
+        fallbackPhases.push(phase);
+        return fallbackParsed.data;
+      }
+      return parsed.data;
+    } catch (err: any) {
+      console.error(`[LLM Error][${phase}][local::${name}]`, err?.message?.slice(0, 200));
+      fallbackPhases.push(phase);
+      return fallbackParsed.data;
+    }
   }
 
-  // Attempt order: primary → backup1 → backup2 → retry primary → fallback
-  // If a key is not configured, skip it and continue to next.
+  // ── OpenRouter path: primary → backup1 → backup2 → primary retry ─────────
   const clientGetters = [
     { label: "primary",  fn: () => getModelClient(model) },
     { label: "backup1",  fn: () => getBackupModelClient(model) },
     { label: "backup2",  fn: () => getBackup2ModelClient(model) },
-    { label: "primary2", fn: () => getModelClient(model) },  // final retry on primary
+    { label: "primary2", fn: () => getModelClient(model) },
   ];
 
   for (let i = 0; i < clientGetters.length; i++) {
     const { label, fn } = clientGetters[i];
     const client = fn();
-    if (!client) {
-      // Key not configured — skip silently
-      continue;
-    }
+    if (!client) continue;
 
     try {
-      const resp = await client.invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(userPrompt),
-      ]);
-      const json = extractJSONObject(String(resp.content ?? ""));
+      const resp   = await client.invoke(messages);
+      const json   = extractJSONObject(String(resp.content ?? ""));
       const parsed = schema.safeParse(json);
       if (!parsed.success) {
         const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");

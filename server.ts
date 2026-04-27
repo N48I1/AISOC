@@ -13,6 +13,10 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { rateLimit } from 'express-rate-limit';
 import nodemailer from 'nodemailer';
+import { createGlpiTicket }   from './agents/shared/glpi.js';
+import { sendTelegramMessage } from './agents/shared/telegram.js';
+import { firewallBlockIp, firewallTestConnection, type FirewallType } from './agents/shared/firewall.js';
+import { setLocalLLMBaseUrl } from './agents/shared/client.js';
 import {
   AGENT_METADATA,
   AGENT_PHASES,
@@ -153,6 +157,61 @@ try {
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS integrations (
+      name TEXT PRIMARY KEY,
+      enabled INTEGER DEFAULT 0,
+      config TEXT DEFAULT '{}',
+      auto_send_threshold TEXT DEFAULT 'NEVER',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS action_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id TEXT,
+      integration TEXT NOT NULL,
+      action TEXT,
+      status TEXT,
+      payload TEXT,
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_action_logs_created     ON action_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_action_logs_integration ON action_logs(integration);
+
+    CREATE TABLE IF NOT EXISTS firewalls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL,
+      enabled INTEGER DEFAULT 0,
+      config TEXT DEFAULT '{}',
+      auto_block INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS firewall_blocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      firewall_id INTEGER NOT NULL,
+      ip TEXT NOT NULL,
+      alert_id TEXT,
+      reason TEXT,
+      status TEXT DEFAULT 'blocked',
+      blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      unblocked_at DATETIME,
+      FOREIGN KEY(firewall_id) REFERENCES firewalls(id),
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fw_blocks_ip ON firewall_blocks(ip);
+    CREATE INDEX IF NOT EXISTS idx_fw_blocks_status ON firewall_blocks(status);
+
+    CREATE TABLE IF NOT EXISTS local_llm_config (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS playbooks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tactic TEXT NOT NULL,
@@ -192,6 +251,25 @@ try {
     console.log('[DB] Seeded 6 default playbooks');
   }
 
+  // Seed integration rows if not already present (INSERT OR IGNORE preserves user config)
+  const seedIntegration = db.prepare(
+    'INSERT OR IGNORE INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, ?, ?, ?)'
+  );
+  seedIntegration.run('email',    smtpConfigured ? 1 : 0,
+    JSON.stringify({ to: process.env.ALERT_EMAIL_TO || '' }), 'HIGH');
+  seedIntegration.run('glpi',     0,
+    JSON.stringify({ url: process.env.GLPI_URL || '', app_token: process.env.GLPI_APP_TOKEN || '', user_token: process.env.GLPI_USER_TOKEN || '' }), 'CRITICAL');
+  seedIntegration.run('telegram', 0,
+    JSON.stringify({ bot_token: process.env.TELEGRAM_BOT_TOKEN || '', chat_id: process.env.TELEGRAM_CHAT_ID || '' }), 'HIGH');
+
+  // Seed local LLM defaults
+  const seedLocalCfg = db.prepare('INSERT OR IGNORE INTO local_llm_config (key, value) VALUES (?, ?)');
+  seedLocalCfg.run('url',     'http://localhost:11434');
+  seedLocalCfg.run('enabled', '0');
+  // Apply stored URL to the LLM client module
+  const storedLocalUrl = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value;
+  if (storedLocalUrl) setLocalLLMBaseUrl(storedLocalUrl);
+
   // Seed model assignments only if a phase has no entry yet — preserves user overrides across restarts
   const seedAgentSetting = db.prepare(
     'INSERT OR IGNORE INTO agent_settings (phase, model) VALUES (?, ?)'
@@ -212,6 +290,112 @@ function writeAudit(userId: number | null, action: string, details: string) {
   } catch (err: any) {
     console.warn('[Audit] write failed:', err?.message);
   }
+}
+
+// --- Integration dispatch helper -------------------------------------------
+const PRIORITY_RANK: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, NEVER: 0 };
+
+async function dispatchActions(params: {
+  alertId: string;
+  ticket:  any;
+  db:      Database.Database;
+  io:      Server;
+}) {
+  const { alertId, ticket, db: database, io: socketIo } = params;
+  if (!ticket?.priority) return;
+
+  const integrations = database.prepare("SELECT * FROM integrations WHERE enabled = 1").all() as any[];
+  const logAction = database.prepare(
+    'INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+
+  for (const intg of integrations) {
+    const threshold = intg.auto_send_threshold || 'NEVER';
+    if (threshold === 'NEVER') continue;
+    if ((PRIORITY_RANK[ticket.priority] || 0) < (PRIORITY_RANK[threshold] || 99)) continue;
+
+    let cfg: Record<string, string> = {};
+    try { cfg = JSON.parse(intg.config || '{}'); } catch {}
+
+    if (intg.name === 'email') {
+      try {
+        const subject = ticket.title || `Alert ${alertId}`;
+        const body    = ticket.report_body || `Alert ${alertId}: ${ticket.title}`;
+        await sendIncidentAlert(subject, body);
+        logAction.run(alertId, 'email', 'send_email', 'success', subject.slice(0, 120), null);
+      } catch (err: any) {
+        logAction.run(alertId, 'email', 'send_email', 'failed', ticket.title?.slice(0, 120) || '', err?.message?.slice(0, 200));
+      }
+    }
+
+    if (intg.name === 'telegram' && cfg.bot_token && cfg.chat_id) {
+      const text = `🚨 <b>[BBS AISOC]</b> ${ticket.priority} Alert\n\n<b>${ticket.title}</b>\n\n${(ticket.report_body || '').slice(0, 300)}`;
+      const result = await sendTelegramMessage({ botToken: cfg.bot_token, chatId: cfg.chat_id }, text);
+      logAction.run(alertId, 'telegram', 'send_message', result.ok ? 'success' : 'failed',
+        ticket.title?.slice(0, 120) || '', result.error || null);
+    }
+
+    if (intg.name === 'glpi' && cfg.url && cfg.app_token && cfg.user_token) {
+      const urgencyMap: Record<string, number> = { CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2 };
+      const result = await createGlpiTicket(
+        { url: cfg.url, appToken: cfg.app_token, userToken: cfg.user_token },
+        { title: ticket.title || `Alert ${alertId}`, content: ticket.report_body || '', urgency: urgencyMap[ticket.priority] || 3 }
+      );
+      logAction.run(alertId, 'glpi', 'create_ticket', result.ok ? 'success' : 'failed',
+        result.ok ? `Ticket #${result.ticketId}` : ticket.title?.slice(0, 120) || '', result.error || null);
+    }
+  }
+
+  // Auto-block IPs from response agent actions on enabled firewalls
+  try {
+    const alert: any = database.prepare('SELECT ai_analysis FROM alerts WHERE id = ?').get(alertId);
+    if (alert?.ai_analysis) {
+      const ai       = JSON.parse(alert.ai_analysis);
+      const actions  = ai?.response?.actions || ai?.phaseData?.response?.actions || [];
+      const blockIps = actions.filter((a: any) => a.type === 'BLOCK_IP' && a.target).map((a: any) => a.target as string);
+      if (blockIps.length > 0) {
+        const fws = database.prepare('SELECT * FROM firewalls WHERE enabled=1 AND auto_block=1').all() as any[];
+        for (const fw of fws) {
+          let cfg: Record<string, string> = {};
+          try { cfg = JSON.parse(fw.config || '{}'); } catch {}
+          for (const ip of blockIps) {
+            const result = await firewallBlockIp(fw.type as FirewallType, cfg, ip, 'block');
+            database.prepare(
+              'INSERT INTO firewall_blocks (firewall_id, ip, alert_id, reason, status) VALUES (?, ?, ?, ?, ?)'
+            ).run(fw.id, ip, alertId, 'Auto-blocked by BLOCK_IP response action', result.ok ? 'blocked' : 'failed');
+            database.prepare(
+              'INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)'
+            ).run(alertId, `fw_${fw.name}`, 'block_ip', result.ok ? 'success' : 'failed', `Block ${ip}`, result.error || null);
+            console.log(`[Firewall][${fw.name}] ${result.ok ? '✓' : '✗'} block ${ip}: ${result.detail || result.error}`);
+          }
+        }
+      }
+    }
+  } catch (fwErr: any) {
+    console.warn('[Firewall] Auto-block error:', fwErr?.message);
+  }
+
+  socketIo.emit('action_logged', { alert_id: alertId });
+}
+
+// --- Ollama HTTP helper -------------------------------------------------------
+async function ollamaFetch(baseUrl: string, path: string): Promise<{ ok: boolean; data?: any; error?: string }> {
+  const { default: http }  = await import('node:http');
+  const { default: https } = await import('node:https');
+  const fullUrl = `${baseUrl.replace(/\/$/, '')}${path}`;
+  return new Promise((resolve) => {
+    const mod = fullUrl.startsWith('https') ? https : http;
+    const req = mod.get(fullUrl, { rejectUnauthorized: false, timeout: 5000 } as any, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        try { resolve({ ok: true, data: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
+        catch  { resolve({ ok: false, error: 'Invalid JSON from Ollama' }); }
+      });
+    });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Connection timed out' }); });
+  });
 }
 
 const getAgentModelAssignments = (): ModelAssignments => {
@@ -345,7 +529,7 @@ async function startServer() {
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   app.get('/api/stats', authenticate, (_req, res) => {
-    const activeRow: any  = db.prepare("SELECT COUNT(*) as count FROM incidents WHERE status IN ('OPEN', 'IN_PROGRESS')").get();
+    const activeRow: any  = db.prepare("SELECT COUNT(*) as count FROM alerts WHERE status IN ('NEW', 'ANALYZING', 'ESCALATED')").get();
     const mttrRow: any    = db.prepare(`SELECT AVG((strftime('%s','now') - strftime('%s', timestamp))) as avg_seconds FROM alerts WHERE status IN ('TRIAGED', 'CLOSED') AND ai_analysis IS NOT NULL`).get();
     const totalRow: any   = db.prepare("SELECT COUNT(*) as count FROM alerts").get();
     const analyzedRow: any= db.prepare("SELECT COUNT(*) as count FROM alerts WHERE ai_analysis IS NOT NULL").get();
@@ -521,14 +705,27 @@ async function startServer() {
   });
 
   // ── AI model settings ─────────────────────────────────────────────────────
-  app.get('/api/ai/models', authenticate, (_req, res) => {
-    const assignments = getAgentModelAssignments();
+  app.get('/api/ai/models', authenticate, async (_req, res) => {
+    const assignments  = getAgentModelAssignments();
+    const localUrl     = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value || 'http://localhost:11434';
+    const localEnabled = (db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
+
+    let localModels: Array<{ name: string; size: number; modified_at: string }> = [];
+    if (localEnabled) {
+      try {
+        const tagsRes = await ollamaFetch(localUrl, '/api/tags');
+        if (tagsRes.ok) localModels = (tagsRes.data?.models || []).map((m: any) => ({ name: m.name, size: m.size || 0, modified_at: m.modified_at || '' }));
+      } catch {}
+    }
+
     res.json({
       agents:          AGENT_PHASES.map(phase => ({ phase, ...AGENT_METADATA[phase] })),
       defaults:        DEFAULT_AGENT_MODELS,
       assignments,
       availableModels: OPENROUTER_FREE_MODELS,
       modelLabels:     OPENROUTER_MODEL_LABELS,
+      localConfig:     { url: localUrl, enabled: localEnabled },
+      localModels,
     });
   });
 
@@ -536,10 +733,99 @@ async function startServer() {
     const { phase } = req.params;
     const { model } = req.body || {};
     if (!isAgentPhase(phase)) return res.status(400).json({ error: 'Invalid phase' });
-    if (typeof model !== 'string' || !OPENROUTER_FREE_MODELS.includes(model as any))
+    const isOpenRouter = typeof model === 'string' && OPENROUTER_FREE_MODELS.includes(model as any);
+    const isLocal      = typeof model === 'string' && model.startsWith('local::');
+    if (!isOpenRouter && !isLocal)
       return res.status(400).json({ error: 'Invalid model selection' });
     db.prepare(`INSERT INTO agent_settings (phase, model) VALUES (?, ?) ON CONFLICT(phase) DO UPDATE SET model=excluded.model`).run(phase, model);
     res.json({ phase, model, assignments: getAgentModelAssignments() });
+  });
+
+  // ── Local LLM (Ollama) config ────────────────────────────────────────────
+  app.get('/api/local-llm/config', authenticate, (_req, res) => {
+    const url     = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value || 'http://localhost:11434';
+    const enabled = (db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
+    res.json({ url, enabled });
+  });
+
+  app.patch('/api/local-llm/config', authenticate, requireAdmin, (req: any, res) => {
+    const { url, enabled } = req.body;
+    const upd = db.prepare('INSERT INTO local_llm_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
+    if (url     !== undefined) { upd.run('url',     String(url)); setLocalLLMBaseUrl(String(url)); }
+    if (enabled !== undefined) { upd.run('enabled', enabled ? '1' : '0'); }
+    writeAudit(req.user?.id, 'LOCAL_LLM_CONFIG', `Local LLM config updated`);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/local-llm/models', authenticate, async (_req, res) => {
+    const url = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value || 'http://localhost:11434';
+    const result = await ollamaFetch(url, '/api/tags');
+    if (!result.ok) return res.json({ models: [], error: result.error });
+    const models = (result.data?.models || []).map((m: any) => ({ name: m.name, size: m.size || 0, modified_at: m.modified_at || '' }));
+    res.json({ models });
+  });
+
+  app.post('/api/local-llm/test', authenticate, requireAdmin, async (_req, res) => {
+    const url    = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value || 'http://localhost:11434';
+    const result = await ollamaFetch(url, '/api/tags');
+    if (!result.ok) return res.json({ ok: false, error: result.error });
+    const count = result.data?.models?.length ?? 0;
+    res.json({ ok: true, model_count: count, message: `Connected — ${count} model${count === 1 ? '' : 's'} available` });
+  });
+
+  // ── Agent statistics ───────────────────────────────────────────────────────
+  app.get('/api/ai/agent-stats', authenticate, (_req, res) => {
+    const phases = ['analysis','intel','knowledge','correlation','ticketing','response','validation'];
+
+    // Pull last 500 agent runs with AI data
+    const runs = db.prepare("SELECT ai_analysis FROM agent_runs WHERE ai_analysis IS NOT NULL ORDER BY run_at DESC LIMIT 500").all() as any[];
+
+    // Per-phase accumulators
+    const acc: Record<string, { runs: number; fallbacks: number; confidences: number[] }> = {};
+    for (const p of phases) acc[p] = { runs: 0, fallbacks: 0, confidences: [] };
+
+    for (const row of runs) {
+      let ai: any = {};
+      try { ai = JSON.parse(row.ai_analysis); } catch { continue; }
+      const fallbackSet = new Set<string>(Array.isArray(ai.fallback_phases) ? ai.fallback_phases : []);
+      const phaseData   = ai.phaseData || {};
+
+      for (const p of phases) {
+        // A run "counts" for a phase if it either has phaseData for it or listed it as fallback
+        const hasData  = !!phaseData[p === 'ticketing' ? 'ticket' : p];
+        const isFallback = fallbackSet.has(p);
+        if (!hasData && !isFallback) continue;
+        acc[p].runs++;
+        if (isFallback) { acc[p].fallbacks++; continue; }
+        const conf = p === 'ticketing' ? phaseData.ticket?.confidence : phaseData[p]?.confidence;
+        if (typeof conf === 'number' && !isNaN(conf)) acc[p].confidences.push(conf);
+      }
+    }
+
+    // Per-phase feedback from feedback table
+    const feedbackRows = db.prepare(
+      "SELECT phase, SUM(CASE WHEN is_accurate=1 THEN 1 ELSE 0 END) as accurate, COUNT(*) as total FROM feedback GROUP BY phase"
+    ).all() as Array<{ phase: string; accurate: number; total: number }>;
+    const feedbackMap: Record<string, { accurate: number; total: number }> = {};
+    for (const f of feedbackRows) feedbackMap[f.phase] = { accurate: f.accurate, total: f.total };
+
+    const result = phases.map(p => {
+      const a = acc[p];
+      const fb = feedbackMap[p] || { accurate: 0, total: 0 };
+      const avgConf = a.confidences.length > 0
+        ? Math.round(a.confidences.reduce((s, c) => s + c, 0) / a.confidences.length * 100)
+        : null;
+      return {
+        phase:             p,
+        total_runs:        a.runs,
+        fallback_count:    a.fallbacks,
+        avg_confidence:    avgConf,
+        feedback_accurate: fb.accurate,
+        feedback_total:    fb.total,
+      };
+    });
+
+    res.json(result);
   });
 
   // ── AI: run a single agent phase ──────────────────────────────────────────
@@ -587,15 +873,15 @@ async function startServer() {
       db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
         .run(alertId, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.status);
 
-      // Send email if ticketing agent flagged it
-      if (update.email_sent === 1) {
-        try {
-          const parsed   = JSON.parse(update.ai_analysis || '{}');
-          const ticket   = parsed?.ticket || parsed?.phaseData?.ticket;
-          const subject  = ticket?.title  || alert.description;
-          const body     = ticket?.report_body || `Alert ${alertId}: ${alert.description}\nStatus: ${update.status}`;
-          await sendIncidentAlert(subject, body);
-        } catch {}
+      // Dispatch to all enabled integrations (email, GLPI, Telegram) based on ticket priority
+      try {
+        const parsed = JSON.parse(update.ai_analysis || '{}');
+        const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
+        if (ticket) {
+          await dispatchActions({ alertId, ticket, db, io });
+        }
+      } catch (dispatchErr: any) {
+        console.warn('[Dispatch] Error:', dispatchErr?.message);
       }
 
       writeAudit(req.user?.id, 'ORCHESTRATION_RUN', `Alert ${alertId} orchestrated → ${update.status}`);
@@ -656,6 +942,284 @@ async function startServer() {
     db.prepare('DELETE FROM playbooks WHERE id = ?').run(req.params.id);
     writeAudit(req.user?.id, 'PLAYBOOK_DELETED', `Playbook #${req.params.id} deleted`);
     res.json({ status: 'ok' });
+  });
+
+  // ── Integrations ─────────────────────────────────────────────────────────
+  app.get('/api/integrations', authenticate, (_req, res) => {
+    const rows = db.prepare('SELECT * FROM integrations').all() as any[];
+    const result = rows.map(r => {
+      let cfg: any = {};
+      try { cfg = JSON.parse(r.config || '{}'); } catch {}
+      const stats = db.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as success,
+          SUM(CASE WHEN status='failed'  THEN 1 ELSE 0 END) as failed
+        FROM action_logs
+        WHERE integration=? AND created_at >= datetime('now', '-1 day')
+      `).get(r.name) as any;
+      return {
+        name:                r.name,
+        enabled:             r.enabled === 1,
+        config:              cfg,
+        auto_send_threshold: r.auto_send_threshold,
+        updated_at:          r.updated_at,
+        stats_24h:           { total: stats?.total || 0, success: stats?.success || 0, failed: stats?.failed || 0 },
+      };
+    });
+    res.json(result);
+  });
+
+  app.patch('/api/integrations/:name', authenticate, requireAdmin, (req: any, res) => {
+    const { name } = req.params;
+    const { enabled, config, auto_send_threshold } = req.body;
+    const updates: string[] = ['updated_at = datetime("now")'];
+    const values: any[]     = [];
+    if (enabled !== undefined)             { updates.push('enabled = ?');             values.push(enabled ? 1 : 0); }
+    if (config  !== undefined)             { updates.push('config = ?');              values.push(JSON.stringify(config)); }
+    if (auto_send_threshold !== undefined) { updates.push('auto_send_threshold = ?'); values.push(auto_send_threshold); }
+    values.push(name);
+    db.prepare(`UPDATE integrations SET ${updates.join(', ')} WHERE name = ?`).run(...values);
+    writeAudit(req.user?.id, 'INTEGRATION_UPDATED', `Integration ${name} updated`);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/integrations/:name/test', authenticate, requireAdmin, async (req: any, res) => {
+    const { name } = req.params;
+    const row = db.prepare("SELECT * FROM integrations WHERE name=?").get(name) as any;
+    if (!row) return res.status(404).json({ ok: false, error: 'Integration not found' });
+    let cfg: any = {};
+    try { cfg = JSON.parse(row.config || '{}'); } catch {}
+
+    const logAction = db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)');
+
+    if (name === 'email') {
+      try {
+        await sendIncidentAlert('Test from BBS AISOC', 'This is a test notification from the BBS AISOC platform. If you received this, email integration is working correctly.');
+        logAction.run(null, 'email', 'test', 'success', 'Test email', null);
+        return res.json({ ok: true });
+      } catch (err: any) {
+        logAction.run(null, 'email', 'test', 'failed', 'Test email', err?.message);
+        return res.json({ ok: false, error: err?.message });
+      }
+    }
+    if (name === 'telegram') {
+      if (!cfg.bot_token || !cfg.chat_id) return res.json({ ok: false, error: 'Bot token and chat ID are required' });
+      const result = await sendTelegramMessage({ botToken: cfg.bot_token, chatId: cfg.chat_id }, '🔔 <b>[BBS AISOC]</b> Test message — integration is working correctly!');
+      logAction.run(null, 'telegram', 'test', result.ok ? 'success' : 'failed', 'Test message', result.error || null);
+      return res.json(result);
+    }
+    if (name === 'glpi') {
+      if (!cfg.url || !cfg.app_token || !cfg.user_token) return res.json({ ok: false, error: 'URL, App Token and User Token are required' });
+      const result = await createGlpiTicket(
+        { url: cfg.url, appToken: cfg.app_token, userToken: cfg.user_token },
+        { title: 'BBS AISOC — Integration Test', content: 'This ticket was created to verify the GLPI integration is working correctly.', urgency: 1 }
+      );
+      logAction.run(null, 'glpi', 'test', result.ok ? 'success' : 'failed', result.ok ? `Ticket #${result.ticketId}` : 'Test ticket', result.error || null);
+      return res.json(result);
+    }
+    return res.json({ ok: false, error: 'Unknown integration' });
+  });
+
+  app.get('/api/action-logs', authenticate, (req: any, res) => {
+    const limit       = Math.min(200, parseInt(String(req.query.limit  || '50')));
+    const integration = req.query.integration as string | undefined;
+    const status      = req.query.status as string | undefined;
+    const where: string[] = [];
+    const params: any[] = [];
+    if (integration) { where.push('integration = ?'); params.push(integration); }
+    if (status)      { where.push('status = ?');      params.push(status); }
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const logs = db.prepare(`SELECT * FROM action_logs ${whereClause} ORDER BY created_at DESC LIMIT ?`).all(...params, limit);
+    res.json(logs);
+  });
+
+  app.get('/api/action-stats', authenticate, (_req, res) => {
+    const total    = (db.prepare("SELECT COUNT(*) as c FROM action_logs").get() as any).c;
+    const today    = (db.prepare("SELECT COUNT(*) as c FROM action_logs WHERE created_at >= date('now')").get() as any).c;
+    const success  = (db.prepare("SELECT COUNT(*) as c FROM action_logs WHERE status='success'").get() as any).c;
+    const perInteg = db.prepare(`
+      SELECT integration,
+        COUNT(*) as total,
+        SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as success,
+        MAX(created_at) as last_at
+      FROM action_logs GROUP BY integration
+    `).all();
+    res.json({ total, today, success_rate: total > 0 ? Math.round((success / total) * 100) : 0, per_integration: perInteg });
+  });
+
+  // ── Reports ───────────────────────────────────────────────────────────────
+  app.get('/api/reports/summary', authenticate, (_req, res) => {
+    const total      = (db.prepare("SELECT COUNT(*) as c FROM agent_runs").get() as any).c;
+    const last7      = (db.prepare("SELECT COUNT(*) as c FROM agent_runs WHERE run_at >= datetime('now','-7 days')").get() as any).c;
+    const emailSent  = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE email_sent=1").get() as any).c;
+    const totalAlerts= (db.prepare("SELECT COUNT(*) as c FROM alerts").get() as any).c;
+
+    const daily = db.prepare(`
+      SELECT date(run_at) as day, COUNT(*) as count
+      FROM agent_runs WHERE run_at >= datetime('now','-7 days')
+      GROUP BY date(run_at) ORDER BY day ASC
+    `).all() as Array<{ day: string; count: number }>;
+    const dailyFilled: Array<{ day: string; count: number }> = [];
+    for (let i = 6; i >= 0; i--) {
+      const d   = new Date(); d.setDate(d.getDate() - i);
+      const day = d.toISOString().split('T')[0];
+      dailyFilled.push({ day, count: daily.find(r => r.day === day)?.count ?? 0 });
+    }
+
+    res.json({
+      total,
+      last_7_days:          last7,
+      email_sent_pct:       totalAlerts > 0 ? Math.round((emailSent / totalAlerts) * 100) : 0,
+      daily_volume:         dailyFilled,
+    });
+  });
+
+  app.get('/api/reports', authenticate, (req: any, res) => {
+    const page     = Math.max(1, parseInt(String(req.query.page     || '1')));
+    const pageSize = Math.min(50, Math.max(1, parseInt(String(req.query.pageSize || '20'))));
+    const offset   = (page - 1) * pageSize;
+    const priority = req.query.priority as string | undefined;
+
+    const rows = db.prepare(`
+      SELECT ar.id, ar.alert_id, ar.run_at, ar.status, ar.ai_analysis,
+             a.description, a.severity, a.source_ip, a.email_sent
+      FROM agent_runs ar
+      JOIN alerts a ON a.id = ar.alert_id
+      ORDER BY ar.run_at DESC
+      LIMIT ? OFFSET ?
+    `).all(pageSize * 5, offset * 5) as any[]; // fetch extra for priority filter
+
+    const totalRow = (db.prepare("SELECT COUNT(*) as c FROM agent_runs").get() as any).c;
+
+    const reports = rows.map(r => {
+      let ticket: any = null;
+      try {
+        const ai = JSON.parse(r.ai_analysis || '{}');
+        ticket = ai?.ticket || ai?.phaseData?.ticket;
+      } catch {}
+
+      const actionLogs = db.prepare("SELECT integration FROM action_logs WHERE alert_id=? AND status='success'").all(r.alert_id) as any[];
+
+      return {
+        id:                  r.id,
+        alert_id:            r.alert_id,
+        run_at:              r.run_at,
+        status:              r.status,
+        severity:            r.severity,
+        description:         r.description,
+        source_ip:           r.source_ip,
+        email_sent:          r.email_sent,
+        title:               ticket?.title   || null,
+        priority:            ticket?.priority || null,
+        confidence:          typeof ticket?.confidence === 'number' ? Math.round(ticket.confidence * 100) : null,
+        report_body:         ticket?.report_body || null,
+        actions_dispatched:  actionLogs.map(l => l.integration),
+      };
+    }).filter(r => !priority || r.priority === priority).slice(0, pageSize);
+
+    res.json({ reports, total: totalRow, page, pageSize });
+  });
+
+  // ── Firewalls ─────────────────────────────────────────────────────────────
+  app.get('/api/firewalls', authenticate, (_req, res) => {
+    const rows = db.prepare('SELECT * FROM firewalls ORDER BY created_at DESC').all() as any[];
+    const result = rows.map(fw => {
+      let cfg: any = {};
+      try { cfg = JSON.parse(fw.config || '{}'); } catch {}
+      const blocks = db.prepare("SELECT COUNT(*) as c FROM firewall_blocks WHERE firewall_id=? AND status='blocked'").get(fw.id) as any;
+      return { ...fw, config: cfg, enabled: fw.enabled === 1, auto_block: fw.auto_block === 1, active_blocks: blocks?.c || 0 };
+    });
+    res.json(result);
+  });
+
+  app.post('/api/firewalls', authenticate, requireAdmin, (req: any, res) => {
+    const { name, type, config, enabled, auto_block } = req.body;
+    if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
+    if (!['fortigate','pfsense','sophos'].includes(type)) return res.status(400).json({ error: 'type must be fortigate, pfsense, or sophos' });
+    try {
+      const result = db.prepare(
+        'INSERT INTO firewalls (name, type, enabled, config, auto_block) VALUES (?, ?, ?, ?, ?)'
+      ).run(name, type, enabled ? 1 : 0, JSON.stringify(config || {}), auto_block ? 1 : 0);
+      writeAudit(req.user?.id, 'FIREWALL_CREATED', `Firewall ${name} (${type}) added`);
+      res.json({ id: result.lastInsertRowid, name, type });
+    } catch (err: any) {
+      if (err.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Firewall name already exists' });
+      res.status(500).json({ error: 'Failed to create firewall' });
+    }
+  });
+
+  app.patch('/api/firewalls/:id', authenticate, requireAdmin, (req: any, res) => {
+    const { id } = req.params;
+    const { name, enabled, config, auto_block } = req.body;
+    const updates = ['updated_at = datetime("now")'];
+    const values: any[] = [];
+    if (name      !== undefined) { updates.push('name = ?');       values.push(name); }
+    if (enabled   !== undefined) { updates.push('enabled = ?');    values.push(enabled ? 1 : 0); }
+    if (config    !== undefined) { updates.push('config = ?');     values.push(JSON.stringify(config)); }
+    if (auto_block!== undefined) { updates.push('auto_block = ?'); values.push(auto_block ? 1 : 0); }
+    values.push(id);
+    db.prepare(`UPDATE firewalls SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    writeAudit(req.user?.id, 'FIREWALL_UPDATED', `Firewall #${id} updated`);
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/firewalls/:id', authenticate, requireAdmin, (req: any, res) => {
+    db.prepare('DELETE FROM firewalls WHERE id = ?').run(req.params.id);
+    writeAudit(req.user?.id, 'FIREWALL_DELETED', `Firewall #${req.params.id} deleted`);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/firewalls/:id/test', authenticate, requireAdmin, async (req: any, res) => {
+    const fw = db.prepare('SELECT * FROM firewalls WHERE id = ?').get(req.params.id) as any;
+    if (!fw) return res.status(404).json({ ok: false, error: 'Firewall not found' });
+    let cfg: Record<string, string> = {};
+    try { cfg = JSON.parse(fw.config || '{}'); } catch {}
+    const result = await firewallTestConnection(fw.type as FirewallType, cfg);
+    db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(null, `fw_${fw.name}`, 'test', result.ok ? 'success' : 'failed', 'Connection test', result.error || null);
+    res.json(result);
+  });
+
+  app.post('/api/firewalls/:id/block', authenticate, async (req: any, res) => {
+    const { ip, alert_id, reason } = req.body;
+    if (!ip) return res.status(400).json({ error: 'ip is required' });
+    const fw = db.prepare('SELECT * FROM firewalls WHERE id = ?').get(req.params.id) as any;
+    if (!fw) return res.status(404).json({ ok: false, error: 'Firewall not found' });
+    let cfg: Record<string, string> = {};
+    try { cfg = JSON.parse(fw.config || '{}'); } catch {}
+    const result = await firewallBlockIp(fw.type as FirewallType, cfg, ip, 'block');
+    db.prepare('INSERT INTO firewall_blocks (firewall_id, ip, alert_id, reason, status) VALUES (?, ?, ?, ?, ?)')
+      .run(fw.id, ip, alert_id || null, reason || 'Manual block', result.ok ? 'blocked' : 'failed');
+    db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(alert_id || null, `fw_${fw.name}`, 'block_ip', result.ok ? 'success' : 'failed', `Block ${ip}`, result.error || null);
+    writeAudit(req.user?.id, 'FIREWALL_BLOCK', `${ip} blocked on ${fw.name}`);
+    io.emit('action_logged', { firewall_id: fw.id });
+    res.json(result);
+  });
+
+  app.post('/api/firewalls/:id/unblock', authenticate, requireAdmin, async (req: any, res) => {
+    const { ip } = req.body;
+    if (!ip) return res.status(400).json({ error: 'ip is required' });
+    const fw = db.prepare('SELECT * FROM firewalls WHERE id = ?').get(req.params.id) as any;
+    if (!fw) return res.status(404).json({ ok: false, error: 'Firewall not found' });
+    let cfg: Record<string, string> = {};
+    try { cfg = JSON.parse(fw.config || '{}'); } catch {}
+    const result = await firewallBlockIp(fw.type as FirewallType, cfg, ip, 'unblock');
+    db.prepare('UPDATE firewall_blocks SET status=?, unblocked_at=datetime("now") WHERE firewall_id=? AND ip=? AND status="blocked"')
+      .run('unblocked', fw.id, ip);
+    db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(null, `fw_${fw.name}`, 'unblock_ip', result.ok ? 'success' : 'failed', `Unblock ${ip}`, result.error || null);
+    writeAudit(req.user?.id, 'FIREWALL_UNBLOCK', `${ip} unblocked on ${fw.name}`);
+    io.emit('action_logged', { firewall_id: fw.id });
+    res.json(result);
+  });
+
+  app.get('/api/firewalls/:id/blocks', authenticate, (_req, res) => {
+    const blocks = db.prepare(
+      "SELECT * FROM firewall_blocks WHERE firewall_id=? ORDER BY blocked_at DESC LIMIT 100"
+    ).all(_req.params.id);
+    res.json(blocks);
   });
 
   // ── Frontend serving ──────────────────────────────────────────────────────

@@ -3,11 +3,11 @@ import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const KnowledgeSchema = z.object({
-  remediation_steps: z.string(),
-  playbook_reference: z.string(),
-  containment_priority: z.enum(["IMMEDIATE", "HIGH", "MEDIUM", "LOW"]),
-  estimated_effort_minutes: z.number(),
-  confidence: z.number().min(0).max(1),
+  remediation_steps:        z.string(),
+  playbook_reference:       z.string().default("General Incident Response Playbook"),
+  containment_priority:     z.enum(["IMMEDIATE", "HIGH", "MEDIUM", "LOW"]).default("MEDIUM"),
+  estimated_effort_minutes: z.number().default(60),
+  confidence:               z.number().min(0).max(1).default(0),
 });
 
 export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT_MODELS.knowledge) {

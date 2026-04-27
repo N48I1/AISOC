@@ -1,9 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2 } from 'lucide-react';
+import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, type AgentModelConfig, type AgentPhase } from './services/aiService';
-import { User as UserType, Alert, AgentRun, Incident, Stats, UserRole } from './types';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
+import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 
 // --- Toast System ---
 interface ToastItem { id: string; message: string; type: 'success' | 'error' | 'info'; }
@@ -117,12 +117,12 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   const { logout, user } = useAuth();
   
   const menuItems = [
-    { id: 'dashboard', icon: BarChart3, label: 'Dashboard' },
-    { id: 'alerts', icon: AlertTriangle, label: 'Alerts Queue' },
-    { id: 'incidents', icon: Shield, label: 'Investigations' },
-    { id: 'agents', icon: Activity, label: 'AI Agents' },
-    { id: 'reports', icon: FileText, label: 'Incident Reports' },
-    { id: 'settings', icon: Settings, label: 'System Admin' },
+    { id: 'dashboard', icon: BarChart3,   label: 'Dashboard' },
+    { id: 'alerts',    icon: AlertTriangle,label: 'Alerts Queue' },
+    { id: 'actions',   icon: Zap,          label: 'Actions & Integrations' },
+    { id: 'agents',    icon: Activity,     label: 'AI Agents' },
+    { id: 'reports',   icon: FileText,     label: 'Incident Reports' },
+    { id: 'settings',  icon: Settings,     label: 'System Admin' },
   ];
 
   return (
@@ -1781,6 +1781,9 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           </div>
         )}
 
+        {/* NEW: Evidence strip — 7 KPI chips */}
+        <EvidenceStrip aiData={aiData} mitreTags={mitreTags} />
+
         {/* NEW: Hero strip — identity · risk gauge · agent pipeline */}
         <AlertHeroStrip
           alert={alert}
@@ -1792,43 +1795,6 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           agentConfidence={getAgentConfidence}
           scrollToAgents={() => agentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
-
-        {/* NEW: Evidence strip — 7 KPI chips */}
-        <EvidenceStrip aiData={aiData} mitreTags={mitreTags} />
-
-        {/* NEW: Investigation grid — 3-col dense info */}
-        <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} />
-
-        {/* NEW: Swarm Monologue terminal */}
-        <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-lg">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/50">
-            <div className="flex items-center gap-2">
-              <Terminal size={12} className="text-emerald-500" />
-              <p className="text-[0.6rem] font-black uppercase tracking-widest text-emerald-500/80">Agent Logs</p>
-            </div>
-            <div className="flex gap-1">
-              <div className="w-2 h-2 rounded-full bg-red-500/20" />
-              <div className="w-2 h-2 rounded-full bg-amber-500/20" />
-              <div className="w-2 h-2 rounded-full bg-emerald-500/20" />
-            </div>
-          </div>
-          <div className="p-4 h-48 overflow-y-auto font-mono text-[0.7rem] leading-relaxed space-y-1 scrollbar-thin scrollbar-thumb-emerald-500/20 scrollbar-track-transparent">
-            {(aiData?.agentLogs || []).length > 0 ? (
-              aiData.agentLogs.map((log: string, i: number) => (
-                <div key={i} className="flex gap-3 text-emerald-400/90 animate-in fade-in slide-in-from-left-2 duration-300">
-                  <span className="text-emerald-500/40 shrink-0 select-none">[{new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
-                  <span className="flex-1">{log}</span>
-                </div>
-              ))
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-600 italic gap-2 opacity-50">
-                <Activity size={24} className={isAnalyzing ? 'animate-pulse' : ''} />
-                <p>{isAnalyzing ? 'Agents are communicating...' : 'Standby — Waiting for swarm activation'}</p>
-              </div>
-            )}
-            <div className="h-1" /> {/* Spacer for bottom scroll */}
-          </div>
-        </div>
 
         {/* Compact agent pipeline strip — click a card to expand raw details */}
         <div ref={agentsRef} className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
@@ -1944,6 +1910,40 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               </div>
             );
           })()}
+        </div>
+
+        {/* NEW: Investigation grid — 3-col dense info */}
+        <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} />
+
+        {/* NEW: Swarm Monologue terminal */}
+        <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-lg">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/50">
+            <div className="flex items-center gap-2">
+              <Terminal size={12} className="text-emerald-500" />
+              <p className="text-[0.6rem] font-black uppercase tracking-widest text-emerald-500/80">Agent Logs</p>
+            </div>
+            <div className="flex gap-1">
+              <div className="w-2 h-2 rounded-full bg-red-500/20" />
+              <div className="w-2 h-2 rounded-full bg-amber-500/20" />
+              <div className="w-2 h-2 rounded-full bg-emerald-500/20" />
+            </div>
+          </div>
+          <div className="p-4 h-48 overflow-y-auto font-mono text-[0.7rem] leading-relaxed space-y-1 scrollbar-thin scrollbar-thumb-emerald-500/20 scrollbar-track-transparent">
+            {(aiData?.agentLogs || []).length > 0 ? (
+              aiData.agentLogs.map((log: string, i: number) => (
+                <div key={i} className="flex gap-3 text-emerald-400/90 animate-in fade-in slide-in-from-left-2 duration-300">
+                  <span className="text-emerald-500/40 shrink-0 select-none">[{new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
+                  <span className="flex-1">{log}</span>
+                </div>
+              ))
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-slate-600 italic gap-2 opacity-50">
+                <Activity size={24} className={isAnalyzing ? 'animate-pulse' : ''} />
+                <p>{isAnalyzing ? 'Agents are communicating...' : 'Standby — Waiting for swarm activation'}</p>
+              </div>
+            )}
+            <div className="h-1" /> {/* Spacer for bottom scroll */}
+          </div>
         </div>
 
         {/* Raw log — collapsible, closed by default */}
@@ -2373,197 +2373,665 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
   );
 };
 
-const InvestigationsTab = () => {
-  const { token } = useAuth();
-  const [incidents, setIncidents]   = useState<Incident[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [showModal, setShowModal]   = useState(false);
-  const [form, setForm]             = useState({ title: '', severity: 'MEDIUM', status: 'OPEN', alert_ids: '' });
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError]   = useState('');
+const ActionsTab = () => {
+  const showToast = useToast();
+  const { user }  = useAuth();
+  const isAdmin   = user?.role === 'ADMIN';
 
-  const fetchIncidents = () => {
-    if (!token) return;
-    setLoading(true);
-    fetch('/api/incidents', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json())
-      .then(data => { if (Array.isArray(data)) setIncidents(data); })
-      .finally(() => setLoading(false));
-  };
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [actionLogs,   setActionLogs]   = useState<ActionLog[]>([]);
+  const [actionStats,  setActionStats]  = useState<any>(null);
+  const [testing,      setTesting]      = useState<Record<string, boolean>>({});
+  const [saving,       setSaving]       = useState<Record<string, boolean>>({});
+  const [expandedCfg,  setExpandedCfg]  = useState<string | null>(null);
+  const [localCfg,     setLocalCfg]     = useState<Record<string, Record<string, string>>>({});
 
-  useEffect(() => { fetchIncidents(); }, [token]);
+  const refresh = useCallback(async () => {
+    const [ints, logs, stats] = await Promise.all([
+      getIntegrations(),
+      getActionLogs({ limit: 50 }),
+      fetch('/api/action-stats', { headers: { 'Authorization': `Bearer ${localStorage.getItem('soc_token')}` } }).then(r => r.json()).catch(() => null),
+    ]);
+    setIntegrations(ints as Integration[]);
+    setActionLogs(logs as ActionLog[]);
+    setActionStats(stats);
+  }, []);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setFormError('');
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const handleToggle = async (name: string, enabled: boolean) => {
+    if (!isAdmin) return;
+    setSaving(prev => ({ ...prev, [name]: true }));
     try {
-      const alert_ids = form.alert_ids ? form.alert_ids.split(',').map(s => s.trim()).filter(Boolean) : [];
-      const res = await fetch('/api/incidents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ ...form, alert_ids }),
-      });
-      const data = await res.json();
-      if (data.error) { setFormError(data.error); return; }
-      setShowModal(false);
-      setForm({ title: '', severity: 'MEDIUM', status: 'OPEN', alert_ids: '' });
-      fetchIncidents();
+      await updateIntegration(name, { enabled });
+      showToast(`${name} ${enabled ? 'enabled' : 'disabled'}`);
+      refresh();
     } catch (err: any) {
-      setFormError(err.message || 'Failed to create incident');
+      showToast(err.message, 'error');
     } finally {
-      setSubmitting(false);
+      setSaving(prev => ({ ...prev, [name]: false }));
     }
   };
 
-  const sevStyle: Record<string, string> = {
-    CRITICAL: 'bg-red-50 text-red-600', HIGH: 'bg-orange-50 text-orange-600',
-    MEDIUM: 'bg-blue-50 text-blue-600', LOW: 'bg-green-50 text-green-600',
+  const handleThresholdChange = async (name: string, threshold: string) => {
+    if (!isAdmin) return;
+    await updateIntegration(name, { auto_send_threshold: threshold });
+    refresh();
   };
-  const statusStyle: Record<string, string> = {
-    OPEN: 'bg-blue-50 text-blue-600', IN_PROGRESS: 'bg-orange-50 text-orange-600',
-    RESOLVED: 'bg-green-50 text-green-600', CLOSED: 'bg-slate-100 text-slate-500',
+
+  const handleSaveConfig = async (name: string) => {
+    if (!isAdmin) return;
+    setSaving(prev => ({ ...prev, [`cfg_${name}`]: true }));
+    try {
+      await updateIntegration(name, { config: localCfg[name] || {} });
+      showToast(`${name} configuration saved`);
+      setExpandedCfg(null);
+      refresh();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setSaving(prev => ({ ...prev, [`cfg_${name}`]: false }));
+    }
+  };
+
+  const handleTest = async (name: string) => {
+    setTesting(prev => ({ ...prev, [name]: true }));
+    try {
+      const result = await testIntegration(name);
+      showToast(result.ok ? `${name} test successful!` : `${name} test failed: ${result.error}`, result.ok ? 'success' : 'error');
+      refresh();
+    } finally {
+      setTesting(prev => ({ ...prev, [name]: false }));
+    }
+  };
+
+  const INTG_META: Record<string, { icon: React.ReactNode; label: string; color: string; fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean }> }> = {
+    email: {
+      icon:  <Mail size={20} />,
+      label: 'Email (SMTP)',
+      color: 'text-blue-700 bg-blue-50 border-blue-200',
+      fields: [
+        { key: 'to', label: 'Recipient address', placeholder: 'soc-team@company.com' },
+      ],
+    },
+    glpi: {
+      icon:  <ExternalLink size={20} />,
+      label: 'GLPI Ticketing',
+      color: 'text-purple-700 bg-purple-50 border-purple-200',
+      fields: [
+        { key: 'url',        label: 'GLPI URL',       placeholder: 'https://glpi.company.com' },
+        { key: 'app_token',  label: 'App Token',      placeholder: 'App-Token-here', secret: true },
+        { key: 'user_token', label: 'User Token',     placeholder: 'user_token_here', secret: true },
+      ],
+    },
+    telegram: {
+      icon:  <Send size={20} />,
+      label: 'Telegram',
+      color: 'text-cyan-700 bg-cyan-50 border-cyan-200',
+      fields: [
+        { key: 'bot_token', label: 'Bot Token',  placeholder: '123456:ABCdef...', secret: true },
+        { key: 'chat_id',   label: 'Chat ID',    placeholder: '-1001234567890' },
+      ],
+    },
+  };
+
+  const priColor: Record<string, string> = {
+    CRITICAL: 'bg-red-100 text-red-800 border-red-200',
+    HIGH:     'bg-orange-100 text-orange-800 border-orange-200',
+    MEDIUM:   'bg-blue-100 text-blue-800 border-blue-200',
+    LOW:      'bg-green-100 text-green-800 border-green-200',
+    NEVER:    'bg-slate-100 text-slate-600 border-slate-200',
+  };
+
+  const statusIcon: Record<string, string> = { success: '✓', failed: '✕', skipped: '↷' };
+  const statusColor: Record<string, string> = {
+    success: 'text-green-700 bg-green-50',
+    failed:  'text-red-700 bg-red-50',
+    skipped: 'text-slate-500 bg-slate-50',
   };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto overflow-y-auto h-full">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-[#004a99]">Active Investigations</h2>
-        <button
-          onClick={() => setShowModal(true)}
-          className="flex items-center gap-2 bg-[#004a99] text-white px-4 py-2 rounded font-bold text-sm hover:bg-[#003a7a] transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Incident
+    <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-[#004a99]">Actions & Integrations</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Connect the AI pipeline to your external toolchain</p>
+        </div>
+        <button onClick={refresh} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-[0.78rem] font-semibold hover:bg-slate-50 transition-colors">
+          <RefreshCw size={13} />
+          Refresh
         </button>
       </div>
 
-      <div className="bg-white border border-[#d1d9e6] rounded-lg overflow-hidden shadow-sm">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 border-b border-[#d1d9e6] text-[#5f6368] font-bold uppercase text-[0.7rem] tracking-wider">
-            <tr>
-              <th className="p-4">ID</th>
-              <th className="p-4">Title</th>
-              <th className="p-4">Severity</th>
-              <th className="p-4">Status</th>
-              <th className="p-4">Alerts</th>
-              <th className="p-4">Created</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[#f0f0f0]">
-            {loading ? (
-              <tr><td colSpan={6} className="p-8 text-center text-slate-400">Loading incidents...</td></tr>
-            ) : incidents.length === 0 ? (
-              <tr><td colSpan={6} className="p-8 text-center text-slate-400">No incidents found. Create one with the button above.</td></tr>
-            ) : incidents.map(inc => (
-              <tr key={inc.id} className="hover:bg-slate-50 cursor-pointer">
-                <td className="p-4 font-mono text-[#004a99] text-xs">{inc.id}</td>
-                <td className="p-4 font-semibold">{inc.title}</td>
-                <td className="p-4">
-                  <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${sevStyle[inc.severity] || 'bg-slate-100 text-slate-600'}`}>
-                    {inc.severity}
-                  </span>
-                </td>
-                <td className="p-4">
-                  <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${statusStyle[inc.status] || 'bg-slate-100 text-slate-600'}`}>
-                    {inc.status.replace('_', ' ')}
-                  </span>
-                </td>
-                <td className="p-4 text-[#5f6368]">{inc.alerts?.length ?? 0} linked</td>
-                <td className="p-4 text-[#5f6368] text-xs">{new Date(inc.created_at).toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
-            <div className="flex items-center justify-between px-7 py-5 bg-[#003a7a] text-white">
-              <h3 className="text-[1rem] font-black">Create New Incident</h3>
-              <button onClick={() => setShowModal(false)} className="p-1 hover:bg-white/10 rounded"><X size={18} /></button>
+      {/* Stats strip */}
+      {actionStats && (
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { label: 'Total Actions',  value: actionStats.total,        color: 'text-[#004a99]' },
+            { label: 'Today',          value: actionStats.today,        color: 'text-[#004a99]' },
+            { label: 'Success Rate',   value: `${actionStats.success_rate}%`, color: actionStats.success_rate >= 80 ? 'text-[#1e8e3e]' : 'text-[#d93025]' },
+            { label: 'Integrations',   value: `${integrations.filter(i => i.enabled).length} / ${integrations.length} active`, color: 'text-[#004a99]' },
+          ].map((s, i) => (
+            <div key={i} className="bg-white border border-[#d1d9e6] rounded-lg p-4 shadow-sm">
+              <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+              <p className={`text-[1.6rem] font-black ${s.color}`}>{s.value}</p>
             </div>
-            <form onSubmit={handleCreate} className="p-6 space-y-4">
-              {formError && (
-                <div className="bg-red-50 text-[#d93025] px-4 py-2 rounded border border-red-100 text-sm">{formError}</div>
-              )}
-              <div>
-                <label className="text-[0.7rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Title *</label>
-                <input
-                  required
-                  value={form.title}
-                  onChange={e => setForm({ ...form, title: e.target.value })}
-                  className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]"
-                  placeholder="e.g. Brute Force Attempt – Web Server 01"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-[0.7rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Severity</label>
-                  <select
-                    value={form.severity}
-                    onChange={e => setForm({ ...form, severity: e.target.value })}
-                    className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]"
-                  >
-                    {['LOW','MEDIUM','HIGH','CRITICAL'].map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[0.7rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Status</label>
-                  <select
-                    value={form.status}
-                    onChange={e => setForm({ ...form, status: e.target.value })}
-                    className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]"
-                  >
-                    {['OPEN','IN_PROGRESS','RESOLVED','CLOSED'].map(s => <option key={s} value={s}>{s.replace('_',' ')}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="text-[0.7rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Linked Alert IDs (comma-separated, optional)</label>
-                <input
-                  value={form.alert_ids}
-                  onChange={e => setForm({ ...form, alert_ids: e.target.value })}
-                  className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99] font-mono"
-                  placeholder="abc123, def456"
-                />
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-5 py-2 rounded border border-slate-200 text-slate-600 font-semibold text-sm hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-5 py-2 rounded bg-[#004a99] text-white font-bold text-sm hover:bg-[#003a7a] disabled:opacity-50 flex items-center gap-2"
-                >
-                  {submitting
-                    ? <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Creating...</>
-                    : 'Create Incident'
-                  }
-                </button>
-              </div>
-            </form>
-          </div>
+          ))}
         </div>
       )}
+
+      {/* Integration cards */}
+      <div className="grid grid-cols-3 gap-4">
+        {integrations.map(intg => {
+          const meta      = INTG_META[intg.name];
+          if (!meta) return null;
+          const isExpanded = expandedCfg === intg.name;
+          const s24        = intg.stats_24h || { total: 0, success: 0, failed: 0 };
+          const cfgValues  = localCfg[intg.name] ?? intg.config ?? {};
+
+          return (
+            <div key={intg.name} className={`bg-white border rounded-xl shadow-sm overflow-hidden transition-all ${intg.enabled ? 'border-[#004a99]/30' : 'border-[#d1d9e6]'}`}>
+              {/* Card header */}
+              <div className={`flex items-center justify-between px-4 py-3 border-b ${intg.enabled ? 'bg-[#f0f7ff]' : 'bg-slate-50'}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`p-1.5 rounded-lg border ${meta.color}`}>{meta.icon}</span>
+                  <div>
+                    <p className="text-[0.82rem] font-black text-slate-800">{meta.label}</p>
+                    <span className={`text-[0.58rem] font-black uppercase tracking-wider ${intg.enabled ? 'text-[#1e8e3e]' : 'text-slate-400'}`}>
+                      {intg.enabled ? '● ACTIVE' : '○ DISABLED'}
+                    </span>
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button
+                    onClick={() => handleToggle(intg.name, !intg.enabled)}
+                    disabled={saving[intg.name]}
+                    className="text-slate-400 hover:text-[#004a99] transition-colors disabled:opacity-50"
+                    title={intg.enabled ? 'Disable' : 'Enable'}
+                  >
+                    {intg.enabled
+                      ? <ToggleRight size={28} className="text-[#004a99]" />
+                      : <ToggleLeft  size={28} />}
+                  </button>
+                )}
+              </div>
+
+              {/* Stats row */}
+              <div className="grid grid-cols-3 divide-x divide-slate-100 border-b border-slate-100">
+                {[
+                  { label: '24h sent',  value: s24.total },
+                  { label: 'success',   value: s24.success },
+                  { label: 'failed',    value: s24.failed },
+                ].map((m, i) => (
+                  <div key={i} className="py-2 text-center">
+                    <p className={`text-[1rem] font-black ${i === 2 && m.value > 0 ? 'text-red-600' : 'text-slate-700'}`}>{m.value}</p>
+                    <p className="text-[0.58rem] text-slate-400 uppercase tracking-wider">{m.label}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Auto-fire setting */}
+              <div className="px-4 py-3 flex items-center justify-between border-b border-slate-100">
+                <p className="text-[0.7rem] font-bold text-slate-500 uppercase tracking-wider">Auto-fire on</p>
+                <select
+                  value={intg.auto_send_threshold}
+                  disabled={!isAdmin}
+                  onChange={e => handleThresholdChange(intg.name, e.target.value)}
+                  className={`text-[0.7rem] font-bold border rounded px-2 py-1 outline-none ${priColor[intg.auto_send_threshold] || priColor.NEVER} disabled:opacity-60`}
+                >
+                  {['CRITICAL','HIGH','NEVER'].map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+
+              {/* Config section */}
+              {isAdmin && (
+                <div className="px-4 py-2 border-b border-slate-100">
+                  <button
+                    onClick={() => {
+                      setExpandedCfg(isExpanded ? null : intg.name);
+                      if (!localCfg[intg.name]) setLocalCfg(prev => ({ ...prev, [intg.name]: { ...intg.config } }));
+                    }}
+                    className="flex items-center gap-1 text-[0.7rem] font-bold text-[#004a99] hover:underline"
+                  >
+                    <ChevronDown size={12} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                    Configure
+                  </button>
+                  {isExpanded && (
+                    <div className="mt-2 space-y-2">
+                      {meta.fields.map(f => (
+                        <div key={f.key}>
+                          <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-0.5">{f.label}</label>
+                          <input
+                            type={f.secret ? 'password' : 'text'}
+                            value={cfgValues[f.key] || ''}
+                            onChange={e => setLocalCfg(prev => ({ ...prev, [intg.name]: { ...(prev[intg.name] || {}), [f.key]: e.target.value } }))}
+                            placeholder={f.placeholder}
+                            className="w-full border border-slate-200 rounded px-2 py-1.5 text-[0.75rem] outline-none focus:border-[#004a99] font-mono"
+                          />
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => handleSaveConfig(intg.name)}
+                        disabled={saving[`cfg_${intg.name}`]}
+                        className="w-full mt-1 py-1.5 rounded bg-[#004a99] text-white text-[0.72rem] font-bold hover:bg-[#003a7a] transition-colors disabled:opacity-50"
+                      >
+                        {saving[`cfg_${intg.name}`] ? 'Saving…' : 'Save Configuration'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Test button */}
+              <div className="px-4 py-3">
+                <button
+                  onClick={() => handleTest(intg.name)}
+                  disabled={testing[intg.name] || !isAdmin}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#004a99] text-[#004a99] text-[0.72rem] font-bold hover:bg-[#f0f7ff] transition-colors disabled:opacity-50"
+                >
+                  {testing[intg.name]
+                    ? <><div className="w-3 h-3 rounded-full border-2 border-[#004a99]/40 border-t-[#004a99] animate-spin" />Testing…</>
+                    : <><Send size={12} />Send Test</>}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Action log table */}
+      <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
+          <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Action Log</p>
+          <p className="text-[0.65rem] text-slate-400">Last 50 dispatches</p>
+        </div>
+        {actionLogs.length === 0 ? (
+          <div className="p-10 text-center text-slate-400 text-sm">No actions dispatched yet. Enable an integration and run agents on a HIGH or CRITICAL alert.</div>
+        ) : (
+          <table className="w-full text-left text-[0.78rem]">
+            <thead className="bg-slate-50/50 border-b border-slate-100 text-[0.65rem] text-slate-400 font-black uppercase tracking-wider">
+              <tr>
+                <th className="px-4 py-2">Time</th>
+                <th className="px-4 py-2">Integration</th>
+                <th className="px-4 py-2">Action</th>
+                <th className="px-4 py-2">Payload</th>
+                <th className="px-4 py-2">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {actionLogs.map((log: any) => (
+                <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-4 py-2 font-mono text-slate-500 text-[0.7rem] whitespace-nowrap">
+                    {new Date(log.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className={`px-2 py-0.5 rounded text-[0.65rem] font-black uppercase tracking-wide ${
+                      log.integration === 'email'    ? 'bg-blue-100 text-blue-800' :
+                      log.integration === 'telegram' ? 'bg-cyan-100 text-cyan-800' :
+                      'bg-purple-100 text-purple-800'
+                    }`}>{log.integration}</span>
+                  </td>
+                  <td className="px-4 py-2 text-slate-600 font-mono text-[0.68rem]">{log.action}</td>
+                  <td className="px-4 py-2 text-slate-700 truncate max-w-[200px]" title={log.payload}>{log.payload || '—'}</td>
+                  <td className="px-4 py-2">
+                    <span className={`px-2 py-0.5 rounded text-[0.65rem] font-black ${statusColor[log.status] || 'bg-slate-50 text-slate-500'}`}>
+                      {statusIcon[log.status] || '?'} {log.status}
+                    </span>
+                    {log.error && <p className="text-[0.62rem] text-red-500 mt-0.5 truncate max-w-[150px]" title={log.error}>{log.error}</p>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* ── Firewall Integrations ─────────────────────────────────────── */}
+      <FirewallSection />
+    </div>
+  );
+};
+
+// ─── Firewall Section (embedded in ActionsTab) ────────────────────────────────
+const FirewallSection = () => {
+  const showToast = useToast();
+  const { user }  = useAuth();
+  const isAdmin   = user?.role === 'ADMIN';
+
+  const [firewalls, setFirewalls]  = useState<any[]>([]);
+  const [blocks,    setBlocks]     = useState<Record<number, any[]>>({});
+  const [testing,   setTesting]    = useState<Record<number, boolean>>({});
+  const [blocking,  setBlocking]   = useState<Record<number, boolean>>({});
+  const [showAdd,   setShowAdd]    = useState(false);
+  const [blockIpInput, setBlockIpInput] = useState<Record<number, string>>({});
+  const [expandedFw, setExpandedFw] = useState<number | null>(null);
+  const [form, setForm] = useState({ name: '', type: 'fortigate', url: '', api_token: '', client_id: '', client_token: '', username: '', password: '', group_name: '', alias: '' });
+
+  const FW_META: Record<string, { label: string; color: string; fields: Array<{ key: string; label: string; secret?: boolean; placeholder?: string }> }> = {
+    fortigate: {
+      label: 'FortiGate',
+      color: 'text-red-700 bg-red-50 border-red-200',
+      fields: [
+        { key: 'url',        label: 'Management URL',     placeholder: 'https://192.168.1.1' },
+        { key: 'api_token',  label: 'API Token',          secret: true, placeholder: 'REST API admin token' },
+        { key: 'group_name', label: 'Block Group Name',   placeholder: 'BBS-AISOC-Blocked (default)' },
+      ],
+    },
+    pfsense: {
+      label: 'pfSense',
+      color: 'text-blue-700 bg-blue-50 border-blue-200',
+      fields: [
+        { key: 'url',          label: 'pfSense URL',        placeholder: 'https://192.168.1.1' },
+        { key: 'client_id',    label: 'API Client ID',      placeholder: 'From System > API' },
+        { key: 'client_token', label: 'API Client Token',   secret: true, placeholder: 'From System > API' },
+        { key: 'alias',        label: 'Block Alias Name',   placeholder: 'BBS_AISOC_Blocked (default)' },
+      ],
+    },
+    sophos: {
+      label: 'Sophos XG / SFOS',
+      color: 'text-blue-900 bg-blue-50 border-blue-300',
+      fields: [
+        { key: 'url',      label: 'Firewall URL (port 4444)', placeholder: 'https://192.168.1.1:4444' },
+        { key: 'username', label: 'Admin Username',           placeholder: 'admin' },
+        { key: 'password', label: 'Admin Password',           secret: true },
+      ],
+    },
+  };
+
+  const configFromForm = (type: string) => {
+    const meta = FW_META[type];
+    const cfg: Record<string, string> = {};
+    meta?.fields.forEach(f => { if (form[f.key as keyof typeof form]) cfg[f.key] = form[f.key as keyof typeof form] as string; });
+    return cfg;
+  };
+
+  const loadFirewalls = useCallback(async () => {
+    const res  = await fetch('/api/firewalls', { headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
+    if (res.ok) setFirewalls(await res.json());
+  }, []);
+
+  const loadBlocks = useCallback(async (fwId: number) => {
+    const res  = await fetch(`/api/firewalls/${fwId}/blocks`, { headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
+    if (res.ok) { const data = await res.json(); setBlocks(prev => ({ ...prev, [fwId]: data })); }
+  }, []);
+
+  useEffect(() => { loadFirewalls(); }, [loadFirewalls]);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = await fetch('/api/firewalls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
+      body: JSON.stringify({ name: form.name, type: form.type, config: configFromForm(form.type), enabled: false, auto_block: false }),
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
+    showToast(`Firewall "${form.name}" added`);
+    setShowAdd(false);
+    setForm({ name: '', type: 'fortigate', url: '', api_token: '', client_id: '', client_token: '', username: '', password: '', group_name: '', alias: '' });
+    loadFirewalls();
+  };
+
+  const handleToggle = async (fw: any, field: 'enabled' | 'auto_block') => {
+    await fetch(`/api/firewalls/${fw.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
+      body: JSON.stringify({ [field]: !fw[field] }),
+    });
+    loadFirewalls();
+  };
+
+  const handleTest = async (fw: any) => {
+    setTesting(prev => ({ ...prev, [fw.id]: true }));
+    const res = await fetch(`/api/firewalls/${fw.id}/test`, { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
+    const data = await res.json();
+    showToast(data.ok ? `${fw.name} connection OK` : `${fw.name} test failed: ${data.error}`, data.ok ? 'success' : 'error');
+    setTesting(prev => ({ ...prev, [fw.id]: false }));
+  };
+
+  const handleBlockIp = async (fw: any) => {
+    const ip = blockIpInput[fw.id]?.trim();
+    if (!ip) return;
+    setBlocking(prev => ({ ...prev, [fw.id]: true }));
+    const res = await fetch(`/api/firewalls/${fw.id}/block`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
+      body: JSON.stringify({ ip, reason: 'Manual block via SOC console' }),
+    });
+    const data = await res.json();
+    showToast(data.ok ? `${ip} blocked on ${fw.name}` : `Block failed: ${data.error}`, data.ok ? 'success' : 'error');
+    setBlocking(prev => ({ ...prev, [fw.id]: false }));
+    setBlockIpInput(prev => ({ ...prev, [fw.id]: '' }));
+    loadFirewalls();
+    if (expandedFw === fw.id) loadBlocks(fw.id);
+  };
+
+  const handleUnblock = async (fw: any, ip: string) => {
+    await fetch(`/api/firewalls/${fw.id}/unblock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
+      body: JSON.stringify({ ip }),
+    });
+    showToast(`${ip} unblocked on ${fw.name}`, 'info');
+    loadBlocks(fw.id);
+    loadFirewalls();
+  };
+
+  const handleDelete = async (fw: any) => {
+    await fetch(`/api/firewalls/${fw.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
+    showToast(`${fw.name} removed`, 'info');
+    loadFirewalls();
+  };
+
+  const statusDot = (enabled: boolean) => (
+    <span className={`inline-block w-2 h-2 rounded-full ${enabled ? 'bg-[#1e8e3e]' : 'bg-slate-300'}`} />
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Section header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Shield className="w-5 h-5 text-[#004a99]" />
+          <h3 className="text-[1rem] font-black text-[#004a99]">Firewall Integrations</h3>
+          <span className="text-[0.65rem] text-slate-400 font-semibold">Sophos · FortiGate · pfSense</span>
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => setShowAdd(!showAdd)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[#003a7a] transition-colors"
+          >
+            <Plus size={13} />
+            Add Firewall
+          </button>
+        )}
+      </div>
+
+      {/* Add form */}
+      {showAdd && isAdmin && (
+        <form onSubmit={handleAdd} className="bg-white border border-[#d1d9e6] rounded-xl p-5 shadow-sm space-y-4">
+          <p className="text-[0.78rem] font-black text-slate-600 uppercase tracking-wide">New Firewall Integration</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">Display Name</label>
+              <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Perimeter-FW-01" className="w-full border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+            </div>
+            <div>
+              <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">Firewall Type</label>
+              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="w-full border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]">
+                <option value="fortigate">FortiGate (FortiOS)</option>
+                <option value="pfsense">pfSense (REST API)</option>
+                <option value="sophos">Sophos XG / SFOS</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {FW_META[form.type]?.fields.map(f => (
+              <div key={f.key}>
+                <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">{f.label}</label>
+                <input
+                  type={f.secret ? 'password' : 'text'}
+                  value={form[f.key as keyof typeof form] as string}
+                  onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                  placeholder={f.placeholder}
+                  className="w-full border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:border-[#004a99] font-mono"
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button type="submit" className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[#003a7a]">Add Firewall</button>
+            <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-[0.78rem] font-semibold hover:bg-slate-50">Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {/* No firewalls */}
+      {firewalls.length === 0 && !showAdd && (
+        <div className="bg-white border border-dashed border-slate-300 rounded-xl p-8 text-center space-y-2">
+          <Shield className="w-10 h-10 text-slate-300 mx-auto" />
+          <p className="text-slate-500 font-semibold">No firewalls configured</p>
+          <p className="text-slate-400 text-[0.78rem]">Add a FortiGate, pfSense, or Sophos XG to enable automatic IP blocking from agent response actions.</p>
+        </div>
+      )}
+
+      {/* Firewall cards */}
+      {firewalls.map(fw => {
+        const meta     = FW_META[fw.type];
+        const fwBlocks = blocks[fw.id];
+        const isExpanded = expandedFw === fw.id;
+
+        return (
+          <div key={fw.id} className={`bg-white border rounded-xl shadow-sm overflow-hidden ${fw.enabled ? 'border-[#004a99]/30' : 'border-[#d1d9e6]'}`}>
+            {/* Card header */}
+            <div className={`flex items-center justify-between px-5 py-3 border-b ${fw.enabled ? 'bg-[#f0f7ff]' : 'bg-slate-50'}`}>
+              <div className="flex items-center gap-3">
+                {statusDot(fw.enabled)}
+                <div>
+                  <p className="text-[0.88rem] font-black text-slate-800">{fw.name}</p>
+                  <span className={`text-[0.6rem] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${meta?.color || 'bg-slate-50 text-slate-500 border-slate-200'}`}>{meta?.label || fw.type}</span>
+                </div>
+                <div className="ml-2 text-[0.72rem]">
+                  <span className="font-mono text-slate-500">{fw.active_blocks || 0}</span>
+                  <span className="text-slate-400"> IPs blocked</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Auto-block badge */}
+                {fw.auto_block && (
+                  <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-800 text-[0.6rem] font-black uppercase tracking-wide border border-red-200">⚡ Auto-block ON</span>
+                )}
+
+                {isAdmin && (
+                  <>
+                    <button onClick={() => handleToggle(fw, 'enabled')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.enabled ? 'border-[#1e8e3e] text-[#1e8e3e] hover:bg-green-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+                      {fw.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                    <button onClick={() => handleToggle(fw, 'auto_block')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.auto_block ? 'border-red-400 text-red-600 hover:bg-red-50' : 'border-slate-300 text-slate-400 hover:bg-slate-50'}`} title="Auto-block IPs from BLOCK_IP agent actions">
+                      Auto-block
+                    </button>
+                    <button onClick={() => handleTest(fw)} disabled={testing[fw.id]} className="text-[0.68rem] font-bold px-2.5 py-1 rounded border border-[#004a99] text-[#004a99] hover:bg-[#f0f7ff] transition-colors disabled:opacity-50">
+                      {testing[fw.id] ? '…' : 'Test'}
+                    </button>
+                    <button onClick={() => handleDelete(fw)} className="p-1.5 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors">
+                      <Trash2 size={13} />
+                    </button>
+                  </>
+                )}
+
+                <button onClick={() => { setExpandedFw(isExpanded ? null : fw.id); if (!isExpanded) loadBlocks(fw.id); }} className="p-1.5 rounded hover:bg-slate-100 transition-colors">
+                  <ChevronDown size={14} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* Manual block input */}
+            <div className="px-5 py-3 flex items-center gap-2 border-b border-slate-100">
+              <input
+                type="text"
+                value={blockIpInput[fw.id] || ''}
+                onChange={e => setBlockIpInput(prev => ({ ...prev, [fw.id]: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && handleBlockIp(fw)}
+                placeholder="Block IP address manually (e.g. 185.220.101.47)"
+                className="flex-1 border border-slate-200 rounded px-3 py-1.5 text-[0.78rem] font-mono outline-none focus:border-red-400 focus:ring-1 focus:ring-red-100"
+              />
+              <button
+                onClick={() => handleBlockIp(fw)}
+                disabled={blocking[fw.id] || !blockIpInput[fw.id]?.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#d93025] text-white text-[0.72rem] font-bold hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {blocking[fw.id] ? <div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> : <Shield size={12} />}
+                Block
+              </button>
+            </div>
+
+            {/* Blocked IPs list (expanded) */}
+            {isExpanded && (
+              <div className="border-t border-slate-100">
+                {!fwBlocks ? (
+                  <div className="p-4 text-center text-slate-400 text-[0.75rem]">Loading…</div>
+                ) : fwBlocks.filter((b: any) => b.status === 'blocked').length === 0 ? (
+                  <div className="p-4 text-center text-slate-400 text-[0.75rem]">No IPs currently blocked on this firewall.</div>
+                ) : (
+                  <table className="w-full text-[0.75rem]">
+                    <thead className="bg-slate-50 border-b border-slate-100">
+                      <tr className="text-[0.6rem] text-slate-400 font-black uppercase tracking-wider">
+                        <th className="px-4 py-2 text-left">IP Address</th>
+                        <th className="px-4 py-2 text-left">Reason</th>
+                        <th className="px-4 py-2 text-left">Blocked At</th>
+                        <th className="px-4 py-2 text-left">Alert</th>
+                        {isAdmin && <th className="px-4 py-2" />}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {fwBlocks.filter((b: any) => b.status === 'blocked').map((b: any) => (
+                        <tr key={b.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-2 font-mono font-bold text-red-700">{b.ip}</td>
+                          <td className="px-4 py-2 text-slate-600 truncate max-w-[180px]">{b.reason}</td>
+                          <td className="px-4 py-2 text-slate-500 text-[0.68rem] whitespace-nowrap">
+                            {new Date(b.blocked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </td>
+                          <td className="px-4 py-2 font-mono text-[#004a99] text-[0.65rem]">{b.alert_id?.substring(0, 8).toUpperCase() || '—'}</td>
+                          {isAdmin && (
+                            <td className="px-4 py-2">
+                              <button onClick={() => handleUnblock(fw, b.ip)} className="px-2 py-0.5 rounded border border-slate-200 text-[0.62rem] font-bold text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors">
+                                Unblock
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 };
 
 const AgentsTab = () => {
+  const showToast = useToast();
   const { token, user } = useAuth();
   const [promptModal, setPromptModal] = useState<{ name: string; prompt: string } | null>(null);
-  const [config, setConfig] = useState<AgentModelConfig | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [savingPhase, setSavingPhase] = useState<AgentPhase | null>(null);
+  const [config,       setConfig]      = useState<AgentModelConfig | null>(null);
+  const [loading,      setLoading]     = useState(false);
+  const [error,        setError]       = useState('');
+  const [savingPhase,  setSavingPhase] = useState<AgentPhase | null>(null);
+  const [agentStats,   setAgentStats]  = useState<AgentStat[]>([]);
   const isAdmin = user?.role === 'ADMIN';
+
+  // ── Local LLM state ────────────────────────────────────────────────────────
+  const [localUrl,     setLocalUrl]    = useState('http://localhost:11434');
+  const [localEnabled, setLocalEnabled]= useState(false);
+  const [localModels,  setLocalModels] = useState<LocalModel[]>([]);
+  const [localStatus,  setLocalStatus] = useState<'unknown'|'checking'|'connected'|'unreachable'>('unknown');
+  const [savingLocal,  setSavingLocal] = useState(false);
 
   const agentDefs: Array<{ phase: AgentPhase; name: string; desc: string; prompt: string }> = [
     {
@@ -2610,13 +3078,42 @@ const AgentsTab = () => {
     },
   ];
 
+  const checkLocalConnection = useCallback(async (url?: string) => {
+    setLocalStatus('checking');
+    const res = await testLocalLLM();
+    if (res.ok) {
+      setLocalStatus('connected');
+      const modRes = await getLocalLLMModels();
+      setLocalModels(modRes.models || []);
+    } else {
+      setLocalStatus('unreachable');
+      setLocalModels([]);
+    }
+  }, []);
+
   useEffect(() => {
     if (!token) return;
     setLoading(true);
     setError('');
-    getAgentModelConfig()
-      .then(setConfig)
-      .catch((err: any) => setError(err?.message || 'Failed to load agent model configuration.'))
+    Promise.all([
+      getAgentModelConfig(),
+      getAgentStats(),
+      getLocalLLMConfig(),
+    ]).then(([cfg, stats, local]) => {
+      setConfig(cfg);
+      setAgentStats(stats);
+      setLocalUrl(local.url);
+      setLocalEnabled(local.enabled);
+      if (local.enabled) {
+        // Also fetch local models from the config response
+        if (cfg.localModels && cfg.localModels.length > 0) {
+          setLocalModels(cfg.localModels);
+          setLocalStatus('connected');
+        } else {
+          checkLocalConnection(local.url);
+        }
+      }
+    }).catch((err: any) => setError(err?.message || 'Failed to load configuration.'))
       .finally(() => setLoading(false));
   }, [token]);
 
@@ -2627,69 +3124,239 @@ const AgentsTab = () => {
     try {
       const updated = await updateAgentModel(phase, model);
       setConfig(updated);
+      showToast(`${phase} agent → ${model.startsWith('local::') ? model.replace('local::','') : (updated?.modelLabels?.[model] || model)}`);
     } catch (err: any) {
       setError(err?.message || 'Failed to update model.');
+      showToast('Failed to save model', 'error');
     } finally {
       setSavingPhase(null);
     }
   };
 
+  const handleSaveLocalConfig = async () => {
+    setSavingLocal(true);
+    try {
+      await updateLocalLLMConfig({ url: localUrl, enabled: localEnabled });
+      showToast('Local LLM config saved');
+      if (localEnabled) await checkLocalConnection(localUrl);
+      else { setLocalStatus('unknown'); setLocalModels([]); }
+      // Refresh model config to get updated localModels in dropdowns
+      const updated = await getAgentModelConfig();
+      setConfig(updated);
+    } catch (err: any) {
+      showToast('Failed to save local LLM config', 'error');
+    } finally {
+      setSavingLocal(false);
+    }
+  };
+
+  const handleTestLocal = async () => {
+    setLocalStatus('checking');
+    const res = await testLocalLLM();
+    showToast(res.ok ? `${res.message}` : `Unreachable: ${res.error}`, res.ok ? 'success' : 'error');
+    if (res.ok) {
+      setLocalStatus('connected');
+      const modRes = await getLocalLLMModels();
+      setLocalModels(modRes.models || []);
+    } else {
+      setLocalStatus('unreachable');
+      setLocalModels([]);
+    }
+  };
+
+  const getStatForPhase = (phase: AgentPhase): AgentStat | undefined =>
+    agentStats.find(s => s.phase === phase);
+
+  const statusColor: Record<string, string> = {
+    unknown:     'text-slate-400',
+    checking:    'text-blue-500',
+    connected:   'text-[#1e8e3e]',
+    unreachable: 'text-[#d93025]',
+  };
+  const statusLabel: Record<string, string> = {
+    unknown:     '● Not checked',
+    checking:    '● Checking…',
+    connected:   `● Connected — ${localModels.length} model${localModels.length === 1 ? '' : 's'}`,
+    unreachable: '● Unreachable',
+  };
+
   return (
-    <div className="p-8 max-w-6xl mx-auto overflow-y-auto h-full">
-      <h2 className="text-2xl font-bold text-[#004a99] mb-1">AI Agent Configuration</h2>
-      <p className="text-sm text-[#5f6368] mb-2">
-        Runtime models are now configurable per agent (OpenRouter free-model list), persisted in SQLite, and used by both single-agent and full-orchestration runs.
-      </p>
-      <p className="text-[0.75rem] text-slate-500 mb-6">
-        {isAdmin ? 'You can change model assignments below.' : 'Model selection is admin-only.'}
-      </p>
+    <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
+      <div>
+        <h2 className="text-2xl font-bold text-[#004a99]">AI Agents</h2>
+        <p className="text-[0.8rem] text-slate-500 mt-0.5">
+          {isAdmin ? 'Configure model assignments and local LLM server.' : 'Model selection is admin-only.'}
+        </p>
+      </div>
 
       {error && (
-        <div className="mb-4 bg-red-50 text-[#d93025] p-3 rounded border border-red-100 text-[0.8rem] font-semibold">
-          {error}
-        </div>
+        <div className="bg-red-50 text-[#d93025] p-3 rounded border border-red-100 text-[0.8rem] font-semibold">{error}</div>
       )}
 
-      <div className="grid grid-cols-2 gap-6">
+      {/* ── Local LLM Server Card ──────────────────────────────────────────── */}
+      <div className={`bg-white border rounded-xl shadow-sm overflow-hidden ${localEnabled && localStatus === 'connected' ? 'border-[#1e8e3e]/40' : 'border-[#d1d9e6]'}`}>
+        <div className={`flex items-center justify-between px-5 py-3 border-b ${localEnabled && localStatus === 'connected' ? 'bg-green-50/50' : 'bg-slate-50'}`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-2 h-2 rounded-full ${localEnabled && localStatus === 'connected' ? 'bg-[#1e8e3e]' : 'bg-slate-300'}`} />
+            <p className="text-[0.9rem] font-black text-slate-800">Local LLM Server</p>
+            <span className="text-[0.65rem] text-slate-400 font-semibold">Ollama · OpenAI-compatible</span>
+          </div>
+          <span className={`text-[0.7rem] font-bold ${statusColor[localStatus]}`}>{statusLabel[localStatus]}</span>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">Ollama Server URL</label>
+              <input
+                type="text"
+                value={localUrl}
+                onChange={e => setLocalUrl(e.target.value)}
+                disabled={!isAdmin}
+                placeholder="http://localhost:11434"
+                className="w-full border border-slate-200 rounded px-3 py-2 text-[0.82rem] font-mono outline-none focus:border-[#004a99] disabled:opacity-60"
+              />
+            </div>
+            <div className="flex items-center gap-2 pb-0.5">
+              <label className="text-[0.7rem] font-bold text-slate-600">Enable</label>
+              <button
+                onClick={() => isAdmin && setLocalEnabled(v => !v)}
+                disabled={!isAdmin}
+                className={`relative w-10 h-5 rounded-full transition-colors disabled:opacity-50 ${localEnabled ? 'bg-[#1e8e3e]' : 'bg-slate-300'}`}
+              >
+                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${localEnabled ? 'left-5' : 'left-0.5'}`} />
+              </button>
+            </div>
+            {isAdmin && (
+              <>
+                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[#003a7a] disabled:opacity-50 transition-colors">
+                  {savingLocal ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={handleTestLocal} disabled={localStatus === 'checking'} className="px-4 py-2 rounded-lg border border-[#004a99] text-[#004a99] text-[0.75rem] font-bold hover:bg-[#f0f7ff] disabled:opacity-50 transition-colors">
+                  {localStatus === 'checking' ? '…' : 'Test'}
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Available models list */}
+          {localStatus === 'connected' && localModels.length > 0 && (
+            <div>
+              <p className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider mb-2">Available Models ({localModels.length})</p>
+              <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                {localModels.map(m => (
+                  <span key={m.name} className="px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-green-800 text-[0.68rem] font-bold font-mono">
+                    {m.name}
+                    {m.size > 0 && <span className="ml-1 opacity-60">{(m.size / 1e9).toFixed(1)}GB</span>}
+                  </span>
+                ))}
+              </div>
+              <p className="text-[0.62rem] text-slate-400 mt-1.5">Select a local model from the dropdown below using the <span className="font-mono bg-slate-100 px-1 rounded">🖥 Local (Ollama)</span> group.</p>
+            </div>
+          )}
+          {localStatus === 'unreachable' && (
+            <div className="flex items-center gap-2 text-[0.75rem] text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertTriangle size={14} />
+              <span>Cannot reach Ollama at <span className="font-mono font-bold">{localUrl}</span>. Make sure Ollama is running (<span className="font-mono">ollama serve</span>).</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Agent Cards Grid ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-5">
         {agentDefs.map((agent, i) => {
           const currentModel = config?.assignments?.[agent.phase] || config?.defaults?.[agent.phase] || 'unknown';
-          const options = config?.availableModels || [currentModel];
-          const isSaving = savingPhase === agent.phase;
+          const cloudOptions = config?.availableModels || [];
+          const isSaving     = savingPhase === agent.phase;
+          const isLocalAssigned = currentModel.startsWith('local::');
+          const stat = getStatForPhase(agent.phase);
+          const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
+
           return (
-            <div key={i} className="bg-white border border-[#d1d9e6] rounded-lg p-5 shadow-sm">
-              <div className="flex justify-between items-start mb-3">
-                <h3 className="font-bold text-[#004a99]">{agent.name}</h3>
-                <span className="bg-green-50 text-green-600 px-2 py-1 rounded text-[10px] font-bold uppercase">Active</span>
-              </div>
-              <p className="text-sm text-[#5f6368] mb-4">{agent.desc}</p>
-              <div className="space-y-2 pt-4 border-t border-[#f0f0f0]">
-                <label className="text-[0.62rem] font-black uppercase tracking-wider text-slate-400 block">Model</label>
-                <select
-                  value={currentModel}
-                  disabled={!isAdmin || loading || isSaving}
-                  onChange={(e) => handleModelChange(agent.phase, e.target.value)}
-                  className="w-full border border-[#d1d9e6] rounded px-2.5 py-2 text-[0.72rem] outline-none focus:border-[#004a99] disabled:opacity-60"
-                >
-                  {options.map((model) => (
-                    <option key={model} value={model}>{config?.modelLabels?.[model] || model}</option>
-                  ))}
-                </select>
-                <div className="flex justify-between items-center">
-                  <span className="text-[0.65rem] text-slate-400">{isSaving ? 'Saving model...' : 'OpenRouter model'}</span>
-                  <button
-                    onClick={() => setPromptModal({ name: agent.name, prompt: agent.prompt })}
-                    className="flex items-center gap-1 text-[#004a99] text-xs font-bold hover:underline"
-                  >
-                    <Eye className="w-3 h-3" />
-                    View Prompt
-                  </button>
+            <div key={i} className={`bg-white border rounded-xl shadow-sm overflow-hidden ${isLocalAssigned ? 'border-green-300' : 'border-[#d1d9e6]'}`}>
+              <div className={`flex justify-between items-center px-5 py-3 border-b ${isLocalAssigned ? 'bg-green-50/50' : 'bg-slate-50/50'}`}>
+                <h3 className="font-black text-[0.88rem] text-[#004a99]">{agent.name}</h3>
+                <div className="flex items-center gap-2">
+                  {isLocalAssigned && <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200 text-[0.58rem] font-black uppercase tracking-wide">🖥 LOCAL</span>}
+                  <span className="bg-green-50 text-green-600 px-2 py-0.5 rounded text-[0.6rem] font-bold uppercase border border-green-100">Active</span>
                 </div>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <p className="text-[0.78rem] text-slate-500">{agent.desc}</p>
+
+                {/* Model dropdown with groups */}
+                <div className="space-y-1.5">
+                  <label className="text-[0.62rem] font-black uppercase tracking-wider text-slate-400 block">Model</label>
+                  <select
+                    value={currentModel}
+                    disabled={!isAdmin || loading || isSaving}
+                    onChange={(e) => handleModelChange(agent.phase, e.target.value)}
+                    className="w-full border border-[#d1d9e6] rounded px-2.5 py-2 text-[0.72rem] outline-none focus:border-[#004a99] disabled:opacity-60"
+                  >
+                    <optgroup label="☁ Cloud (OpenRouter)">
+                      {cloudOptions.map((model) => (
+                        <option key={model} value={model}>{config?.modelLabels?.[model] || model}</option>
+                      ))}
+                    </optgroup>
+                    {localStatus === 'connected' && localModels.length > 0 && (
+                      <optgroup label="🖥 Local (Ollama)">
+                        {localModels.map(m => (
+                          <option key={`local::${m.name}`} value={`local::${m.name}`}>{m.name}</option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  <div className="flex justify-between items-center">
+                    <span className="text-[0.62rem] text-slate-400">
+                      {isSaving ? 'Saving…' : isLocalAssigned ? `🖥 Ollama · ${currentModel.replace('local::','')}` : 'OpenRouter'}
+                    </span>
+                    <button onClick={() => setPromptModal({ name: agent.name, prompt: agent.prompt })} className="flex items-center gap-1 text-[#004a99] text-[0.68rem] font-bold hover:underline">
+                      <Eye className="w-3 h-3" />
+                      Prompt
+                    </button>
+                  </div>
+                </div>
+
+                {/* Stats strip */}
+                {stat && (
+                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-100">
+                    <div className="text-center">
+                      <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider">Runs</p>
+                      <p className="text-[0.88rem] font-black text-slate-700">{stat.total_runs || '—'}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider">Avg Conf</p>
+                      <p className={`text-[0.88rem] font-black ${
+                        stat.avg_confidence == null ? 'text-slate-400' :
+                        stat.avg_confidence >= 80 ? 'text-[#1e8e3e]' :
+                        stat.avg_confidence >= 60 ? 'text-amber-600' : 'text-[#d93025]'
+                      }`}>{stat.avg_confidence != null ? `${stat.avg_confidence}%` : '—'}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider">Feedback</p>
+                      <p className={`text-[0.88rem] font-black ${
+                        stat.feedback_total === 0 ? 'text-slate-400' :
+                        (stat.feedback_accurate / stat.feedback_total) >= 0.75 ? 'text-[#1e8e3e]' :
+                        (stat.feedback_accurate / stat.feedback_total) >= 0.5  ? 'text-amber-600' : 'text-[#d93025]'
+                      }`}>{stat.feedback_total > 0 ? `${stat.feedback_accurate}/${stat.feedback_total}` : '—'}</p>
+                    </div>
+                    {fallbackPct > 30 && (
+                      <div className="col-span-3 flex items-center gap-1.5 text-[0.65rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 font-bold">
+                        <AlertTriangle size={11} />
+                        {fallbackPct}% fallback rate — model may be unavailable
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
       </div>
 
+      {/* Prompt modal */}
       {promptModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -2701,14 +3368,10 @@ const AgentsTab = () => {
               <button onClick={() => setPromptModal(null)} className="p-1 hover:bg-white/10 rounded"><X size={18} /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
-              <pre className="text-[0.78rem] bg-slate-950 text-emerald-400 p-5 rounded-xl font-mono leading-relaxed whitespace-pre-wrap">
-                {promptModal.prompt}
-              </pre>
+              <pre className="text-[0.78rem] bg-slate-950 text-emerald-400 p-5 rounded-xl font-mono leading-relaxed whitespace-pre-wrap">{promptModal.prompt}</pre>
             </div>
             <div className="px-6 py-4 border-t bg-slate-50 flex justify-end shrink-0">
-              <button onClick={() => setPromptModal(null)} className="px-5 py-2 rounded border border-slate-200 text-slate-600 font-semibold text-sm hover:bg-slate-100">
-                Close
-              </button>
+              <button onClick={() => setPromptModal(null)} className="px-5 py-2 rounded border border-slate-200 text-slate-600 font-semibold text-sm hover:bg-slate-100">Close</button>
             </div>
           </div>
         </div>
@@ -3241,172 +3904,259 @@ export default function App() {
 }
 
 const Reports = ({ alerts }: { alerts: Alert[] }) => {
-  const triaged = alerts.filter(a => a.status === 'TRIAGED').length;
-  const closed = alerts.filter(a => a.status === 'CLOSED').length;
-  const falsePositives = alerts.filter(a => a.status === 'FALSE_POSITIVE').length;
+  const [summary,    setSummary]    = useState<ReportSummary | null>(null);
+  const [reports,    setReports]    = useState<ReportRow[]>([]);
+  const [totalReps,  setTotalReps]  = useState(0);
+  const [page,       setPage]       = useState(1);
+  const [priority,   setPriority]   = useState('');
+  const [viewReport, setViewReport] = useState<{ alert: Alert; aiData: any; mitreTags: string[] } | null>(null);
+  const pageSize = 15;
 
-  const severityStats = {
-    critical: alerts.filter(a => a.severity >= 12).length,
-    high: alerts.filter(a => a.severity >= 7 && a.severity < 12).length,
-    medium: alerts.filter(a => a.severity < 7).length,
+  useEffect(() => {
+    getReportSummary().then(setSummary).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    getReports({ page, pageSize, priority: priority || undefined })
+      .then(d => { setReports(d.reports as ReportRow[]); setTotalReps(d.total); })
+      .catch(() => {});
+  }, [page, priority]);
+
+  const priColor: Record<string, string> = {
+    CRITICAL: 'bg-red-100 text-red-800',
+    HIGH:     'bg-orange-100 text-orange-800',
+    MEDIUM:   'bg-blue-100 text-blue-800',
+    LOW:      'bg-green-100 text-green-800',
   };
+  const sevColor = (s: number) => s >= 13 ? 'bg-red-50 text-red-700' : s >= 10 ? 'bg-orange-50 text-orange-700' : s >= 7 ? 'bg-blue-50 text-blue-700' : 'bg-green-50 text-green-700';
+  const sevLabel = (s: number) => s >= 13 ? 'CRIT' : s >= 10 ? 'HIGH' : s >= 7 ? 'MED' : 'LOW';
 
-  // Compute real efficiency metrics from alert data
-  const triagedAlerts = alerts.filter(a => (a.status === 'TRIAGED' || a.status === 'CLOSED') && a.ai_analysis);
-  const mttrMs = triagedAlerts.length > 0
-    ? triagedAlerts.reduce((sum, a) => sum + (Date.now() - new Date(a.timestamp).getTime()), 0) / triagedAlerts.length
-    : null;
-  const mttrDisplay = mttrMs !== null
-    ? mttrMs < 120000 ? `${(mttrMs / 1000).toFixed(1)}s` : `${(mttrMs / 60000).toFixed(1)}m`
-    : 'N/A';
+  const intgIcon: Record<string, string> = { email: '📧', glpi: '🎫', telegram: '✈' };
 
-  const confidenceScores: number[] = [];
-  alerts.forEach(a => {
-    if (!a.ai_analysis) return;
-    try {
-      const pd = JSON.parse(a.ai_analysis)?.phaseData || {};
-      Object.values(pd).forEach((phase: any) => {
-        if (typeof phase?.confidence === 'number' && !isNaN(phase.confidence)) confidenceScores.push(phase.confidence);
-      });
-    } catch {}
-  });
-  const avgConsensus = confidenceScores.length > 0
-    ? `${Math.round((confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length) * 100)}%`
-    : 'N/A';
-
-  const withResponse = alerts.filter(a => {
-    if (!a.ai_analysis) return false;
-    try { return (JSON.parse(a.ai_analysis)?.response?.actions?.length ?? 0) > 0; } catch { return false; }
-  }).length;
-  const autoContainment = alerts.length > 0 ? `${Math.round((withResponse / alerts.length) * 100)}%` : 'N/A';
-
-  const withValidation = alerts.filter(a => {
-    if (!a.ai_analysis) return false;
-    try { return !!JSON.parse(a.ai_analysis)?.phaseData?.validation?.sla_status; } catch { return false; }
-  });
-  const slaMet = withValidation.filter(a => {
-    try { return JSON.parse(a.ai_analysis!)?.phaseData?.validation?.sla_status === 'SLA_MET'; } catch { return false; }
-  }).length;
-  const slaAdherence = withValidation.length > 0 ? `${Math.round((slaMet / withValidation.length) * 100)}%` : 'N/A';
-
-  // Group by MITRE techniques
+  // Metrics from alerts array
+  const triaged      = alerts.filter(a => a.status === 'TRIAGED').length;
+  const falsePos     = alerts.filter(a => a.status === 'FALSE_POSITIVE').length;
+  const critCount    = alerts.filter(a => a.severity >= 12).length;
+  const highCount    = alerts.filter(a => a.severity >= 7 && a.severity < 12).length;
   const mitreMapping: Record<string, number> = {};
   alerts.forEach(a => {
-    if (a.mitre_attack) {
-      try {
-        const tags = Array.isArray(a.mitre_attack) ? a.mitre_attack : JSON.parse(a.mitre_attack as any);
-        tags.forEach((tag: string) => {
-          mitreMapping[tag] = (mitreMapping[tag] || 0) + 1;
-        });
-      } catch (e) {}
-    }
+    if (!a.mitre_attack) return;
+    try {
+      const tags = Array.isArray(a.mitre_attack) ? a.mitre_attack : JSON.parse(a.mitre_attack as any);
+      tags.forEach((t: string) => { mitreMapping[t] = (mitreMapping[t] || 0) + 1; });
+    } catch {}
   });
+  const topMitre = Object.entries(mitreMapping).sort(([, a], [, b]) => b - a).slice(0, 5);
 
-  const topTechniques = Object.entries(mitreMapping)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5);
+  const totalPages = Math.ceil(totalReps / pageSize);
+
+  const handleViewReport = (rep: ReportRow) => {
+    const alert = alerts.find(a => a.id === rep.alert_id);
+    if (!alert) return;
+    let aiData: any = null;
+    try { aiData = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch {}
+    let mitreTags: string[] = [];
+    try { mitreTags = alert.mitre_attack ? JSON.parse(alert.mitre_attack as any) : []; } catch {}
+    setViewReport({ alert, aiData, mitreTags });
+  };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-8 overflow-y-auto h-full">
-      <div className="flex justify-between items-end pb-4 border-b">
+    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
+      {/* Header */}
+      <div className="flex items-end justify-between pb-3 border-b border-slate-200">
         <div>
-          <h2 className="text-2xl font-bold text-[#004a99]">Aegis Intelligence Reports</h2>
-          <p className="text-sm text-[#5f6368]">Consolidated SOC Performance & Threat Landscape</p>
+          <h2 className="text-2xl font-bold text-[#004a99]">Incident Reports</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Agent-generated reports · {new Date().toLocaleDateString()}</p>
         </div>
-        <div className="text-right">
-          <p className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">Report Internal ID</p>
-          <p className="text-xs font-mono text-[#004a99]">REP-ALPHA-{new Date().toISOString().split('T')[0]}</p>
-        </div>
+        <p className="text-xs font-mono text-slate-400">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
-        <div className="bg-white p-6 border rounded-lg shadow-sm space-y-4">
-          <h3 className="text-[0.85rem] font-bold text-[#5f6368] uppercase">Analysis Throughput</h3>
+      {/* Top stats row — 3 cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-white p-5 border border-[#d1d9e6] rounded-xl shadow-sm space-y-3">
+          <p className="text-[0.72rem] font-black text-slate-400 uppercase tracking-widest">Alert Throughput</p>
           <div className="flex items-end gap-2">
-            <span className="text-4xl font-bold text-[#004a99]">{alerts.length}</span>
-            {(triaged + closed) > 0 && (
-              <span className="text-sm text-[#1e8e3e] mb-1 font-bold">{triaged + closed} resolved total</span>
-            )}
+            <span className="text-4xl font-black text-[#004a99]">{alerts.length}</span>
+            <span className="text-sm text-[#1e8e3e] font-bold mb-1">{triaged + falsePos} resolved</span>
           </div>
-          <div className="space-y-2 pt-2">
-            <div className="flex justify-between text-xs">
-              <span>Triaged (Ready)</span>
-              <span className="font-bold">{triaged}</span>
-            </div>
-            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-full bg-[#004a99]" style={{ width: `${(triaged/alerts.length)*100}%` }} />
-            </div>
-            <div className="flex justify-between text-xs pt-1">
-              <span>False Positives</span>
-              <span className="font-bold">{falsePositives}</span>
-            </div>
-            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-full bg-slate-400" style={{ width: `${(falsePositives/alerts.length)*100}%` }} />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white p-6 border rounded-lg shadow-sm space-y-4">
-          <h3 className="text-[0.85rem] font-bold text-[#5f6368] uppercase">Severity Distribution</h3>
-          <div className="pt-2 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full bg-[#d93025]" />
-              <div className="flex-1 text-sm">Critical Severity</div>
-              <div className="font-bold text-sm">{severityStats.critical}</div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full bg-[#f29900]" />
-              <div className="flex-1 text-sm">High Severity</div>
-              <div className="font-bold text-sm">{severityStats.high}</div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full bg-[#1a73e8]" />
-              <div className="flex-1 text-sm">Informational/Med</div>
-              <div className="font-bold text-sm">{severityStats.medium}</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white p-6 border rounded-lg shadow-sm space-y-4">
-          <h3 className="text-[0.85rem] font-bold text-[#5f6368] uppercase">MITRE Heatmap (Top 5)</h3>
-          <div className="pt-2 space-y-3">
-            {topTechniques.length > 0 ? topTechniques.map(([tech, count]) => (
-              <div key={tech} className="space-y-1">
-                <div className="flex justify-between text-[0.7rem] font-bold">
-                  <span className="truncate max-w-[150px]">{tech}</span>
-                  <span>{count} Instances</span>
-                </div>
-                <div className="h-1 w-full bg-slate-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-[#004a99]" style={{ width: `${(count/alerts.length)*100}%` }} />
-                </div>
+          {[{ label: 'Triaged', val: triaged, color: 'bg-[#004a99]' }, { label: 'False Pos.', val: falsePos, color: 'bg-slate-400' }].map(s => (
+            <div key={s.label}>
+              <div className="flex justify-between text-[0.72rem] mb-0.5"><span>{s.label}</span><span className="font-bold">{s.val}</span></div>
+              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className={`h-full ${s.color}`} style={{ width: `${alerts.length ? (s.val / alerts.length) * 100 : 0}%` }} />
               </div>
-            )) : (
-              <p className="text-center text-slate-400 text-xs py-10">No MITRE data available</p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
-        <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
-          <h3 className="text-[0.85rem] font-bold text-[#004a99]">Swarm Orchestration Efficiency</h3>
-          <span className="text-xs bg-[#e8f0fe] text-[#1967d2] px-2 py-0.5 rounded font-bold">Live Monitoring</span>
-        </div>
-        <div className="p-8 flex items-center justify-around h-[200px]">
-          {[
-            { label: 'Avg Analysis Time', val: mttrDisplay,    unit: 'per alert' },
-            { label: 'Agent Consensus',   val: avgConsensus,   unit: 'confidence' },
-            { label: 'Auto-Containment',  val: autoContainment, unit: 'success rate' },
-            { label: 'SLA Adherence',     val: slaAdherence,   unit: 'validation target' }
-          ].map((m, i) => (
-            <div key={i} className="text-center">
-              <div className="text-xs text-[#5f6368] font-bold mb-1 uppercase">{m.label}</div>
-              <div className="text-3xl font-bold text-[#004a99]">{m.val}</div>
-              <div className="text-[0.65rem] text-slate-400 mt-1 uppercase font-semibold">{m.unit}</div>
             </div>
           ))}
         </div>
+
+        <div className="bg-white p-5 border border-[#d1d9e6] rounded-xl shadow-sm space-y-3">
+          <p className="text-[0.72rem] font-black text-slate-400 uppercase tracking-widest">Severity Distribution</p>
+          {[
+            { label: 'Critical', count: critCount,       color: '#d93025' },
+            { label: 'High',     count: highCount,       color: '#f29900' },
+            { label: 'Med/Low',  count: alerts.length - critCount - highCount, color: '#1a73e8' },
+          ].map(s => (
+            <div key={s.label} className="flex items-center gap-3">
+              <div className="w-3 h-3 rounded-full shrink-0" style={{ background: s.color }} />
+              <span className="flex-1 text-[0.78rem] text-slate-600">{s.label}</span>
+              <span className="font-black text-[0.82rem]">{s.count}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="bg-white p-5 border border-[#d1d9e6] rounded-xl shadow-sm space-y-2">
+          <p className="text-[0.72rem] font-black text-slate-400 uppercase tracking-widest">Top MITRE Techniques</p>
+          {topMitre.length > 0 ? topMitre.map(([tech, count]) => (
+            <div key={tech} className="space-y-0.5">
+              <div className="flex justify-between text-[0.68rem] font-bold">
+                <span className="font-mono truncate max-w-[130px]">{tech}</span>
+                <span className="text-slate-400">{count}×</span>
+              </div>
+              <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full bg-[#004a99]" style={{ width: `${(count / alerts.length) * 100}%` }} />
+              </div>
+            </div>
+          )) : <p className="text-[0.72rem] text-slate-400 italic">Run agents to generate MITRE data.</p>}
+        </div>
       </div>
+
+      {/* Report summary stats from server */}
+      {summary && (
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { label: 'Total Reports Generated', value: summary.total,                  color: 'text-[#004a99]' },
+            { label: 'Last 7 Days',              value: summary.last_7_days,            color: 'text-[#004a99]' },
+            { label: 'Email Notified',           value: `${summary.email_sent_pct}%`,   color: summary.email_sent_pct > 0 ? 'text-[#1e8e3e]' : 'text-slate-400' },
+            { label: '7-Day Volume',             value: (
+                <div className="flex items-end gap-0.5 h-8">
+                  {summary.daily_volume?.map((d: any, i: number) => {
+                    const max = Math.max(...(summary.daily_volume?.map((x: any) => x.count) || [1]), 1);
+                    return (
+                      <div key={i} title={`${d.day}: ${d.count}`} className="flex-1 bg-[#004a99] rounded-sm" style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }} />
+                    );
+                  })}
+                </div>
+              ), color: '' },
+          ].map((s, i) => (
+            <div key={i} className="bg-white border border-[#d1d9e6] rounded-xl p-4 shadow-sm">
+              <p className="text-[0.62rem] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+              {typeof s.value === 'number' || typeof s.value === 'string'
+                ? <p className={`text-[1.6rem] font-black ${s.color}`}>{s.value}</p>
+                : s.value}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Reports table */}
+      <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between gap-4">
+          <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide shrink-0">
+            Agent Reports ({totalReps})
+          </p>
+          <div className="flex items-center gap-2">
+            <select
+              value={priority}
+              onChange={e => { setPriority(e.target.value); setPage(1); }}
+              className="text-[0.72rem] border border-slate-200 rounded px-2 py-1 outline-none focus:border-[#004a99]"
+            >
+              <option value="">All priorities</option>
+              {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {reports.length === 0 ? (
+          <div className="p-10 text-center text-slate-400 text-sm">
+            {totalReps === 0
+              ? 'No reports generated yet. Open an alert and click Run Agents.'
+              : 'No reports match the current filter.'}
+          </div>
+        ) : (
+          <table className="w-full text-left text-[0.78rem]">
+            <thead className="bg-slate-50/50 border-b border-slate-100 text-[0.62rem] text-slate-400 font-black uppercase tracking-wider">
+              <tr>
+                <th className="px-4 py-2">Time</th>
+                <th className="px-4 py-2">Alert</th>
+                <th className="px-4 py-2">Title</th>
+                <th className="px-4 py-2">Priority</th>
+                <th className="px-4 py-2">Sev</th>
+                <th className="px-4 py-2">Conf</th>
+                <th className="px-4 py-2">Sent via</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {reports.map((rep: ReportRow) => (
+                <tr key={rep.id} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-4 py-2.5 text-slate-500 font-mono text-[0.68rem] whitespace-nowrap">
+                    {new Date(rep.run_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-[#004a99] text-[0.68rem]">{rep.alert_id?.substring(0, 8).toUpperCase()}</td>
+                  <td className="px-4 py-2.5 max-w-[220px]">
+                    <p className="font-semibold text-slate-800 truncate">{rep.title || rep.description?.slice(0, 55) || '—'}</p>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {rep.priority
+                      ? <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black ${priColor[rep.priority] || 'bg-slate-100 text-slate-600'}`}>{rep.priority}</span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={`px-1.5 py-0.5 rounded text-[0.6rem] font-black ${sevColor(rep.severity)}`}>{sevLabel(rep.severity)}</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-600">
+                    {rep.confidence != null ? `${rep.confidence}%` : '—'}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {rep.actions_dispatched && rep.actions_dispatched.length > 0
+                      ? <span className="flex gap-1">{rep.actions_dispatched.map(a => <span key={a} title={a}>{intgIcon[a] || '•'}</span>)}</span>
+                      : <span className="text-slate-300 text-[0.68rem]">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <button
+                      onClick={() => handleViewReport(rep)}
+                      className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[0.65rem] font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+                    >
+                      <Eye size={11} /> View
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="px-5 py-3 border-t bg-slate-50 flex items-center justify-between text-[0.72rem]">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-3 py-1 rounded border border-slate-200 text-slate-600 font-semibold disabled:opacity-40 hover:bg-white transition-colors"
+            >
+              ← Previous
+            </button>
+            <span className="text-slate-500 font-semibold">Page {page} of {totalPages}</span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="px-3 py-1 rounded border border-slate-200 text-slate-600 font-semibold disabled:opacity-40 hover:bg-white transition-colors"
+            >
+              Next →
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Detailed report modal */}
+      {viewReport && (
+        <DetailedReport
+          alert={viewReport.alert}
+          aiData={viewReport.aiData}
+          mitreTags={viewReport.mitreTags}
+          onClose={() => setViewReport(null)}
+        />
+      )}
     </div>
   );
 };
@@ -3422,12 +4172,12 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[#f4f7fa]">
-          {activeTab === 'dashboard'  && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
-          {activeTab === 'alerts'     && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
-          {activeTab === 'incidents'  && <InvestigationsTab />}
-          {activeTab === 'agents'     && <AgentsTab />}
-          {activeTab === 'reports'    && <Reports alerts={alerts} />}
-          {activeTab === 'settings'   && <SettingsTab />}
+          {activeTab === 'dashboard' && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
+          {activeTab === 'alerts'    && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
+          {activeTab === 'actions'   && <ActionsTab />}
+          {activeTab === 'agents'    && <AgentsTab />}
+          {activeTab === 'reports'   && <Reports alerts={alerts} />}
+          {activeTab === 'settings'  && <SettingsTab />}
         </main>
       </div>
     </div>

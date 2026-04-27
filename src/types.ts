@@ -26,25 +26,13 @@ export interface Alert {
   email_sent?: number;
 }
 
-export interface Incident {
-  id: string;
-  title: string;
-  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-  status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED';
-  created_at: string;
-  updated_at: string;
-  assigned_to?: number | null;
-  alerts: string[];
-  analysis?: string | null;
-  action_plan?: string | null;
-}
-
 export interface Stats {
   activeIncidents: number;
   mttr: string;
   automationRate: string;
   totalAlerts: number;
   analyzedAlerts: number;
+  fpRate: string;
 }
 
 export interface AgentRun {
@@ -63,4 +51,49 @@ export interface AuditLog {
   user_id: number;
   action: string;
   details: string;
+}
+
+export interface Integration {
+  name:                string;
+  enabled:             boolean;
+  config:              Record<string, string>;
+  auto_send_threshold: 'CRITICAL' | 'HIGH' | 'NEVER';
+  updated_at:          string;
+  stats_24h?:          { total: number; success: number; failed: number };
+}
+
+export interface ActionLog {
+  id:          number;
+  alert_id:    string;
+  integration: string;
+  action:      string;
+  status:      'success' | 'failed' | 'skipped';
+  payload:     string;
+  error?:      string;
+  created_at:  string;
+}
+
+export interface ReportRow {
+  id:          number;
+  alert_id:    string;
+  run_at:      string;
+  status:      string;
+  severity:    number;
+  description: string;
+  source_ip?:  string;
+  email_sent:  number;
+  title?:      string;
+  priority?:   string;
+  confidence?: number;
+  report_body?: string;
+  actions_dispatched?: string[];
+}
+
+export interface ReportSummary {
+  total:                number;
+  last_7_days:          number;
+  avg_confidence:       number | null;
+  email_sent_pct:       number;
+  priority_distribution:Record<string, number>;
+  daily_volume:         Array<{ day: string; count: number }>;
 }

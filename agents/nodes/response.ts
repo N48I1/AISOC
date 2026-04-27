@@ -21,15 +21,15 @@ const ResponseSchema = z.object({
   actions: z.array(
     z.object({
       type:      z.string(),
-      target:    z.string(),
-      reason:    z.string(),
-      priority:  z.number(),
-      automated: z.boolean(),
+      target:    z.string().default(""),
+      reason:    z.string().default(""),
+      priority:  z.number().default(1),
+      automated: z.boolean().default(false),
     }),
-  ),
-  approval_required:          z.boolean(),
-  estimated_containment_time: z.string(),
-  confidence:                 z.number().min(0).max(1),
+  ).default([]),
+  approval_required:          z.boolean().default(false),
+  estimated_containment_time: z.string().default("unknown"),
+  confidence:                 z.number().min(0).max(1).default(0),
 });
 
 export async function responseNode(state: any, model: string = DEFAULT_AGENT_MODELS.response) {

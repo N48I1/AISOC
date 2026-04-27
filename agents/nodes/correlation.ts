@@ -3,13 +3,13 @@ import { callStructuredLLM } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const CorrelationSchema = z.object({
-  campaign_detected:   z.boolean(),
-  campaign_name:       z.string(),
-  campaign_description:z.string(),
-  related_alert_count: z.number(),
-  escalation_needed:   z.boolean(),
-  kill_chain_stage:    z.string(),
-  confidence:          z.number().min(0).max(1),
+  campaign_detected:    z.boolean().default(false),
+  campaign_name:        z.string().default(""),
+  campaign_description: z.string().default(""),
+  related_alert_count:  z.number().default(0),
+  escalation_needed:    z.boolean().default(false),
+  kill_chain_stage:     z.string().default("UNKNOWN"),
+  confidence:           z.number().min(0).max(1).default(0),
 });
 
 export async function correlationNode(state: any, model: string = DEFAULT_AGENT_MODELS.correlation) {

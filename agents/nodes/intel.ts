@@ -4,12 +4,12 @@ import { DEFAULT_AGENT_MODELS } from "../config.js";
 import { mispSearchIocs } from "../shared/misp.js";
 
 const IntelSchema = z.object({
-  mitre_attack:      z.array(z.string()),
-  risk_score:        z.number(),
+  mitre_attack:      z.array(z.string()).default([]),
+  risk_score:        z.number().default(0),
   intel_summary:     z.string(),
-  threat_actor_type: z.enum(["nation-state", "cybercriminal", "insider", "hacktivist", "unknown"]),
-  campaign_family:   z.string().nullable(),
-  confidence:        z.number().min(0).max(1),
+  threat_actor_type: z.enum(["nation-state", "cybercriminal", "insider", "hacktivist", "unknown"]).default("unknown"),
+  campaign_family:   z.string().nullable().default(null),
+  confidence:        z.number().min(0).max(1).default(0),
 });
 
 export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_MODELS.intel) {
