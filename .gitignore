@@ -15,3 +15,6 @@ coverage/
 # Local agent/editor state
 .claude/
 .codex
+
+# TLS certificates (contain private keys — never commit)
+certs/

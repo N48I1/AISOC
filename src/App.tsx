@@ -118,12 +118,14 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   const [expanded, setExpanded] = useState(false);
 
   const menuItems = [
-    { id: 'dashboard', icon: BarChart3,    label: 'Dashboard' },
-    { id: 'alerts',    icon: AlertTriangle, label: 'Alerts Queue' },
-    { id: 'actions',   icon: Zap,           label: 'Actions & Integrations' },
-    { id: 'agents',    icon: Activity,      label: 'AI Agents' },
-    { id: 'reports',   icon: FileText,      label: 'Incident Reports' },
-    { id: 'settings',  icon: Settings,      label: 'System Admin' },
+    { id: 'research',       icon: BarChart3,     label: 'Research Overview' },
+    { id: 'alerts',         icon: AlertTriangle, label: 'Alert Investigation' },
+    { id: 'agents',         icon: Activity,      label: 'Agent Evaluation' },
+    { id: 'intelligence',   icon: BookOpen,      label: 'MITRE & Intel' },
+    { id: 'reports',        icon: FileText,      label: 'Evidence Reports' },
+    { id: 'notifications',  icon: Send,          label: 'Notifications' },
+    { id: 'response',       icon: Shield,        label: 'Response Controls' },
+    { id: 'settings',       icon: Settings,      label: 'System Admin' },
   ];
 
   return (
@@ -232,6 +234,53 @@ const StatCard = ({ label, value, icon: Icon, trend, color }: any) => (
   </div>
 );
 
+const AGENT_PHASES_UI: Array<{ phase: AgentPhase; label: string; short: string }> = [
+  { phase: 'analysis',    label: 'Alert Triage',     short: 'Triage' },
+  { phase: 'intel',       label: 'Threat Intel',     short: 'Intel' },
+  { phase: 'knowledge',   label: 'RAG Knowledge',    short: 'RAG' },
+  { phase: 'correlation', label: 'Correlation',      short: 'Correlate' },
+  { phase: 'ticketing',   label: 'Ticketing',        short: 'Ticket' },
+  { phase: 'response',    label: 'Response',         short: 'Respond' },
+  { phase: 'validation',  label: 'SLA Validation',   short: 'Validate' },
+];
+
+const parseAlertAi = (alert?: Alert | null): any | null => {
+  if (!alert?.ai_analysis) return null;
+  try { return JSON.parse(alert.ai_analysis); } catch { return null; }
+};
+
+const parseMitreTags = (alert?: Alert | null): string[] => {
+  if (!alert?.mitre_attack) return [];
+  try {
+    const parsed = Array.isArray(alert.mitre_attack) ? alert.mitre_attack : JSON.parse(alert.mitre_attack as any);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+};
+
+const getPhaseData = (aiData: any, phase: AgentPhase) => {
+  if (!aiData?.phaseData) return null;
+  return phase === 'ticketing' ? (aiData.phaseData.ticketing || aiData.phaseData.ticket) : aiData.phaseData[phase];
+};
+
+const getAlertRiskScore = (alert: Alert): number | null => {
+  const aiData = parseAlertAi(alert);
+  const analysisRisk = aiData?.phaseData?.analysis?.risk_score;
+  if (typeof analysisRisk === 'number') return analysisRisk;
+  const intelRisk = aiData?.phaseData?.intel?.risk_score;
+  if (typeof intelRisk === 'number') return intelRisk <= 10 ? intelRisk * 10 : intelRisk;
+  return null;
+};
+
+const getConfidenceValues = (aiData: any): number[] =>
+  AGENT_PHASES_UI
+    .map(a => getPhaseData(aiData, a.phase)?.confidence)
+    .filter((v): v is number => typeof v === 'number')
+    .map(v => v <= 1 ? Math.round(v * 100) : Math.round(v));
+
+const percent = (value: number, total: number) => total > 0 ? Math.round((value / total) * 100) : 0;
+
 const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () => void, isSelected?: boolean, key?: any }) => {
   let aiData: any = null;
   try { aiData = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch (e) {}
@@ -299,90 +348,285 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
 };
 
 const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, aiData: any, mitreTags: string[], onClose: () => void }) => {
+  const [exportFormat, setExportFormat] = useState<'txt' | 'xml' | 'pdf' | 'md'>('pdf');
   const severity = alert.severity >= 13 ? 'CRITICAL' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MEDIUM' : 'LOW';
   const sevColor: Record<string, string> = { CRITICAL: '#d93025', HIGH: '#f29900', MEDIUM: '#1a73e8', LOW: '#1e8e3e' };
 
-  const responseActions = aiData?.response?.actions || [];
-  const iocs = aiData?.iocs || {};
+  const pd = aiData?.phaseData || {};
+  const analysis = pd.analysis || {};
+  const intel = pd.intel || {};
+  const knowledge = pd.knowledge || {};
+  const correlation = pd.correlation || {};
+  const ticket = pd.ticket || aiData?.ticket || {};
+  const response = pd.response || aiData?.response || {};
+  const validation = pd.validation || {};
+  const responseActions = response?.actions || [];
+  const iocs = aiData?.iocs || analysis?.iocs || {};
+  const reportId = `INC-${alert.id.substring(0, 8).toUpperCase()}`;
+  const generatedAt = new Date();
+  const generatedIso = generatedAt.toISOString();
+  const filenameBase = `incident-${alert.id}-report`;
 
-  const markdownReport = [
-    `# AEGIS SOC — Incident Report`,
-    `**Incident ID:** ${alert.id.toUpperCase()}`,
-    `**Generated:** ${new Date().toLocaleString()}`,
-    `**Status:** ${alert.status}${alert.email_sent === 1 ? '  |  📧 Email Notification Sent' : ''}`,
-    ``,
-    `---`,
-    `## 1. Executive Summary`,
-    `| Field | Value |`,
-    `|---|---|`,
-    `| Description | ${alert.description} |`,
-    `| Severity | **${severity}** (Level ${alert.severity}) |`,
-    `| Source IP | ${alert.source_ip || 'N/A'} |`,
-    `| Hostname | ${alert.agent_name || 'N/A'} |`,
-    `| Timestamp | ${new Date(alert.timestamp).toLocaleString()} |`,
-    `| Rule ID | ${alert.rule_id || 'N/A'} |`,
-    ``,
-    aiData?.summary ? `> ${aiData.summary}` : `> No AI analysis available yet.`,
-    ``,
-    `---`,
-    `## 2. Indicators of Compromise (IOCs)`,
-    iocs.ips?.length ? `**IPs:** \`${iocs.ips.join('`  `')}\`` : `**IPs:** ${alert.source_ip || 'N/A'}`,
-    iocs.users?.length ? `**Users:** ${iocs.users.join(', ')}` : '',
-    iocs.hosts?.length ? `**Hosts:** ${iocs.hosts.join(', ')}` : `**Hosts:** ${alert.agent_name || 'N/A'}`,
-    iocs.domains?.length ? `**Domains:** ${iocs.domains.join(', ')}` : '',
-    iocs.processes?.length ? `**Processes:** ${iocs.processes.join(', ')}` : '',
-    iocs.files?.length ? `**Files:** ${iocs.files.join(', ')}` : '',
-    iocs.hashes?.length ? `**Hashes:** \`${iocs.hashes.join('`  `')}\`` : '',
-    iocs.ports?.length ? `**Ports:** ${iocs.ports.join(', ')}` : '',
-    ``,
-    `---`,
-    `## 3. MITRE ATT&CK Mapping`,
-    mitreTags.length
-      ? mitreTags.map(t => `- \`${t}\``).join('\n')
-      : `- No MITRE techniques mapped yet.`,
-    ``,
-    `---`,
-    `## 4. Threat Intelligence`,
-    aiData?.intel || `_Threat intel not yet retrieved. Run the Threat Intel agent._`,
-    ``,
-    `---`,
-    `## 5. Remediation & Playbook`,
-    alert.remediation_steps || `_Remediation steps not yet retrieved. Run the RAG Knowledge agent._`,
-    ``,
-    `---`,
-    `## 6. Campaign Correlation`,
-    aiData?.correlation
-      ? `**Campaign:** ${aiData.correlation}`
-      : `_No correlation data. Run the Correlation agent._`,
-    ``,
-    `---`,
-    `## 7. Response Plan`,
-    responseActions.length
-      ? responseActions.map((a: any) => `- **${a.type}** → \`${a.target}\`\n  _${a.reason}_`).join('\n')
-      : `_No response plan generated yet. Run the Response agent._`,
-    aiData?.response?.approval_required !== undefined
-      ? `\n**Analyst Approval Required:** ${aiData.response.approval_required ? 'YES' : 'NO'}`
-      : '',
-    ``,
-    `---`,
-    `## 8. SLA & Validation`,
-    aiData?.validation || `_SLA validation pending._`,
-    ``,
-    `---`,
-    `## 9. Raw Wazuh Log`,
-    `\`\`\``,
-    alert.full_log || 'No log data.',
-    `\`\`\``,
-  ].filter(l => l !== null && l !== undefined).join('\n');
+  const asList = (value: any): string[] => Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+  const remediationSteps = (alert.remediation_steps || knowledge?.remediation_steps || '')
+    .split('\n')
+    .map((s: string) => s.trim())
+    .filter(Boolean)
+    .map((s: string) => s.replace(/^\d+[\.\)]\s*/, '').replace(/^[-*]\s*/, ''));
 
-  const downloadReport = () => {
-    const blob = new Blob([markdownReport], { type: 'text/markdown' });
+  const downloadFile = (content: string, filename: string, type: string) => {
+    const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `incident-${alert.id}-report.md`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const xmlEscape = (value: any) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+  const htmlEscape = (value: any) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  const textReport = [
+    `BBS AISOC INCIDENT REPORT`,
+    `Report ID: ${reportId}`,
+    `Generated: ${generatedAt.toLocaleString()}`,
+    `Status: ${alert.status}`,
+    `Severity: ${severity} (Wazuh level ${alert.severity})`,
+    `Email notification: ${alert.email_sent === 1 ? 'Sent' : 'Not sent'}`,
+    ``,
+    `1. EXECUTIVE SUMMARY`,
+    `Description: ${alert.description}`,
+    `AI Summary: ${aiData?.summary || analysis?.analysis_summary || 'No AI summary available.'}`,
+    `Risk Score: ${analysis?.risk_score ?? 'N/A'}`,
+    `Recommended Action: ${analysis?.recommended_action || validation?.recommendation || 'N/A'}`,
+    `False Positive: ${analysis?.is_false_positive === true ? 'Yes' : analysis?.is_false_positive === false ? 'No' : 'Unknown'}`,
+    analysis?.false_positive_reason ? `False Positive Reason: ${analysis.false_positive_reason}` : '',
+    ``,
+    `2. ALERT DETAILS`,
+    `Alert ID: ${alert.id}`,
+    `Timestamp: ${new Date(alert.timestamp).toLocaleString()}`,
+    `Rule ID: ${alert.rule_id || 'N/A'}`,
+    `Source IP: ${alert.source_ip || 'N/A'}`,
+    `Destination IP: ${alert.dest_ip || 'N/A'}`,
+    `User: ${alert.user || 'N/A'}`,
+    `Agent: ${alert.agent_name || 'N/A'}`,
+    `Hostname: ${alert.hostname || 'N/A'}`,
+    ``,
+    `3. INDICATORS OF COMPROMISE`,
+    `IPs: ${(asList(iocs.ips).length ? asList(iocs.ips) : alert.source_ip ? [alert.source_ip] : ['N/A']).join(', ')}`,
+    `Users: ${asList(iocs.users).join(', ') || alert.user || 'N/A'}`,
+    `Hosts: ${(asList(iocs.hosts).length ? asList(iocs.hosts) : alert.agent_name ? [alert.agent_name] : ['N/A']).join(', ')}`,
+    `Domains: ${asList(iocs.domains).join(', ') || 'N/A'}`,
+    `Hashes: ${asList(iocs.hashes).join(', ') || 'N/A'}`,
+    `Files: ${asList(iocs.files).join(', ') || 'N/A'}`,
+    `Processes: ${asList(iocs.processes).join(', ') || 'N/A'}`,
+    `Ports: ${asList(iocs.ports).join(', ') || 'N/A'}`,
+    ``,
+    `4. MITRE ATT&CK`,
+    mitreTags.length ? mitreTags.map(t => `- ${t}`).join('\n') : '- No techniques mapped.',
+    ``,
+    `5. THREAT INTELLIGENCE`,
+    aiData?.intel || intel?.intel_summary || 'No threat intelligence summary available.',
+    intel?.misp ? `MISP Hits: ${intel.misp.hits ?? 0}` : '',
+    ``,
+    `6. CORRELATION`,
+    correlation?.campaign_name || aiData?.correlation || 'No campaign correlation available.',
+    correlation?.campaign_description || '',
+    ``,
+    `7. TICKETING / BUSINESS IMPACT`,
+    `Title: ${ticket?.title || 'N/A'}`,
+    `Priority: ${ticket?.priority || 'N/A'}`,
+    `Business Impact: ${ticket?.business_impact || 'N/A'}`,
+    ticket?.report_body || '',
+    ``,
+    `8. REMEDIATION`,
+    remediationSteps.length ? remediationSteps.map((s, i) => `${i + 1}. ${s}`).join('\n') : 'No remediation steps available.',
+    ``,
+    `9. RESPONSE PLAN`,
+    responseActions.length
+      ? responseActions.map((a: any, i: number) => `${i + 1}. ${a.type || 'ACTION'} -> ${a.target || 'N/A'}\n   Reason: ${a.reason || 'N/A'}\n   Automated: ${a.automated ? 'Yes' : 'No'}`).join('\n')
+      : 'No response actions generated.',
+    `Approval Required: ${response?.approval_required === true ? 'Yes' : response?.approval_required === false ? 'No' : 'Unknown'}`,
+    ``,
+    `10. SLA / VALIDATION`,
+    `SLA Status: ${validation?.sla_status || aiData?.validation || 'Pending'}`,
+    `Completeness Score: ${validation?.completeness_score ?? 'N/A'}`,
+    `Recommendation: ${validation?.recommendation || 'N/A'}`,
+    ``,
+    `11. RAW WAZUH LOG`,
+    alert.full_log || 'No log data.',
+  ].filter(Boolean).join('\n');
+
+  const xmlReport = `<?xml version="1.0" encoding="UTF-8"?>
+<incidentReport id="${xmlEscape(reportId)}" generatedAt="${xmlEscape(generatedIso)}">
+  <status>${xmlEscape(alert.status)}</status>
+  <severity label="${xmlEscape(severity)}" wazuhLevel="${xmlEscape(alert.severity)}" />
+  <emailNotification sent="${alert.email_sent === 1 ? 'true' : 'false'}" />
+  <alert>
+    <id>${xmlEscape(alert.id)}</id>
+    <timestamp>${xmlEscape(alert.timestamp)}</timestamp>
+    <ruleId>${xmlEscape(alert.rule_id)}</ruleId>
+    <description>${xmlEscape(alert.description)}</description>
+    <sourceIp>${xmlEscape(alert.source_ip || '')}</sourceIp>
+    <destinationIp>${xmlEscape(alert.dest_ip || '')}</destinationIp>
+    <user>${xmlEscape(alert.user || '')}</user>
+    <agent>${xmlEscape(alert.agent_name || '')}</agent>
+    <hostname>${xmlEscape(alert.hostname || '')}</hostname>
+  </alert>
+  <analysis>
+    <summary>${xmlEscape(aiData?.summary || analysis?.analysis_summary || '')}</summary>
+    <riskScore>${xmlEscape(analysis?.risk_score ?? '')}</riskScore>
+    <recommendedAction>${xmlEscape(analysis?.recommended_action || validation?.recommendation || '')}</recommendedAction>
+    <falsePositive>${analysis?.is_false_positive === true ? 'true' : analysis?.is_false_positive === false ? 'false' : ''}</falsePositive>
+    <falsePositiveReason>${xmlEscape(analysis?.false_positive_reason || '')}</falsePositiveReason>
+  </analysis>
+  <iocs>
+${['ips','users','hosts','domains','hashes','files','processes','ports'].map(type =>
+  `    <${type}>${asList(iocs[type]).map(v => `<value>${xmlEscape(v)}</value>`).join('')}</${type}>`
+).join('\n')}
+  </iocs>
+  <mitreAttack>
+${mitreTags.map(t => `    <technique>${xmlEscape(t)}</technique>`).join('\n')}
+  </mitreAttack>
+  <threatIntelligence>${xmlEscape(aiData?.intel || intel?.intel_summary || '')}</threatIntelligence>
+  <correlation>
+    <campaignName>${xmlEscape(correlation?.campaign_name || aiData?.correlation || '')}</campaignName>
+    <description>${xmlEscape(correlation?.campaign_description || '')}</description>
+  </correlation>
+  <ticket>
+    <title>${xmlEscape(ticket?.title || '')}</title>
+    <priority>${xmlEscape(ticket?.priority || '')}</priority>
+    <businessImpact>${xmlEscape(ticket?.business_impact || '')}</businessImpact>
+    <body>${xmlEscape(ticket?.report_body || '')}</body>
+  </ticket>
+  <remediation>
+${remediationSteps.map((s, i) => `    <step order="${i + 1}">${xmlEscape(s)}</step>`).join('\n')}
+  </remediation>
+  <responsePlan approvalRequired="${response?.approval_required === true ? 'true' : response?.approval_required === false ? 'false' : ''}">
+${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
+      <type>${xmlEscape(a.type || '')}</type>
+      <target>${xmlEscape(a.target || '')}</target>
+      <reason>${xmlEscape(a.reason || '')}</reason>
+      <automated>${a.automated ? 'true' : 'false'}</automated>
+    </action>`).join('\n')}
+  </responsePlan>
+  <validation>
+    <slaStatus>${xmlEscape(validation?.sla_status || aiData?.validation || '')}</slaStatus>
+    <completenessScore>${xmlEscape(validation?.completeness_score ?? '')}</completenessScore>
+    <recommendation>${xmlEscape(validation?.recommendation || '')}</recommendation>
+  </validation>
+  <rawLog>${xmlEscape(alert.full_log || '')}</rawLog>
+</incidentReport>
+`;
+
+  const markdownReport = textReport
+    .replace(/^BBS AISOC INCIDENT REPORT/m, '# BBS AISOC Incident Report')
+    .replace(/^(\d+)\. ([A-Z /]+)$/gm, '\n---\n## $1. $2');
+
+  const exportText = () => downloadFile(textReport, `${filenameBase}.txt`, 'text/plain;charset=utf-8');
+  const exportXml = () => downloadFile(xmlReport, `${filenameBase}.xml`, 'application/xml;charset=utf-8');
+  const exportMarkdown = () => downloadFile(markdownReport, `${filenameBase}.md`, 'text/markdown;charset=utf-8');
+  const exportPdf = () => {
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${htmlEscape(reportId)} - BBS AISOC Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #1f2937; margin: 32px; line-height: 1.45; }
+    h1 { color: #003a7a; margin-bottom: 4px; }
+    h2 { color: #004a99; border-bottom: 1px solid #d1d9e6; padding-bottom: 6px; margin-top: 24px; }
+    .meta { color: #64748b; font-size: 12px; margin-bottom: 18px; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 6px; background: #f1f5f9; margin-right: 6px; font-size: 12px; font-weight: 700; }
+    .sev { background: ${sevColor[severity]}22; color: ${sevColor[severity]}; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+    th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; }
+    pre { background: #0f172a; color: #34d399; padding: 12px; border-radius: 8px; white-space: pre-wrap; font-size: 11px; }
+    @media print { body { margin: 18mm; } button { display: none; } }
+  </style>
+</head>
+<body>
+  <button onclick="window.print()" style="float:right;padding:8px 12px">Print / Save PDF</button>
+  <h1>BBS AISOC Incident Report</h1>
+  <div class="meta">${htmlEscape(reportId)} · Generated ${htmlEscape(generatedAt.toLocaleString())}</div>
+  <span class="badge sev">${htmlEscape(severity)}</span><span class="badge">${htmlEscape(alert.status)}</span><span class="badge">Wazuh ${htmlEscape(alert.severity)}</span>
+  <h2>Executive Summary</h2>
+  <p>${htmlEscape(aiData?.summary || analysis?.analysis_summary || 'No AI summary available.')}</p>
+  <table>
+    <tr><th>Description</th><td>${htmlEscape(alert.description)}</td></tr>
+    <tr><th>Alert ID</th><td>${htmlEscape(alert.id)}</td></tr>
+    <tr><th>Rule ID</th><td>${htmlEscape(alert.rule_id || 'N/A')}</td></tr>
+    <tr><th>Source IP</th><td>${htmlEscape(alert.source_ip || 'N/A')}</td></tr>
+    <tr><th>Agent</th><td>${htmlEscape(alert.agent_name || 'N/A')}</td></tr>
+    <tr><th>Risk Score</th><td>${htmlEscape(analysis?.risk_score ?? 'N/A')}</td></tr>
+    <tr><th>Recommended Action</th><td>${htmlEscape(analysis?.recommended_action || validation?.recommendation || 'N/A')}</td></tr>
+  </table>
+  <h2>Indicators of Compromise</h2>
+  <p>${htmlEscape(['ips','users','hosts','domains','hashes','files','processes','ports'].map(k => `${k}: ${asList(iocs[k]).join(', ') || 'N/A'}`).join(' | '))}</p>
+  <h2>MITRE ATT&CK</h2>
+  <p>${htmlEscape(mitreTags.join(', ') || 'No techniques mapped.')}</p>
+  <h2>Threat Intelligence</h2>
+  <p>${htmlEscape(aiData?.intel || intel?.intel_summary || 'No threat intelligence summary available.')}</p>
+  <h2>Correlation</h2>
+  <p>${htmlEscape(correlation?.campaign_name || aiData?.correlation || 'No campaign correlation available.')}</p>
+  <h2>Remediation</h2>
+  <ol>${(remediationSteps.length ? remediationSteps : ['No remediation steps available.']).map(s => `<li>${htmlEscape(s)}</li>`).join('')}</ol>
+  <h2>Response Plan</h2>
+  <ol>${(responseActions.length ? responseActions : [{ type: 'No response actions generated', target: '', reason: '' }]).map((a: any) => `<li><strong>${htmlEscape(a.type || 'ACTION')}</strong> ${htmlEscape(a.target || '')}<br/>${htmlEscape(a.reason || '')}</li>`).join('')}</ol>
+  <h2>SLA / Validation</h2>
+  <p>${htmlEscape(validation?.sla_status || aiData?.validation || 'Pending')}</p>
+  <h2>Raw Wazuh Log</h2>
+  <pre>${htmlEscape(alert.full_log || 'No log data.')}</pre>
+</body>
+</html>`;
+    const frame = document.createElement('iframe');
+    frame.style.position = 'fixed';
+    frame.style.right = '0';
+    frame.style.bottom = '0';
+    frame.style.width = '0';
+    frame.style.height = '0';
+    frame.style.border = '0';
+    frame.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(frame);
+
+    const doc = frame.contentWindow?.document;
+    if (!doc) {
+      document.body.removeChild(frame);
+      return;
+    }
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    frame.onload = () => {
+      const win = frame.contentWindow;
+      if (!win) return;
+      win.focus();
+      win.print();
+      setTimeout(() => {
+        if (document.body.contains(frame)) document.body.removeChild(frame);
+      }, 1000);
+    };
+  };
+
+  const handleDownload = () => {
+    if (exportFormat === 'txt') exportText();
+    if (exportFormat === 'xml') exportXml();
+    if (exportFormat === 'pdf') exportPdf();
+    if (exportFormat === 'md') exportMarkdown();
   };
 
   const Section = ({ title, children }: { title: string, children: React.ReactNode }) => (
@@ -412,13 +656,24 @@ const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, a
             <h2 className="text-[1.1rem] font-black tracking-tight">INC-{alert.id.substring(0, 8).toUpperCase()}</h2>
             <p className="text-[0.75rem] text-blue-200 mt-0.5 truncate max-w-sm">{alert.description}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <select
+              value={exportFormat}
+              onChange={(e) => setExportFormat(e.target.value as 'txt' | 'xml' | 'pdf' | 'md')}
+              className="h-9 rounded-lg bg-white/10 border border-white/20 text-white text-[0.75rem] font-bold px-2 outline-none hover:bg-white/20"
+              title="Export format"
+            >
+              <option className="text-slate-900" value="pdf">PDF</option>
+              <option className="text-slate-900" value="txt">Text</option>
+              <option className="text-slate-900" value="xml">XML</option>
+              <option className="text-slate-900" value="md">Markdown</option>
+            </select>
             <button
-              onClick={downloadReport}
+              onClick={handleDownload}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[0.75rem] font-bold transition-colors border border-white/20"
             >
               <ChevronRight size={13} className="rotate-90" />
-              .md
+              Download
             </button>
             <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
               <XCircle size={20} />
@@ -1850,7 +2105,6 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                             </div>
                           </div>
                         )}
-                        {/* Per-agent confidence row */}
                         <div>
                           <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-2">Agent Confidence</p>
                           <div className="grid grid-cols-7 gap-1">
@@ -1887,10 +2141,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           </div>
         )}
 
-        {/* NEW: Evidence strip — 7 KPI chips */}
         <EvidenceStrip aiData={aiData} mitreTags={mitreTags} />
 
-        {/* NEW: Hero strip — identity · risk gauge · agent pipeline */}
         <AlertHeroStrip
           alert={alert}
           aiData={aiData}
@@ -1902,7 +2154,6 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           scrollToAgents={() => agentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
 
-        {/* Compact agent pipeline strip — click a card to expand raw details */}
         <div ref={agentsRef} className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100 bg-slate-50">
             <p className="text-[0.62rem] font-black uppercase tracking-widest text-[#004a99]">Agent Pipeline · click a card to expand</p>
@@ -1965,7 +2216,6 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
             })}
           </div>
 
-          {/* Expanded per-agent detail */}
           {expandedAgent && (() => {
             const agent = agentDefs.find(a => a.id === expandedAgent)!;
             const hist = agentRunHistory[agent.id] || [];
@@ -2018,10 +2268,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           })()}
         </div>
 
-        {/* NEW: Investigation grid — 3-col dense info */}
         <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} />
 
-        {/* NEW: Swarm Monologue terminal */}
         <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-lg">
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/50">
             <div className="flex items-center gap-2">
@@ -2048,11 +2296,10 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 <p>{isAnalyzing ? 'Agents are communicating...' : 'Standby — Waiting for swarm activation'}</p>
               </div>
             )}
-            <div className="h-1" /> {/* Spacer for bottom scroll */}
+            <div className="h-1" />
           </div>
         </div>
 
-        {/* Raw log — collapsible, closed by default */}
         <div className="bg-white rounded-xl border border-[#d1d9e6] overflow-hidden">
           <button
             type="button"
@@ -2135,6 +2382,177 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
 const SkeletonVal = () => (
   <div className="h-8 w-16 bg-slate-200 animate-pulse rounded mt-1" />
 );
+
+const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[], onAlertClick: (a: Alert) => void, setActiveTab: (t: string) => void }) => {
+  const { token } = useAuth();
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
+  const [agentStats, setAgentStatsState] = useState<AgentStat[]>([]);
+
+  useEffect(() => {
+    if (!token) return;
+    fetch('/api/stats', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (!data.error) setStats(data); }).catch(() => {});
+    fetch('/api/stats/trends', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (Array.isArray(data)) setTrends(data); }).catch(() => {});
+    getAgentStats().then(setAgentStatsState).catch(() => setAgentStatsState([]));
+  }, [token]);
+
+  const analyzed = alerts.filter(a => !!a.ai_analysis || ['TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED'].includes(a.status)).length;
+  const falsePositives = alerts.filter(a => a.status === 'FALSE_POSITIVE' || parseAlertAi(a)?.phaseData?.analysis?.is_false_positive).length;
+  const fallbackAlerts = alerts.filter(a => {
+    const ai = parseAlertAi(a);
+    return Array.isArray(ai?.fallback_phases) && ai.fallback_phases.length > 0;
+  }).length;
+  const confidenceValues = alerts.flatMap(a => getConfidenceValues(parseAlertAi(a)));
+  const avgConfidence = confidenceValues.length ? Math.round(confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length) : null;
+  const topCritical = [...alerts]
+    .filter(a => !['CLOSED','FALSE_POSITIVE'].includes(a.status))
+    .sort((a, b) => (getAlertRiskScore(b) ?? b.severity * 6) - (getAlertRiskScore(a) ?? a.severity * 6))
+    .slice(0, 6);
+  const trendMax = trends ? Math.max(...trends.map(t => t.count), 1) : 1;
+
+  const cards = [
+    { label: 'Dataset Alerts', value: alerts.length, sub: `${analyzed} analyzed`, icon: AlertTriangle, color: '#004a99' },
+    { label: 'Automation Coverage', value: `${percent(analyzed, alerts.length)}%`, sub: stats?.automationRate || 'from local alerts', icon: Activity, color: '#1e8e3e' },
+    { label: 'False Positives', value: falsePositives, sub: `${percent(falsePositives, Math.max(analyzed, 1))}% of analyzed`, icon: XCircle, color: '#f29900' },
+    { label: 'Avg Confidence', value: avgConfidence == null ? '—' : `${avgConfidence}%`, sub: `${confidenceValues.length} phase outputs`, icon: CheckCircle, color: '#0066cc' },
+    { label: 'Fallback Runs', value: fallbackAlerts, sub: 'visible degradation marker', icon: AlertTriangle, color: '#d93025' },
+  ];
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
+      <div className="flex items-end justify-between border-b border-slate-200 pb-4">
+        <div>
+          <p className="text-[0.65rem] font-black uppercase tracking-widest text-slate-400 mb-1">Academic Prototype</p>
+          <h2 className="text-2xl font-bold text-[#004a99]">Multi-Agent SOC Research Overview</h2>
+          <p className="text-sm text-slate-500 mt-1">Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface.</p>
+        </div>
+        <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[#003a7a] transition-colors">
+          <AlertTriangle size={14} />
+          Open Investigation
+        </button>
+      </div>
+
+      <div className="grid grid-cols-5 gap-4">
+        {cards.map(card => (
+          <div key={card.label} className="bg-white border border-[#d1d9e6] rounded-lg p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-[0.62rem] font-black text-slate-400 uppercase tracking-widest">{card.label}</p>
+              <card.icon size={18} style={{ color: card.color }} className="opacity-50" />
+            </div>
+            <p className="text-[1.7rem] font-black text-slate-900 mt-2 leading-none">{card.value}</p>
+            <p className="text-[0.68rem] text-slate-500 mt-2">{card.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-5">
+        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">7-Agent LangGraph Pipeline</p>
+            <span className="text-[0.65rem] text-slate-400 font-mono">linear execution · START to END</span>
+          </div>
+          <div className="p-5 grid grid-cols-7 gap-2">
+            {AGENT_PHASES_UI.map((agent, i) => {
+              const stat = agentStats.find(s => s.phase === agent.phase);
+              const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
+              const confidence = stat?.avg_confidence;
+              return (
+                <button key={agent.phase} onClick={() => setActiveTab('agents')} className="text-left group">
+                  <div className={`min-h-[146px] border rounded-lg p-3 transition-colors ${fallbackPct > 20 ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200 bg-white group-hover:bg-[#f0f7ff]'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="w-6 h-6 rounded bg-[#004a99] text-white flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
+                      <span className="text-[0.58rem] text-slate-400 font-mono">{stat?.total_runs || 0} runs</span>
+                    </div>
+                    <p className="text-[0.72rem] font-black text-slate-800 leading-tight">{agent.short}</p>
+                    <div className="mt-3 space-y-2">
+                      <div>
+                        <div className="flex justify-between text-[0.58rem] text-slate-400 mb-0.5"><span>Conf</span><span>{confidence == null ? '—' : `${confidence}%`}</span></div>
+                        <MiniBar value={confidence || 0} color={confidence == null ? 'bg-slate-200' : confidence >= 80 ? 'bg-green-500' : confidence >= 60 ? 'bg-amber-400' : 'bg-red-400'} />
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-[0.58rem] text-slate-400 mb-0.5"><span>Fallback</span><span>{fallbackPct}%</span></div>
+                        <MiniBar value={fallbackPct} color={fallbackPct > 20 ? 'bg-amber-500' : 'bg-slate-300'} />
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50">
+            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">7-Day Alert Volume</p>
+          </div>
+          <div className="p-5 h-[210px]">
+            {trends ? (
+              <div className="flex items-end gap-2 h-full">
+                {trends.map(t => (
+                  <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
+                    <div className="w-full bg-slate-100 rounded-sm overflow-hidden flex flex-col-reverse h-32">
+                      <div className="w-full bg-[#004a99] rounded-sm" style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 4 : 0 }} />
+                    </div>
+                    <span className="text-[0.6rem] text-slate-500 font-mono">{t.count}</span>
+                    <span className="text-[0.52rem] text-slate-300">{t.day.slice(5)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="h-full flex items-center justify-center text-slate-400 text-sm">Loading trend data...</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-5">
+        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Highest-Risk Research Samples</p>
+            <button onClick={() => setActiveTab('alerts')} className="text-[0.68rem] font-bold text-[#004a99] hover:underline">View queue</button>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {topCritical.length ? topCritical.map(alert => {
+              const ai = parseAlertAi(alert);
+              const risk = getAlertRiskScore(alert);
+              const fallbackCount = Array.isArray(ai?.fallback_phases) ? ai.fallback_phases.length : 0;
+              return (
+                <button key={alert.id} onClick={() => onAlertClick(alert)} className="w-full px-5 py-3 text-left hover:bg-slate-50 flex items-center gap-4">
+                  <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : 'bg-blue-500'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.82rem] font-bold text-slate-800 truncate">{alert.description}</p>
+                    <p className="text-[0.65rem] text-slate-400 font-mono mt-0.5">{alert.id} · rule {alert.rule_id} · {alert.agent_name}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[0.72rem] font-black text-slate-700">{risk == null ? `L${alert.severity}` : `${risk}% risk`}</p>
+                    <p className={`text-[0.6rem] font-bold ${fallbackCount > 0 ? 'text-amber-600' : 'text-green-600'}`}>{fallbackCount > 0 ? `${fallbackCount} fallback` : alert.status}</p>
+                  </div>
+                </button>
+              );
+            }) : <div className="p-8 text-center text-slate-400 text-sm">No alerts available.</div>}
+          </div>
+        </div>
+
+        <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50">
+            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Research Shortcuts</p>
+          </div>
+          <div className="p-4 grid gap-2">
+            {[
+              { tab: 'agents', label: 'Evaluate agent confidence and fallback behavior', icon: Activity },
+              { tab: 'intelligence', label: 'Inspect MITRE, IOC, and MISP evidence', icon: BookOpen },
+              { tab: 'reports', label: 'Review generated reports and run snapshots', icon: FileText },
+              { tab: 'response', label: 'Audit containment and firewall controls', icon: Shield },
+            ].map(item => (
+              <button key={item.tab} onClick={() => setActiveTab(item.tab)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-slate-200 hover:bg-[#f0f7ff] hover:border-[#004a99]/30 text-left transition-colors">
+                <item.icon size={16} className="text-[#004a99] shrink-0" />
+                <span className="text-[0.76rem] font-semibold text-slate-700">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a: Alert) => void }) => {
   const { token } = useAuth();
@@ -2481,6 +2899,172 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
   );
 };
 
+const MitreIntelligence = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a: Alert) => void }) => {
+  const mitreCounts: Record<string, { count: number; alerts: Alert[] }> = {};
+  const iocRows: Array<{ type: string; value: string; alert: Alert; confidence: number | null; threat: string }> = [];
+  const mispRows: Array<{ alert: Alert; level: string; hits: number; actors: string[]; families: string[]; events: any[] }> = [];
+
+  alerts.forEach(alert => {
+    const ai = parseAlertAi(alert);
+    parseMitreTags(alert).forEach(tag => {
+      if (!mitreCounts[tag]) mitreCounts[tag] = { count: 0, alerts: [] };
+      mitreCounts[tag].count += 1;
+      mitreCounts[tag].alerts.push(alert);
+    });
+
+    const iocs = ai?.iocs || ai?.phaseData?.analysis?.iocs || {};
+    ['ips','users','hosts','domains','hashes','files','processes'].forEach(type => {
+      const values = Array.isArray(iocs[type]) ? iocs[type] : [];
+      values.forEach((value: string) => {
+        if (!value) return;
+        iocRows.push({
+          type,
+          value: String(value),
+          alert,
+          confidence: getConfidenceValues(ai)[0] ?? null,
+          threat: ai?.phaseData?.intel?.campaign_family || ai?.phaseData?.analysis?.attack_category || 'Unattributed',
+        });
+      });
+    });
+
+    const misp = ai?.phaseData?.intel?.misp;
+    if (misp) {
+      const events = Array.isArray(misp.events) ? misp.events : [];
+      const actors = Array.isArray(misp.threat_actors) ? misp.threat_actors : [];
+      const families = Array.isArray(misp.malware_families) ? misp.malware_families : [];
+      const hits = typeof misp.hit_count === 'number' ? misp.hit_count : events.length;
+      if (hits > 0 || actors.length > 0 || families.length > 0) {
+        mispRows.push({ alert, level: misp.threat_level || 'Undefined', hits, actors, families, events });
+      }
+    }
+  });
+
+  const topMitre = Object.entries(mitreCounts).sort(([, a], [, b]) => b.count - a.count).slice(0, 12);
+  const uniqueIocs = new Map<string, typeof iocRows[number]>();
+  iocRows.forEach(row => {
+    const key = `${row.type}:${row.value}`;
+    if (!uniqueIocs.has(key)) uniqueIocs.set(key, row);
+  });
+  const iocs = Array.from(uniqueIocs.values()).slice(0, 80);
+  const maxMitre = Math.max(...topMitre.map(([, v]) => v.count), 1);
+  const typeTone: Record<string, string> = {
+    ips: 'bg-red-50 text-red-700 border-red-200',
+    users: 'bg-blue-50 text-blue-700 border-blue-200',
+    hosts: 'bg-green-50 text-green-700 border-green-200',
+    domains: 'bg-purple-50 text-purple-700 border-purple-200',
+    hashes: 'bg-slate-100 text-slate-700 border-slate-200',
+    files: 'bg-amber-50 text-amber-700 border-amber-200',
+    processes: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
+      <div className="flex items-end justify-between border-b border-slate-200 pb-4">
+        <div>
+          <p className="text-[0.65rem] font-black uppercase tracking-widest text-slate-400 mb-1">Evidence Map</p>
+          <h2 className="text-2xl font-bold text-[#004a99]">MITRE & Threat Intelligence</h2>
+          <p className="text-sm text-slate-500 mt-1">A research view of techniques, indicators, MISP enrichment, and the alerts that produced them.</p>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-right">
+          <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2">
+            <p className="text-[0.58rem] font-black uppercase text-slate-400">Techniques</p>
+            <p className="text-lg font-black text-[#004a99]">{topMitre.length}</p>
+          </div>
+          <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2">
+            <p className="text-[0.58rem] font-black uppercase text-slate-400">Unique IOCs</p>
+            <p className="text-lg font-black text-[#004a99]">{uniqueIocs.size}</p>
+          </div>
+          <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2">
+            <p className="text-[0.58rem] font-black uppercase text-slate-400">MISP Hits</p>
+            <p className="text-lg font-black text-[#004a99]">{mispRows.reduce((a, b) => a + b.hits, 0)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-5 gap-5">
+        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50">
+            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Top MITRE Techniques</p>
+          </div>
+          <div className="p-5 space-y-3">
+            {topMitre.length ? topMitre.map(([tech, data]) => (
+              <button key={tech} onClick={() => onAlertClick(data.alerts[0])} className="w-full text-left group">
+                <div className="flex items-center gap-3">
+                  <span className="w-20 font-mono text-[0.78rem] font-black text-[#004a99]">{tech}</span>
+                  <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-[#004a99] group-hover:bg-[#0066cc]" style={{ width: `${Math.max(8, (data.count / maxMitre) * 100)}%` }} />
+                  </div>
+                  <span className="w-16 text-right text-[0.68rem] font-bold text-slate-500">{data.count} alerts</span>
+                </div>
+              </button>
+            )) : <div className="p-8 text-center text-slate-400 text-sm">Run agents to generate MITRE mappings.</div>}
+          </div>
+        </div>
+
+        <div className="col-span-3 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">IOC Inventory</p>
+            <span className="text-[0.65rem] text-slate-400">first 80 unique indicators</span>
+          </div>
+          {iocs.length ? (
+            <div className="max-h-[360px] overflow-y-auto">
+              <table className="w-full text-left text-[0.76rem]">
+                <thead className="sticky top-0 bg-slate-50 border-b border-slate-100 text-[0.6rem] text-slate-400 uppercase tracking-wider">
+                  <tr>
+                    <th className="px-4 py-2">Type</th>
+                    <th className="px-4 py-2">Indicator</th>
+                    <th className="px-4 py-2">Threat Context</th>
+                    <th className="px-4 py-2">Alert</th>
+                    <th className="px-4 py-2">Conf</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {iocs.map(row => (
+                    <tr key={`${row.type}:${row.value}`} className="hover:bg-slate-50">
+                      <td className="px-4 py-2"><span className={`px-2 py-0.5 rounded border text-[0.6rem] font-black uppercase ${typeTone[row.type] || 'bg-slate-50 text-slate-600 border-slate-200'}`}>{row.type}</span></td>
+                      <td className="px-4 py-2 font-mono text-slate-800 max-w-[220px] truncate" title={row.value}>{row.value}</td>
+                      <td className="px-4 py-2 text-slate-600 max-w-[180px] truncate">{row.threat}</td>
+                      <td className="px-4 py-2"><button onClick={() => onAlertClick(row.alert)} className="font-mono text-[#004a99] hover:underline">{row.alert.id.substring(0, 8).toUpperCase()}</button></td>
+                      <td className="px-4 py-2 text-slate-500">{row.confidence == null ? '—' : `${row.confidence}%`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <div className="p-10 text-center text-slate-400 text-sm">No extracted IOCs yet.</div>}
+        </div>
+      </div>
+
+      <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b bg-slate-50">
+          <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">MISP Enrichment Evidence</p>
+        </div>
+        {mispRows.length ? (
+          <div className="divide-y divide-slate-100">
+            {mispRows.slice(0, 20).map(row => (
+              <button key={row.alert.id} onClick={() => onAlertClick(row.alert)} className="w-full px-5 py-3 text-left hover:bg-slate-50 flex items-center gap-4">
+                <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase ${
+                  row.level === 'High' ? 'bg-red-100 text-red-800' :
+                  row.level === 'Medium' ? 'bg-orange-100 text-orange-800' :
+                  row.level === 'Low' ? 'bg-amber-100 text-amber-800' :
+                  'bg-slate-100 text-slate-600'
+                }`}>{row.level}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.82rem] font-bold text-slate-800 truncate">{row.alert.description}</p>
+                  <p className="text-[0.68rem] text-slate-500 truncate">
+                    {row.hits} hits · {[...row.actors, ...row.families].filter(Boolean).join(' · ') || 'No actor or family label'}
+                  </p>
+                </div>
+                <span className="font-mono text-[0.65rem] text-[#004a99]">{row.alert.id.substring(0, 8).toUpperCase()}</span>
+              </button>
+            ))}
+          </div>
+        ) : <div className="p-10 text-center text-slate-400 text-sm">No MISP hits found in analyzed alerts.</div>}
+      </div>
+    </div>
+  );
+};
+
 const ActionsTab = () => {
   const showToast = useToast();
   const { user }  = useAuth();
@@ -2600,11 +3184,10 @@ const ActionsTab = () => {
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[#004a99]">Actions & Integrations</h2>
-          <p className="text-sm text-slate-500 mt-0.5">Connect the AI pipeline to your external toolchain</p>
+          <h2 className="text-2xl font-bold text-[#004a99]">Notification Integrations</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Connect agent-generated evidence to Email, GLPI, and Telegram dispatch paths.</p>
         </div>
         <button onClick={refresh} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-[0.78rem] font-semibold hover:bg-slate-50 transition-colors">
           <RefreshCw size={13} />
@@ -2795,8 +3378,6 @@ const ActionsTab = () => {
         )}
       </div>
 
-      {/* ── Firewall Integrations ─────────────────────────────────────── */}
-      <FirewallSection />
     </div>
   );
 };
@@ -3122,6 +3703,26 @@ const FirewallSection = () => {
     </div>
   );
 };
+
+const ResponseControls = () => (
+  <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
+    <div className="flex items-end justify-between border-b border-slate-200 pb-4">
+      <div>
+        <p className="text-[0.65rem] font-black uppercase tracking-widest text-slate-400 mb-1">Containment Layer</p>
+        <h2 className="text-2xl font-bold text-[#004a99]">Response Controls</h2>
+        <p className="text-sm text-slate-500 mt-1">Firewall enforcement, manual block/unblock, and auto-block readiness for agent response actions.</p>
+      </div>
+      <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2 text-right">
+        <p className="text-[0.58rem] font-black uppercase text-slate-400">Supported</p>
+        <p className="text-[0.78rem] font-black text-[#004a99]">FortiGate · pfSense · Sophos</p>
+      </div>
+    </div>
+    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-[0.78rem] text-amber-800 font-semibold">
+      Auto-blocking is controlled per firewall and should be used only when the response agent emits a high-confidence BLOCK_IP action.
+    </div>
+    <FirewallSection />
+  </div>
+);
 
 const AgentsTab = () => {
   const showToast = useToast();
@@ -3889,7 +4490,10 @@ const LoginPage = () => {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('soc_active_tab') || 'dashboard');
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = localStorage.getItem('soc_active_tab');
+    return saved === 'dashboard' || saved === 'actions' ? 'research' : (saved || 'research');
+  });
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => localStorage.getItem('soc_selected_alert_id'));
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -4280,12 +4884,16 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[#f4f7fa]">
-          {activeTab === 'dashboard' && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
-          {activeTab === 'alerts'    && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
-          {activeTab === 'actions'   && <ActionsTab />}
-          {activeTab === 'agents'    && <AgentsTab />}
-          {activeTab === 'reports'   && <Reports alerts={alerts} />}
-          {activeTab === 'settings'  && <SettingsTab />}
+          {activeTab === 'research'     && <ResearchOverview alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} setActiveTab={setActiveTab} />}
+          {activeTab === 'dashboard'    && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
+          {activeTab === 'alerts'       && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
+          {activeTab === 'agents'       && <AgentsTab />}
+          {activeTab === 'intelligence' && <MitreIntelligence alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
+          {activeTab === 'reports'      && <Reports alerts={alerts} />}
+          {activeTab === 'notifications'&& <ActionsTab />}
+          {activeTab === 'actions'      && <ActionsTab />}
+          {activeTab === 'response'     && <ResponseControls />}
+          {activeTab === 'settings'     && <SettingsTab />}
         </main>
       </div>
     </div>

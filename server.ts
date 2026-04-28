@@ -1,5 +1,6 @@
 import express from 'express';
-import { createServer } from 'http';
+import { createServer as createHttpServer } from 'http';
+import { createServer as createHttpsServer } from 'https';
 import { Server } from 'socket.io';
 import fs from 'fs';
 import path from 'path';
@@ -612,9 +613,20 @@ function getSeverityLabel(level: number): string {
 
 // --- Server Setup -----------------------------------------------------------
 async function startServer() {
-  const app        = express();
-  const httpServer = createServer(app);
-  const io         = new Server(httpServer, { cors: { origin: '*' } });
+  const app = express();
+
+  const certPath = process.env.TLS_CERT || path.join(__dirname, 'certs', 'cert.pem');
+  const keyPath  = process.env.TLS_KEY  || path.join(__dirname, 'certs', 'key.pem');
+  const hasCerts = fs.existsSync(certPath) && fs.existsSync(keyPath);
+
+  const httpServer = hasCerts
+    ? createHttpsServer({ cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }, app)
+    : createHttpServer(app);
+
+  if (hasCerts) console.log('[TLS] HTTPS enabled using', certPath);
+  else          console.warn('[TLS] No certs found — running HTTP (dev only)');
+
+  const io = new Server(httpServer, { cors: { origin: '*' } });
 
   app.use(cors());
   app.use(helmet({ contentSecurityPolicy: false }));
@@ -1407,8 +1419,7 @@ async function startServer() {
   // ── Frontend serving ──────────────────────────────────────────────────────
   if (process.env.USE_VITE_MIDDLEWARE === 'true') {
     const vite = await createViteServer({
-      configFile: false,
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, allowedHosts: true as true },
       appType: 'spa',
     });
     app.use(vite.middlewares);

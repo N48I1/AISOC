@@ -15,6 +15,7 @@ export default defineConfig(({mode}) => {
       // This app uses socket.io heavily and Vite's HMR websocket can trigger
       // full-page reloads when alert updates arrive. Keep HMR off here.
       hmr: false,
+      allowedHosts: true,
     },
   };
 });
