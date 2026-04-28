@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw } from 'lucide-react';
+import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
@@ -115,54 +115,71 @@ const useAuth = () => {
 
 const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const { logout, user } = useAuth();
-  
+  const [expanded, setExpanded] = useState(false);
+
   const menuItems = [
-    { id: 'dashboard', icon: BarChart3,   label: 'Dashboard' },
-    { id: 'alerts',    icon: AlertTriangle,label: 'Alerts Queue' },
-    { id: 'actions',   icon: Zap,          label: 'Actions & Integrations' },
-    { id: 'agents',    icon: Activity,     label: 'AI Agents' },
-    { id: 'reports',   icon: FileText,     label: 'Incident Reports' },
-    { id: 'settings',  icon: Settings,     label: 'System Admin' },
+    { id: 'dashboard', icon: BarChart3,    label: 'Dashboard' },
+    { id: 'alerts',    icon: AlertTriangle, label: 'Alerts Queue' },
+    { id: 'actions',   icon: Zap,           label: 'Actions & Integrations' },
+    { id: 'agents',    icon: Activity,      label: 'AI Agents' },
+    { id: 'reports',   icon: FileText,      label: 'Incident Reports' },
+    { id: 'settings',  icon: Settings,      label: 'System Admin' },
   ];
 
   return (
-    <aside className="w-[200px] bg-white border-r border-[#d1d9e6] h-screen flex flex-col py-5">
+    <aside className={`bg-white border-r border-[#d1d9e6] h-full flex flex-col transition-[width] duration-250 ease-in-out overflow-hidden shrink-0 ${expanded ? 'w-[200px]' : 'w-14'}`}>
+      {/* Toggle — always pinned to the top-right of the sidebar */}
+      <div className="flex items-center justify-end px-2 py-2 shrink-0">
+        <button
+          onClick={() => setExpanded(e => !e)}
+          title={expanded ? 'Collapse sidebar' : 'Expand sidebar'}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-[#5f6368] hover:text-[#004a99] hover:bg-[#f0f7ff] transition-colors"
+        >
+          {expanded ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        </button>
+      </div>
+
       <nav className="flex-1 flex flex-col gap-1">
         {menuItems.map((item) => (
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}
-            className={`flex items-center gap-3 px-5 py-3 text-[0.9rem] cursor-pointer transition-all ${
-              activeTab === item.id 
-                ? 'text-[#004a99] bg-[#f0f7ff] border-r-3 border-[#004a99] font-semibold' 
+            title={!expanded ? item.label : undefined}
+            className={`flex items-center gap-3 py-3 transition-[padding] duration-250 ${expanded ? 'px-5' : 'px-[13px]'} ${
+              activeTab === item.id
+                ? 'text-[#004a99] bg-[#f0f7ff] border-r-2 border-[#004a99] font-semibold'
                 : 'text-[#5f6368] hover:bg-[#f0f7ff] hover:text-[#004a99]'
             }`}
           >
-            <item.icon className="w-4 h-4" />
-            <span>{item.label}</span>
+            <item.icon className="w-[18px] h-[18px] shrink-0" />
+            <span className={`whitespace-nowrap text-[0.85rem] transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>
+              {item.label}
+            </span>
           </button>
         ))}
       </nav>
 
-      <div className="px-5 pt-4 border-t border-[#d1d9e6] space-y-2">
+      <div className={`pt-4 border-t border-[#d1d9e6] space-y-1 transition-[padding] duration-250 ${expanded ? 'px-4' : 'px-[9px]'}`}>
         <button
           onClick={() => setActiveTab('settings')}
-          className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-[#f0f7ff] transition-colors group text-left"
+          title={!expanded ? user?.username : undefined}
+          className="w-full flex items-center gap-3 p-1.5 rounded-lg hover:bg-[#f0f7ff] transition-colors text-left"
         >
           <div className="w-8 h-8 rounded-full bg-[#003366] flex items-center justify-center text-white text-xs font-bold border border-white/30 shrink-0">
             {user?.username?.substring(0, 2).toUpperCase()}
           </div>
-          <div className="overflow-hidden">
-            <p className="text-xs font-semibold text-[#1a1a1b] truncate group-hover:text-[#004a99]">{user?.username}</p>
+          <div className={`overflow-hidden transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>
+            <p className="text-xs font-semibold text-[#1a1a1b] truncate">{user?.username}</p>
             <p className="text-[10px] text-[#5f6368] uppercase">{user?.role}</p>
           </div>
         </button>
         <button
           onClick={logout}
-          className="w-full flex items-center gap-2 px-2 py-1.5 text-[0.8rem] font-semibold text-[#5f6368] hover:text-[#d93025] transition-all"
+          title={!expanded ? 'Sign Out' : undefined}
+          className="w-full flex items-center gap-3 px-1.5 py-1.5 text-[0.8rem] font-semibold text-[#5f6368] hover:text-[#d93025] transition-colors"
         >
-          <LogOut className="w-4 h-4" />
-          <span>Sign Out</span>
+          <LogOut className="w-[18px] h-[18px] shrink-0" />
+          <span className={`whitespace-nowrap transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>Sign Out</span>
         </button>
       </div>
     </aside>
@@ -257,6 +274,10 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
             <h4 className="text-[0.78rem] font-bold text-[#1a1a1b] truncate" title={summary}>{summary}</h4>
           </div>
           
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="font-mono text-[0.6rem] text-slate-400 bg-slate-100 rounded px-1 py-0.5 shrink-0 select-all">#{alert.id.toUpperCase()}</span>
+          </div>
+
           <div className="flex justify-between items-center text-[0.7rem] text-[#5f6368] mt-0.5">
             <span className="truncate">{alert.source_ip || alert.agent_name}</span>
             <span className="shrink-0">{new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -671,9 +692,49 @@ const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, a
           </Section>
 
           <Section title="6 — Campaign Correlation">
-            <div className={`rounded-xl p-4 border text-[0.82rem] leading-relaxed ${aiData?.correlation && aiData.correlation !== 'None detected' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
-              {aiData?.correlation || 'No correlation data. Run the Correlation agent.'}
-            </div>
+            {(() => {
+              const corrObj = aiData?.phaseData?.correlation;
+              if (!corrObj) return (
+                <div className="rounded-xl p-4 border border-slate-200 bg-slate-50 text-[0.82rem] text-slate-500 italic">
+                  No correlation data. Run the Correlation agent.
+                </div>
+              );
+              if (!corrObj.campaign_detected) return (
+                <div className="rounded-xl p-4 border border-slate-200 bg-slate-50 text-[0.82rem] text-slate-500 italic">
+                  {corrObj.campaign_name || 'No campaign pattern detected — isolated incident.'}
+                </div>
+              );
+              return (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 overflow-hidden text-[0.82rem]">
+                  <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-100 border-b border-amber-200">
+                    <span className="font-black text-amber-800 uppercase tracking-wide text-[0.7rem]">⚠ Campaign Detected</span>
+                    {corrObj.kill_chain_stage && corrObj.kill_chain_stage !== 'UNKNOWN' && (
+                      <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.62rem] font-black uppercase border border-purple-200">{corrObj.kill_chain_stage}</span>
+                    )}
+                    {corrObj.escalation_needed && (
+                      <span className="ml-auto px-2 py-0.5 rounded bg-red-100 text-red-700 text-[0.62rem] font-black uppercase border border-red-200">Escalate</span>
+                    )}
+                  </div>
+                  <div className="px-4 py-3 space-y-2">
+                    <p className="font-bold text-amber-900 text-[0.88rem]">{corrObj.campaign_name}</p>
+                    {corrObj.campaign_description && (
+                      <p className="text-amber-800 leading-relaxed">{corrObj.campaign_description}</p>
+                    )}
+                    {corrObj.related_alerts?.length > 0 && (
+                      <div className="mt-2 pt-3 border-t border-amber-200 space-y-1.5">
+                        <p className="text-[0.62rem] font-black text-amber-700 uppercase tracking-widest">{corrObj.related_alerts.length} Related Alert{corrObj.related_alerts.length !== 1 ? 's' : ''}</p>
+                        {corrObj.related_alerts.map((ra: { id: string; description: string }) => (
+                          <div key={ra.id} className="rounded-lg bg-white/70 border border-amber-200 px-3 py-2 space-y-1">
+                            <span className="font-mono text-[0.68rem] text-amber-700 font-black bg-amber-100 rounded px-1.5 py-0.5 select-all">#{ra.id.toUpperCase()}</span>
+                            <p className="text-[0.78rem] text-amber-900 leading-snug">{ra.description}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </Section>
 
           <Section title="7 — Response Plan">
@@ -942,6 +1003,7 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
   const approvalRequired = pd.response?.approval_required ?? aiData?.response?.approval_required;
   const playbookSteps = (alert.remediation_steps || '').split('\n').map(s => s.trim()).filter(Boolean);
   const correlation = aiData?.correlation;
+  const correlationObj = pd.correlation;
   const validation = aiData?.validation;
 
   const lvlColor: Record<string, string> = {
@@ -978,6 +1040,7 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
   );
 
   return (
+    <div className="space-y-3">
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
       {/* Column 1 — Threat Context */}
       <Panel title="Threat Context" accent="bg-slate-50 text-[#004a99]">
@@ -1005,11 +1068,11 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
           <IocTable iocs={aiData?.iocs || {}} />
         </div>
 
-        {correlation && (
+        {correlationObj && !correlationObj.campaign_detected && (
           <div>
-            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Correlation</p>
-            <div className={`rounded-lg border px-3 py-2 text-[0.74rem] ${correlation !== 'None detected' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
-              {correlation}
+            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Campaign Correlation</p>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[0.72rem] text-slate-500 italic">
+              {correlationObj.campaign_name || 'No campaign pattern detected — isolated incident.'}
             </div>
           </div>
         )}
@@ -1177,6 +1240,57 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
           })()}
         </div>
       </Panel>
+    </div>
+
+    {/* Full-width campaign correlation card — shown below the grid when a campaign is detected */}
+    {correlationObj?.campaign_detected && (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-100 border-b border-amber-200">
+          <span className="text-[0.65rem] font-black uppercase tracking-widest text-amber-800">⚠ Campaign Detected</span>
+          {correlationObj.kill_chain_stage && correlationObj.kill_chain_stage !== 'UNKNOWN' && (
+            <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.6rem] font-black uppercase border border-purple-200">{correlationObj.kill_chain_stage}</span>
+          )}
+          {correlationObj.escalation_needed && (
+            <span className="px-2 py-0.5 rounded bg-red-100 text-red-700 text-[0.6rem] font-black uppercase border border-red-200">Escalate</span>
+          )}
+          {typeof correlationObj.confidence === 'number' && (
+            <span className="ml-auto font-mono text-[0.6rem] text-amber-700">{Math.round(correlationObj.confidence * 100)}% confidence</span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-amber-200">
+          {/* Campaign metadata */}
+          <div className="px-4 py-3 space-y-1">
+            <p className="font-black text-amber-900 text-[0.88rem]">{correlationObj.campaign_name}</p>
+            {correlationObj.campaign_description && (
+              <p className="text-[0.78rem] text-amber-800 leading-relaxed">{correlationObj.campaign_description}</p>
+            )}
+          </div>
+
+          {/* Related alerts list */}
+          <div className="px-4 py-3">
+            {correlationObj.related_alerts?.length > 0 ? (
+              <>
+                <p className="text-[0.6rem] font-black text-amber-700 uppercase tracking-widest mb-2">
+                  {correlationObj.related_alerts.length} Related Alert{correlationObj.related_alerts.length !== 1 ? 's' : ''}
+                </p>
+                <div className="space-y-1.5">
+                  {correlationObj.related_alerts.map((ra: { id: string; description: string }) => (
+                    <div key={ra.id} className="flex items-start gap-2.5 bg-white/70 rounded-lg border border-amber-200 px-3 py-2">
+                      <span className="font-mono text-[0.62rem] text-amber-700 font-black bg-amber-100 rounded px-1.5 py-0.5 select-all shrink-0 mt-0.5 whitespace-nowrap">#{ra.id.toUpperCase()}</span>
+                      <p className="text-[0.74rem] text-amber-900 leading-snug">{ra.description}</p>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-[0.72rem] text-amber-700 italic">No related alerts identified in the 72-hour window.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 };
@@ -1525,142 +1639,134 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
   return (
     <div className="flex flex-col h-full bg-[#f0f4f9] overflow-hidden">
 
-      {/* Top bar */}
-      <div className="bg-white border-b border-[#d1d9e6] px-6 py-4 flex items-start justify-between gap-4 shrink-0">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <span className={`px-2.5 py-1 rounded-full text-[0.65rem] font-black uppercase tracking-wide border ${sevStyle[severity]}`}>
-              {severity}
-            </span>
-            <span className={`px-2.5 py-1 rounded-full text-[0.65rem] font-black uppercase tracking-wide border ${
-              alert.status === 'TRIAGED' ? 'bg-green-50 text-green-700 border-green-200' :
-              alert.status === 'ANALYZING' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-              alert.status === 'FALSE_POSITIVE' ? 'bg-gray-50 text-gray-500 border-gray-200' :
-              'bg-slate-50 text-slate-600 border-slate-200'
-            }`}>{alert.status}</span>
-            {alert.email_sent === 1 && (
-              <span className="flex items-center gap-1 text-[0.65rem] font-bold text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full uppercase">
-                <Bell size={10} fill="currentColor" /> Email Sent
-              </span>
-            )}
-          </div>
-          <h2 className="text-[0.95rem] font-bold text-[#1a1a1b] mt-2 leading-snug">
-            {alert.description}
-          </h2>
-          <div className="flex items-center gap-4 mt-1.5 text-[0.72rem] text-[#5f6368]">
-            <span className="font-mono font-bold text-slate-500">#{alert.id.substring(0, 10).toUpperCase()}</span>
-            {alert.source_ip && <span>SRC: <span className="font-mono font-bold text-slate-700">{alert.source_ip}</span></span>}
-            <span>Host: <span className="font-mono font-bold text-slate-700">{alert.agent_name}</span></span>
-            <span>{new Date(alert.timestamp).toLocaleString()}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          <button
-            type="button"
-            onClick={() => setShowReport(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.75rem] font-bold transition-colors border border-slate-200"
-          >
-            <FileText size={14} />
-            Report
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setShowHistory(h => !h);
-              if (!showHistory) {
-                setRunsLoading(true);
-                getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
-              }
-            }}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[0.75rem] font-bold transition-colors border ${showHistory ? 'bg-[#004a99] text-white border-[#004a99]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'}`}
-          >
-            {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={14} />}
-            History {runs.length > 0 ? `(${runs.length})` : ''}
-          </button>
-          {aiData && (
-            <button
-              type="button"
-              onClick={handleSaveSnapshot}
-              disabled={isSavingSnapshot || isAnalyzing}
-              title="Save current agent results as a snapshot for later comparison"
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.75rem] font-bold transition-colors border border-slate-200 disabled:opacity-50"
-            >
-              {isSavingSnapshot ? <div className="w-3 h-3 rounded-full border-2 border-slate-400/40 border-t-slate-600 animate-spin" /> : <Plus size={14} />}
-              Save Snapshot
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={handleRerunFresh}
-            disabled={isAnalyzing}
-            title="Run all 7 agents on this alert"
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] hover:bg-[#003a7a] text-white text-[0.75rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
-          >
-            {isRerunning ? (
-              <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running...</>
-            ) : (
-              <><Activity size={14} /> Run Agents</>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Breadcrumb + back nav */}
-      <div className="bg-slate-50 border-b border-[#d1d9e6] px-6 py-2 flex items-center gap-2 shrink-0 text-[0.72rem] text-slate-500">
+      {/* Slim top bar — title + pipeline progress only */}
+      <div className="bg-white border-b border-[#d1d9e6] px-5 h-11 flex items-center gap-3 shrink-0">
         <button
           type="button"
           onClick={() => { onClose(); if (returnTab && setActiveTab) setActiveTab(returnTab); }}
-          className="flex items-center gap-1 font-semibold hover:text-[#004a99] transition-colors"
+          className="text-[0.72rem] font-semibold text-slate-500 hover:text-[#004a99] transition-colors shrink-0"
         >
-          ← Alerts Queue
+          ← Back
         </button>
-        <span className="text-slate-300">/</span>
-        <span className="font-mono text-slate-600">#{alert.id.substring(0,10).toUpperCase()}</span>
-      </div>
-
-      {/* Progress bar */}
-      <div className="bg-white border-b border-[#d1d9e6] px-6 py-2 flex items-center gap-3 shrink-0">
-        <span className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest shrink-0">Pipeline Progress</span>
-        <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-[#004a99] rounded-full transition-all duration-700"
-            style={{ width: `${(completedCount / agentDefs.length) * 100}%` }}
-          />
-        </div>
-        <span className="text-[0.65rem] font-bold text-slate-500 shrink-0">{completedCount}/{agentDefs.length} agents</span>
-      </div>
-
-      {runError && (
-        <div className="mx-5 mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[0.75rem] text-red-700">
-          {runError}
-        </div>
-      )}
-
-      {(() => {
-        const fallbackPhases: string[] = Array.isArray(aiData?.fallback_phases) ? aiData.fallback_phases : [];
-        const quotaExhausted = aiData?.quota_exhausted === true;
-        const allFallback = aiData && fallbackPhases.length >= 7;
-        if (!quotaExhausted && !allFallback) return null;
-        return (
-          <div className="mx-5 mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3">
-            <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
-            <div className="flex-1 text-[0.78rem] text-red-800 leading-relaxed">
-              <p className="font-black uppercase tracking-wider text-[0.7rem] mb-0.5">
-                {quotaExhausted ? 'LLM Daily Quota Exhausted' : 'All agents returned fallback data'}
-              </p>
-              <p>
-                {quotaExhausted
-                  ? 'Real analysis could not run — OpenRouter\'s free-tier daily limit (50 req/day) is used up on both API keys. '
-                  : `${fallbackPhases.length}/7 agents failed — the data shown below is placeholder fallback, not a real assessment. `}
-                Add credits at <span className="font-mono font-bold">openrouter.ai</span> or wait until midnight UTC for the quota to reset. Then click <span className="font-bold">Run Agents</span> again.
-              </p>
-            </div>
+        <div className="w-px h-4 bg-slate-200 shrink-0" />
+        <p className="text-[0.82rem] font-semibold text-slate-800 truncate flex-1">{alert.description}</p>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest">Pipeline</span>
+          <div className="w-28 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#004a99] rounded-full transition-all duration-700"
+              style={{ width: `${(completedCount / agentDefs.length) * 100}%` }}
+            />
           </div>
-        );
-      })()}
+          <span className="text-[0.65rem] font-bold text-slate-500">{completedCount}/{agentDefs.length}</span>
+        </div>
+      </div>
 
       {/* Main scrollable content */}
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
+
+        {/* Alert identity + actions card */}
+        <div className="bg-white rounded-xl border border-[#d1d9e6] px-5 py-4 flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap mb-1.5">
+              <span className={`px-2.5 py-0.5 rounded-full text-[0.62rem] font-black uppercase tracking-wide border ${sevStyle[severity]}`}>
+                {severity}
+              </span>
+              <span className={`px-2.5 py-0.5 rounded-full text-[0.62rem] font-black uppercase tracking-wide border ${
+                alert.status === 'TRIAGED' ? 'bg-green-50 text-green-700 border-green-200' :
+                alert.status === 'ANALYZING' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                alert.status === 'FALSE_POSITIVE' ? 'bg-gray-50 text-gray-500 border-gray-200' :
+                'bg-slate-50 text-slate-600 border-slate-200'
+              }`}>{alert.status}</span>
+              {alert.email_sent === 1 && (
+                <span className="flex items-center gap-1 text-[0.62rem] font-bold text-green-600 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full uppercase">
+                  <Bell size={9} fill="currentColor" /> Email Sent
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-4 text-[0.7rem] text-slate-500">
+              <span className="font-mono font-bold text-slate-400">#{alert.id.substring(0, 10).toUpperCase()}</span>
+              {alert.source_ip && <span>SRC: <span className="font-mono font-bold text-slate-700">{alert.source_ip}</span></span>}
+              <span>Host: <span className="font-mono font-bold text-slate-700">{alert.agent_name}</span></span>
+              <span>{new Date(alert.timestamp).toLocaleString()}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={() => setShowReport(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.72rem] font-bold transition-colors border border-slate-200"
+            >
+              <FileText size={13} /> Report
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowHistory(h => !h);
+                if (!showHistory) {
+                  setRunsLoading(true);
+                  getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[#004a99] text-white border-[#004a99]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'}`}
+            >
+              {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={13} />}
+              History {runs.length > 0 ? `(${runs.length})` : ''}
+            </button>
+            {aiData && (
+              <button
+                type="button"
+                onClick={handleSaveSnapshot}
+                disabled={isSavingSnapshot || isAnalyzing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.72rem] font-bold transition-colors border border-slate-200 disabled:opacity-50"
+              >
+                {isSavingSnapshot ? <div className="w-3 h-3 rounded-full border-2 border-slate-400/40 border-t-slate-600 animate-spin" /> : <Plus size={13} />}
+                Snapshot
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleRerunFresh}
+              disabled={isAnalyzing}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#004a99] hover:bg-[#003a7a] text-white text-[0.72rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
+            >
+              {isRerunning ? (
+                <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running...</>
+              ) : (
+                <><Activity size={13} /> Run Agents</>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {runError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[0.75rem] text-red-700">
+            {runError}
+          </div>
+        )}
+
+        {(() => {
+          const fallbackPhases: string[] = Array.isArray(aiData?.fallback_phases) ? aiData.fallback_phases : [];
+          const quotaExhausted = aiData?.quota_exhausted === true;
+          const allFallback = aiData && fallbackPhases.length >= 7;
+          if (!quotaExhausted && !allFallback) return null;
+          return (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3">
+              <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
+              <div className="flex-1 text-[0.78rem] text-red-800 leading-relaxed">
+                <p className="font-black uppercase tracking-wider text-[0.7rem] mb-0.5">
+                  {quotaExhausted ? 'LLM Daily Quota Exhausted' : 'All agents returned fallback data'}
+                </p>
+                <p>
+                  {quotaExhausted
+                    ? 'Real analysis could not run — OpenRouter\'s free-tier daily limit (50 req/day) is used up on both API keys. '
+                    : `${fallbackPhases.length}/7 agents failed — the data shown below is placeholder fallback, not a real assessment. `}
+                  Add credits at <span className="font-mono font-bold">openrouter.ai</span> or wait until midnight UTC for the quota to reset. Then click <span className="font-bold">Run Agents</span> again.
+                </p>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Run History Panel */}
         {showHistory && (
@@ -2125,7 +2231,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
           </div>
           <div className="flex-1 overflow-y-auto">
             {alerts.length > 0 ? (
-              alerts.slice(0, 10).map(alert => (
+              [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 10).map(alert => (
                 <AlertRow key={alert.id} alert={alert} onClick={() => onAlertClick(alert)} />
               ))
             ) : (
@@ -2213,6 +2319,8 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
         a.id?.toLowerCase().includes(q)
       );
     }
+    const ts = (t: string) => new Date(t.replace(' ', 'T')).getTime();
+    result = [...result].sort((a, b) => ts(b.timestamp) - ts(a.timestamp));
     setFiltered(result);
   }, [alerts, filterSeverity, filterStatus, searchQuery]);
 

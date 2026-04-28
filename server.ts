@@ -251,6 +251,188 @@ try {
     console.log('[DB] Seeded 6 default playbooks');
   }
 
+  // Seed demo campaign alerts — always refresh timestamps so they stay in the 72-hour correlation window
+  {
+    const tsAgo = (h: number) =>
+      new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
+
+    const demoAlerts: Array<{
+      id: string; hoursAgo: number; rule_id: string; description: string;
+      severity: number; source_ip: string; dest_ip: string; user: string;
+      hostname: string; agent_name: string; full_log: string;
+    }> = [
+      // g — newest (shown first in queue)
+      {
+        id: 'demo-exfil-001', hoursAgo: 2,
+        rule_id: '92100',
+        description: 'Data exfiltration: 2.3 GB transferred from DB-SERVER-02 to 185.220.101.45 over encrypted channel',
+        severity: 15,
+        source_ip: '10.0.1.20', dest_ip: '185.220.101.45',
+        user: 'root', hostname: 'DB-SERVER-02', agent_name: 'DB-SERVER-02',
+        full_log: JSON.stringify({ timestamp: tsAgo(2), rule: { id: '92100', description: 'Large outbound data transfer to suspicious IP', level: 15 }, data: { srcip: '10.0.1.20', dstip: '185.220.101.45', dstport: 443, bytes_out: 2469606400, proto: 'TCP', duration_seconds: 1847 }, agent: { name: 'DB-SERVER-02' } }),
+      },
+      // f
+      {
+        id: 'demo-privesc-001', hoursAgo: 8,
+        rule_id: '5501',
+        description: 'Privilege escalation: User svc_backup added to sudoers group on DB-SERVER-02',
+        severity: 13,
+        source_ip: '10.0.1.20', dest_ip: '',
+        user: 'svc_backup', hostname: 'DB-SERVER-02', agent_name: 'DB-SERVER-02',
+        full_log: JSON.stringify({ timestamp: tsAgo(8), rule: { id: '5501', description: 'User added to privileged group', level: 13 }, data: { user: 'svc_backup', group: 'sudo', command: 'usermod -aG sudo svc_backup', srcip: '10.0.1.20' }, agent: { name: 'DB-SERVER-02' } }),
+      },
+      // e
+      {
+        id: 'demo-lateral-001', hoursAgo: 14,
+        rule_id: '60122',
+        description: 'Lateral movement: Pass-the-hash attack from WEB-SERVER-01 to DB-SERVER-02 using stolen NTLM hash',
+        severity: 14,
+        source_ip: '10.0.1.10', dest_ip: '10.0.1.20',
+        user: 'svc_backup', hostname: 'DB-SERVER-02', agent_name: 'DB-SERVER-02',
+        full_log: JSON.stringify({ timestamp: tsAgo(14), rule: { id: '60122', description: 'Pass-the-hash attack detected', level: 14 }, data: { srcip: '10.0.1.10', dstip: '10.0.1.20', user: 'svc_backup', auth_type: 'NTLM', logon_type: 3, hash: 'aad3b435b51404eeaad3b435b51404ee' }, agent: { name: 'DB-SERVER-02' } }),
+      },
+      // d
+      {
+        id: 'demo-c2-beacon-001', hoursAgo: 20,
+        rule_id: '87702',
+        description: 'C2 beacon detected: WEB-SERVER-01 making periodic HTTPS requests to 77.91.68.45:8443',
+        severity: 12,
+        source_ip: '10.0.1.10', dest_ip: '77.91.68.45',
+        user: 'www-data', hostname: 'WEB-SERVER-01', agent_name: 'WEB-SERVER-01',
+        full_log: JSON.stringify({ timestamp: tsAgo(20), rule: { id: '87702', description: 'Known C2 framework beacon pattern', level: 12 }, data: { srcip: '10.0.1.10', dstip: '77.91.68.45', dstport: 8443, proto: 'HTTPS', interval_seconds: 60, user_agent: 'Mozilla/5.0' }, agent: { name: 'WEB-SERVER-01' } }),
+      },
+      // c
+      {
+        id: 'demo-webshell-001', hoursAgo: 28,
+        rule_id: '31108',
+        description: 'Webshell upload detected: PHP backdoor written to /var/www/html/uploads/ on WEB-SERVER-01',
+        severity: 13,
+        source_ip: '185.220.101.45', dest_ip: '10.0.1.10',
+        user: 'www-data', hostname: 'WEB-SERVER-01', agent_name: 'WEB-SERVER-01',
+        full_log: JSON.stringify({ timestamp: tsAgo(28), rule: { id: '31108', description: 'Web shell upload detected', level: 13 }, data: { srcip: '185.220.101.45', file: '/var/www/html/uploads/img_cache.php', md5: 'e3b0c44298fc1c149afb', content_type: 'application/x-php' }, agent: { name: 'WEB-SERVER-01' } }),
+      },
+      // b
+      {
+        id: 'demo-ssh-brute-001', hoursAgo: 36,
+        rule_id: '5712',
+        description: 'SSH brute-force attack: 185.220.101.45 made 347 failed login attempts on WEB-SERVER-01',
+        severity: 10,
+        source_ip: '185.220.101.45', dest_ip: '10.0.1.10',
+        user: 'root', hostname: 'WEB-SERVER-01', agent_name: 'WEB-SERVER-01',
+        full_log: JSON.stringify({ timestamp: tsAgo(36), rule: { id: '5712', description: 'SSHD brute force trying to get access to the system', level: 10 }, data: { srcip: '185.220.101.45', dstip: '10.0.1.10', user: 'root', attempts: 347 }, agent: { name: 'WEB-SERVER-01' } }),
+      },
+      // a — oldest (shown last in queue)
+      {
+        id: 'demo-recon-001', hoursAgo: 48,
+        rule_id: '40101',
+        description: 'Nmap SYN port scan: 185.220.101.45 scanned 1024 ports on GATEWAY-01',
+        severity: 5,
+        source_ip: '185.220.101.45', dest_ip: '10.0.1.1',
+        user: '', hostname: 'GATEWAY-01', agent_name: 'GATEWAY-01',
+        full_log: JSON.stringify({ timestamp: tsAgo(48), rule: { id: '40101', description: 'Nmap port scan detected', level: 5 }, data: { srcip: '185.220.101.45', dstip: '10.0.1.1', proto: 'TCP', flags: 'SYN', dstports: '22,80,443,3306,8080,8443' }, agent: { name: 'GATEWAY-01' } }),
+      },
+
+      // --- MISP IOC alerts (real malicious infrastructure) ---
+
+      // MISP-1: DNS beacon to anhei.gotdns.com (known C2, resolves to 103.226.132.7)
+      {
+        id: 'demo-misp-dns-001', hoursAgo: 0.5,
+        rule_id: '5300',
+        description: 'DNS C2 beacon: WORKSTATION-12 queried known malicious domain anhei.gotdns.com (resolves to 103.226.132.7) — 47 queries in 10 minutes indicating periodic beaconing',
+        severity: 14,
+        source_ip: '10.0.2.15', dest_ip: '103.226.132.7',
+        user: 'jsmith', hostname: 'WORKSTATION-12', agent_name: 'WORKSTATION-12',
+        full_log: JSON.stringify({
+          timestamp: tsAgo(0.5),
+          rule: { id: '5300', description: 'DNS query to known C2 domain', level: 14 },
+          data: {
+            srcip: '10.0.2.15',
+            dstip: '103.226.132.7',
+            dstport: 53,
+            proto: 'UDP',
+            program_name: 'dns',
+            dns: {
+              question: { name: 'anhei.gotdns.com', type: 'A' },
+              answers:  [{ name: 'anhei.gotdns.com', type: 'A', data: '103.226.132.7' }],
+              query_count: 47,
+              interval_seconds: 13,
+            },
+          },
+          agent: { name: 'WORKSTATION-12', ip: '10.0.2.15' },
+        }),
+      },
+
+      // MISP-2: Direct TCP connection to 103.226.132.7:8443 (known APT C2 node)
+      {
+        id: 'demo-misp-conn-001', hoursAgo: 1,
+        rule_id: '87703',
+        description: 'Outbound connection to known APT C2 server 103.226.132.7:8443 from WORKSTATION-22 (10.0.2.22) — TLS session with suspicious JA3 fingerprint matching Cobalt Strike',
+        severity: 15,
+        source_ip: '10.0.2.22', dest_ip: '103.226.132.7',
+        user: 'mlopez', hostname: 'WORKSTATION-22', agent_name: 'WORKSTATION-22',
+        full_log: JSON.stringify({
+          timestamp: tsAgo(1),
+          rule: { id: '87703', description: 'Outbound connection to known malicious IP', level: 15 },
+          data: {
+            srcip: '10.0.2.22',
+            dstip: '103.226.132.7',
+            dstport: 8443,
+            proto: 'TCP',
+            bytes_out: 18432,
+            bytes_in: 4096,
+            duration_seconds: 3600,
+            tls: {
+              ja3: '72a7c9feebf2d402c7053b2cc0ced61e',
+              sni: '103.226.132.7',
+              version: 'TLSv1.2',
+            },
+          },
+          agent: { name: 'WORKSTATION-22', ip: '10.0.2.22' },
+        }),
+      },
+
+      // MISP-3: DNS beaconing to apperu.gnway.cc (DGA-style C2 domain)
+      {
+        id: 'demo-misp-dga-001', hoursAgo: 1.5,
+        rule_id: '5301',
+        description: 'DGA-pattern C2 beacon: WORKSTATION-12 queried apperu.gnway.cc — domain exhibits DGA characteristics (random subdomain prefix, .cc TLD, dynamic DNS provider gnway), consistent with Emotet/Trickbot loader activity',
+        severity: 13,
+        source_ip: '10.0.2.15', dest_ip: '',
+        user: 'jsmith', hostname: 'WORKSTATION-12', agent_name: 'WORKSTATION-12',
+        full_log: JSON.stringify({
+          timestamp: tsAgo(1.5),
+          rule: { id: '5301', description: 'DGA-pattern DNS query to suspected C2 domain', level: 13 },
+          data: {
+            srcip: '10.0.2.15',
+            dstport: 53,
+            proto: 'UDP',
+            program_name: 'dns',
+            dns: {
+              question: { name: 'apperu.gnway.cc', type: 'A' },
+              query_count: 23,
+              interval_seconds: 26,
+            },
+          },
+          agent: { name: 'WORKSTATION-12', ip: '10.0.2.15' },
+        }),
+      },
+    ];
+
+    // Upsert: insert first time; on conflict refresh timestamp only if older than 70 hours (keeps alerts in 72h correlation window)
+    const upsertAlert = db.prepare(`
+      INSERT INTO alerts (id, timestamp, rule_id, description, severity, source_ip, dest_ip, user, hostname, agent_name, full_log, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW')
+      ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp
+      WHERE timestamp < datetime('now', '-70 hours')
+    `);
+
+    for (const a of demoAlerts) {
+      upsertAlert.run(a.id, tsAgo(a.hoursAgo), a.rule_id, a.description, a.severity,
+        a.source_ip, a.dest_ip, a.user, a.hostname, a.agent_name, a.full_log);
+    }
+    console.log('[DB] Seeded 7 demo campaign alerts (Operation Midnight APT)');
+  }
+
   // Seed integration rows if not already present (INSERT OR IGNORE preserves user config)
   const seedIntegration = db.prepare(
     'INSERT OR IGNORE INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, ?, ?, ?)'

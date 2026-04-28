@@ -97,6 +97,12 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
 
   logs.push(`[Analysis] Initializing triage for alert ${a.id}`);
 
+  // For DB-sourced alerts a.data is undefined; parse from full_log if available
+  let parsedData: any = a.data ?? {};
+  if (!a.data && a.full_log) {
+    try { parsedData = JSON.parse(a.full_log).data ?? {}; } catch {}
+  }
+
   const related = (state.recentAlerts || [])
     .filter((r: any) => r.id !== a.id)
     .slice(0, 10)
@@ -117,12 +123,12 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
   const userPrompt = `ALERT TO TRIAGE:
 - ID: ${a.id}
 - Timestamp: ${a.timestamp}
-- Agent: ${a.data?.agent?.name ?? a.agent_name ?? 'unknown'} (${a.data?.agent?.ip ?? a.source_ip ?? ''})
-- Rule ID: ${a.data?.rule?.id ?? a.rule_id ?? 'N/A'} | Level: ${a.data?.rule?.level ?? a.severity ?? 'N/A'} | Description: ${a.data?.rule?.description ?? a.description ?? 'N/A'}
-- Source IP: ${a.data?.srcip ?? a.source_ip ?? 'N/A'} | Dest IP: ${a.data?.dstip ?? 'N/A'}
-- User: ${a.data?.dstuser ?? a.data?.srcuser ?? 'N/A'}
-- Program: ${a.data?.program_name ?? 'N/A'}
-- Full data: ${JSON.stringify(a.data ?? {}, null, 2)}
+- Agent: ${parsedData?.agent?.name ?? a.agent_name ?? 'unknown'} (${parsedData?.agent?.ip ?? a.source_ip ?? ''})
+- Rule ID: ${parsedData?.rule?.id ?? a.rule_id ?? 'N/A'} | Level: ${parsedData?.rule?.level ?? a.severity ?? 'N/A'} | Description: ${parsedData?.rule?.description ?? a.description ?? 'N/A'}
+- Source IP: ${parsedData?.srcip ?? a.source_ip ?? 'N/A'} | Dest IP: ${parsedData?.dstip ?? a.dest_ip ?? 'N/A'}
+- User: ${parsedData?.dstuser ?? parsedData?.srcuser ?? 'N/A'}
+- Program: ${parsedData?.program_name ?? 'N/A'}
+- Full data: ${JSON.stringify(parsedData, null, 2)}
 
 RECENT RELATED ALERTS (same agent or source IP — last 72 hours):
 ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
