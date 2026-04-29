@@ -9,7 +9,7 @@ It combines:
 - A React + Vite frontend for analysts
 - An Express + Socket.IO backend
 - A local SQLite database for alerts, users, and incidents
-- A 7-phase AI orchestration pipeline built with LangGraph and LangChain
+- A multi-agent **Hub-and-Swarm** orchestration pipeline built with specialized workers
 - Utility scripts for ingesting sample Wazuh-style alerts
 
 The main use case is:
@@ -17,93 +17,32 @@ The main use case is:
 1. Ingest Wazuh-like alerts into the backend
 2. Store them in SQLite
 3. Stream updates to the frontend in real time
-4. Run AI analysis across multiple agent phases
+4. Run AI analysis across dynamic agent phases (Triage, Investigation, Composition)
 5. Present triage, MITRE mapping, remediation, ticketing, and report generation in the UI
 
 ## High-Level Architecture
 
 ### Frontend
-
-- Entry point: `src/main.tsx`
-- Main UI shell and most application logic: `src/App.tsx`
-- Frontend API wrappers for AI endpoints: `src/services/aiService.ts`
-- Shared TypeScript types: `src/types.ts`
-- Styling: `src/index.css`
-
-The frontend handles:
-
-- Authentication state with JWT in `localStorage`
-- Fetching alerts after login
-- Opening a Socket.IO connection for `new_alert` and `alert_updated`
-- Triggering automatic orchestration for newly detected alerts
-- Rendering dashboards, alert investigation screens, reports, and agent controls
-- Downloading incident reports as `.md` files from the browser
+... (rest of frontend section) ...
 
 ### Backend
-
 - Main server: `server.ts`
-- AI orchestration workflow: `agents.ts`
+- AI orchestration workflow: `agents/` (modular hub-and-swarm design)
 
 The backend handles:
+... (rest of backend section) ...
 
-- Express HTTP API
-- JWT authentication
-- Admin user seeding
-- SQLite schema creation
-- Alert ingestion
-- Alert updates
-- AI phase execution and full orchestration
-- Socket.IO broadcasts for alert state changes
-- Vite middleware in development
+## AI Intelligence Architecture
 
-### Database
+The project uses a sophisticated **Hub-and-Swarm** model for alert analysis. 
 
-- Database file: `soc.db`
-- WAL mode enabled
-- Related runtime files: `soc.db-wal`, `soc.db-shm`
+Key features:
+- **Planner-led**: A central LLM planner dispatches specialized investigators in parallel.
+- **Memory Tiers**: Semantic (embeddings), IOC history, and insight tracking.
+- **Efficiency**: Short-circuits high-confidence false positives and skips unnecessary agents.
+- **Multi-Model**: Robust fallback between OpenRouter (multiple providers) and local Ollama.
 
-Tables defined by the server:
-
-- `users`
-- `alerts`
-- `incidents`
-- `incident_alerts`
-- `audit_logs`
-
-Current local DB contents I observed:
-
-- `users`: 1
-- `alerts`: 12
-- `incidents`: 0
-- `incident_alerts`: 0
-- `audit_logs`: 0
-
-## AI Workflow
-
-`agents.ts` defines a sequential 7-agent LangGraph workflow:
-
-1. `analysis`
-2. `intel`
-3. `knowledge`
-4. `correlation`
-5. `ticketing`
-6. `response`
-7. `validation`
-
-Each phase prompts an LLM to return strict JSON. The backend then composes final alert outputs into:
-
-- `ai_analysis`
-- `mitre_attack`
-- `remediation_steps`
-- `email_sent`
-- `status`
-
-LLM configuration details:
-
-- Uses `ChatOpenAI` from LangChain
-- Points to OpenRouter via `baseURL`
-- Default model: `openai/gpt-oss-120b:free`
-- API key env var: `OPENROUTER_API_KEY`
+For detailed documentation, see: **[SOC_INTELLIGENCE_ARCHITECTURE.md](./SOC_INTELLIGENCE_ARCHITECTURE.md)**
 
 ## Main User Flow
 

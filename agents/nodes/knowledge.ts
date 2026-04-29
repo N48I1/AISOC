@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const KnowledgeSchema = z.object({
@@ -10,7 +10,7 @@ const KnowledgeSchema = z.object({
   confidence:               z.number().min(0).max(1).default(0),
 });
 
-export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT_MODELS.knowledge) {
+export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT_MODELS.knowledge, ctx?: RunContext) {
   const logs: string[] = [];
   logs.push(`[Knowledge] Fetching playbooks for tactic: ${state.analysis?.attack_category || "Unknown"}`);
 
@@ -35,6 +35,7 @@ export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT
       estimated_effort_minutes: 0,
       confidence: 0,
     },
+    ctx,
   });
 
   logs.push(`[Knowledge] Playbook identified: ${knowledge.playbook_reference}. Priority: ${knowledge.containment_priority}.`);

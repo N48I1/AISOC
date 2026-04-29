@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const ACTION_TYPE_MAP: Record<string, string> = {
@@ -32,11 +32,11 @@ const ResponseSchema = z.object({
   confidence:                 z.number().min(0).max(1).default(0),
 });
 
-export async function responseNode(state: any, model: string = DEFAULT_AGENT_MODELS.response) {
+export async function responseNode(state: any, model: string = DEFAULT_AGENT_MODELS.response, ctx?: RunContext) {
   const logs: string[] = [];
   logs.push(`[Response] Formulating containment strategy and response actions.`);
 
-  const ctx = {
+  const promptCtx = {
     alert: {
       description: state.alert?.description,
       source_ip:   state.alert?.source_ip,
@@ -67,13 +67,14 @@ export async function responseNode(state: any, model: string = DEFAULT_AGENT_MOD
   "estimated_containment_time": "15 minutes",
   "confidence": 0.8
 }`,
-    userPrompt: `Context:\n${JSON.stringify(ctx, null, 2)}`,
+    userPrompt: `Context:\n${JSON.stringify(promptCtx, null, 2)}`,
     fallback: {
       actions:                    [],
       approval_required:          true,
       estimated_containment_time: "unknown",
       confidence:                 0,
     },
+    ctx,
   });
 
   // Normalise action types — map LLM synonyms to canonical enum values

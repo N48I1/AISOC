@@ -7,7 +7,6 @@ import {
 
 function extractJSONObject(raw: string): unknown {
   let s = (raw || "").trim();
-  // Strip markdown code fences
   s = s.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
 
   const start = s.indexOf("{");
@@ -17,22 +16,42 @@ function extractJSONObject(raw: string): unknown {
   }
   let c = s.slice(start, end + 1);
 
-  // Remove // line comments (outside of strings — good enough approximation)
   c = c.replace(/("[^"\\]*(?:\\.[^"\\]*)*")|\/\/[^\n]*/g, (m, str) => str ?? "");
-  // Remove /* block comments */
   c = c.replace(/("[^"\\]*(?:\\.[^"\\]*)*")|\/\*[\s\S]*?\*\//g, (m, str) => str ?? "");
-  // Fix trailing decimals: 1. → 1.0
   c = c.replace(/(\d)\.(\s*[,}\]])/g, "$1.0$2");
-  // Remove trailing commas before } or ]
   c = c.replace(/,(\s*[}\]])/g, "$1");
 
   try {
     return JSON.parse(c);
   } catch {
-    // Last-resort: strip non-printable control chars (except tab/newline/CR)
     c = c.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
     return JSON.parse(c);
   }
+}
+
+// ── Per-orchestration run context (replaces module-level globals) ───────────
+export interface RunContext {
+  traceId:         string;
+  quotaExhausted:  boolean;
+  fallbackPhases:  string[];
+  agentLogs:       string[];
+}
+
+export function newRunContext(traceId?: string): RunContext {
+  return {
+    traceId:        traceId ?? (typeof crypto !== "undefined" ? crypto.randomUUID() : String(Date.now())),
+    quotaExhausted: false,
+    fallbackPhases: [],
+    agentLogs:      [],
+  };
+}
+
+// Default ctx for legacy callers that don't pass one (deprecated).
+let _legacyCtx: RunContext = newRunContext("legacy");
+
+export function resetLLMRunState() { _legacyCtx = newRunContext("legacy"); }
+export function getLLMRunState() {
+  return { quotaExhausted: _legacyCtx.quotaExhausted, fallbackPhases: [..._legacyCtx.fallbackPhases] };
 }
 
 interface CallStructuredParams<T> {
@@ -42,29 +61,20 @@ interface CallStructuredParams<T> {
   userPrompt:   string;
   schema:       z.ZodType<T>;
   fallback:     T;
+  ctx?:         RunContext;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-let quotaExhaustedFlag = false;
-let fallbackPhases: string[] = [];
-
-export function resetLLMRunState() {
-  quotaExhaustedFlag = false;
-  fallbackPhases = [];
-}
-
-export function getLLMRunState() {
-  return { quotaExhausted: quotaExhaustedFlag, fallbackPhases: [...fallbackPhases] };
-}
 
 function isDailyQuotaError(msg: string): boolean {
   return /free-models-per-day|credits to unlock|daily quota|per-day/i.test(msg);
 }
 
 export async function callStructuredLLM<T>({
-  phase, model, systemPrompt, userPrompt, schema, fallback,
+  phase, model, systemPrompt, userPrompt, schema, fallback, ctx,
 }: CallStructuredParams<T>): Promise<T> {
+  const runCtx = ctx ?? _legacyCtx;
+
   const fallbackParsed = schema.safeParse(fallback);
   if (!fallbackParsed.success) throw new Error(`[${phase}] invalid fallback schema`);
 
@@ -73,7 +83,7 @@ export async function callStructuredLLM<T>({
   // ── Local Ollama path ─────────────────────────────────────────────────────
   if (isLocalModel(model)) {
     const name = localModelName(model);
-    console.log(`[LLM][${phase}] Using local Ollama model: ${name}`);
+    console.log(`[LLM][${runCtx.traceId.slice(0,8)}][${phase}] local::${name}`);
     try {
       const client = getLocalModelClient(name);
       const resp   = await client.invoke(messages);
@@ -82,13 +92,13 @@ export async function callStructuredLLM<T>({
       if (!parsed.success) {
         const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
         console.error(`[LLM Schema Error][${phase}][local] ${issues}`);
-        fallbackPhases.push(phase);
+        runCtx.fallbackPhases.push(phase);
         return fallbackParsed.data;
       }
       return parsed.data;
     } catch (err: any) {
       console.error(`[LLM Error][${phase}][local::${name}]`, err?.message?.slice(0, 200));
-      fallbackPhases.push(phase);
+      runCtx.fallbackPhases.push(phase);
       return fallbackParsed.data;
     }
   }
@@ -113,14 +123,14 @@ export async function callStructuredLLM<T>({
       if (!parsed.success) {
         const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
         console.error(`[LLM Schema Error][${phase}] ${issues}`);
-        fallbackPhases.push(phase);
+        runCtx.fallbackPhases.push(phase);
         return fallbackParsed.data;
       }
       return parsed.data;
     } catch (err: any) {
       const msg: string = err?.message ?? String(err);
       const isRateLimit = msg.includes("429") || /rate.?limit/i.test(msg);
-      if (isDailyQuotaError(msg)) quotaExhaustedFlag = true;
+      if (isDailyQuotaError(msg)) runCtx.quotaExhausted = true;
 
       if (isRateLimit && i < clientGetters.length - 1) {
         const delay = (i + 1) * 2000;
@@ -129,11 +139,11 @@ export async function callStructuredLLM<T>({
         continue;
       }
       console.error(`[LLM Error][${phase}][${label}]`, msg.slice(0, 300));
-      fallbackPhases.push(phase);
+      runCtx.fallbackPhases.push(phase);
       return fallbackParsed.data;
     }
   }
 
-  fallbackPhases.push(phase);
+  runCtx.fallbackPhases.push(phase);
   return fallbackParsed.data;
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const IocSchema = z.object({
@@ -91,7 +91,7 @@ Respond with this exact JSON structure:
   "confidence": 0.85
 }`;
 
-export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGENT_MODELS.analysis) {
+export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGENT_MODELS.analysis, ctx?: RunContext) {
   const a = state.alert;
   const logs: string[] = [];
 
@@ -152,6 +152,7 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
       false_positive_confidence: 0,
       confidence:                0,
     },
+    ctx,
   });
 
   if (typeof analysis.false_positive_confidence !== "number") {

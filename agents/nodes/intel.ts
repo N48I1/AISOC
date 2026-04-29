@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 import { mispSearchIocs } from "../shared/misp.js";
 
@@ -12,7 +12,7 @@ const IntelSchema = z.object({
   confidence:        z.number().min(0).max(1).default(0),
 });
 
-export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_MODELS.intel) {
+export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_MODELS.intel, ctx?: RunContext) {
   const iocs  = state.analysis?.iocs || {};
   const alert = state.alert;
   const logs: string[] = [];
@@ -83,6 +83,7 @@ ${mispBlock}`,
       campaign_family:   null,
       confidence:        0,
     },
+    ctx,
   });
 
   return { intel: { ...intel, misp }, agentLogs: logs };

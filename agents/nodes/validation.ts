@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const ValidationSchema = z.object({
@@ -18,7 +18,7 @@ const SLA_WINDOWS: Record<string, number> = {
   LOW:      1440,
 };
 
-export async function validationNode(state: any, model: string = DEFAULT_AGENT_MODELS.validation) {
+export async function validationNode(state: any, model: string = DEFAULT_AGENT_MODELS.validation, ctx?: RunContext) {
   const logs: string[] = [];
   logs.push(`[Validation] Running final SLA and quality assurance checks.`);
 
@@ -35,7 +35,7 @@ export async function validationNode(state: any, model: string = DEFAULT_AGENT_M
     ageMinutes = Math.round((Date.now() - new Date(alertTimestamp).getTime()) / 60000);
   }
 
-  const ctx = {
+  const promptCtx = {
     ticket:             state.ticket,
     responsePlan:       state.responsePlan,
     analysis_complete:  !!state.analysis,
@@ -68,7 +68,7 @@ SLA POLICY (use alert_age_minutes and sla_window_minutes from the context to com
 - SLA_BREACHED= alert_age_minutes > sla_window_minutes
 
 Severity windows: CRITICAL=15 min, HIGH=60 min, MEDIUM=240 min, LOW=1440 min.`,
-    userPrompt: `Incident context:\n${JSON.stringify(ctx, null, 2)}`,
+    userPrompt: `Incident context:\n${JSON.stringify(promptCtx, null, 2)}`,
     fallback: {
       is_valid:           false,
       sla_status:         "SLA_BREACHED",
@@ -77,6 +77,7 @@ Severity windows: CRITICAL=15 min, HIGH=60 min, MEDIUM=240 min, LOW=1440 min.`,
       recommendation:     "INVESTIGATE_FURTHER",
       confidence:         0,
     },
+    ctx,
   });
 
   logs.push(`[Validation] Quality Score: ${validation.completeness_score}%. SLA Status: ${validation.sla_status}. Recommendation: ${validation.recommendation}.`);

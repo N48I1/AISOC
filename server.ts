@@ -223,6 +223,49 @@ try {
       FOREIGN KEY(created_by) REFERENCES users(id)
     );
 
+    -- ── Memory tiers (hub-and-swarm architecture) ──────────────────────────
+
+    CREATE TABLE IF NOT EXISTS working_memory (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id TEXT,
+      trace_id TEXT,
+      step INTEGER,
+      thought TEXT,
+      action TEXT,
+      result_summary TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_working_alert ON working_memory(alert_id);
+    CREATE INDEX IF NOT EXISTS idx_working_trace ON working_memory(trace_id);
+
+    CREATE TABLE IF NOT EXISTS ioc_memory (
+      value TEXT PRIMARY KEY,
+      type TEXT,
+      first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      alert_count INTEGER DEFAULT 1,
+      threat_level TEXT,
+      notes TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ioc_last_seen ON ioc_memory(last_seen);
+    CREATE INDEX IF NOT EXISTS idx_ioc_type      ON ioc_memory(type);
+
+    CREATE TABLE IF NOT EXISTS incident_insights (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id TEXT,
+      idempotency_key TEXT UNIQUE,
+      summary TEXT,
+      attack_pattern TEXT,
+      threat_actor TEXT,
+      outcome TEXT,
+      ttp_tags TEXT,
+      embedding BLOB,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_insights_created ON incident_insights(created_at);
+
     -- Performance indexes
     CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
     CREATE INDEX IF NOT EXISTS idx_alerts_status    ON alerts(status);
@@ -463,6 +506,13 @@ try {
 } catch (err) {
   console.error('Database initialization failed:', err);
   process.exit(1);
+}
+
+// --- JSON helpers -----------------------------------------------------------
+function safeParseJsonArray(s: any): any[] {
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; }
+  catch { return []; }
 }
 
 // --- Audit helper -----------------------------------------------------------
@@ -1022,6 +1072,48 @@ async function startServer() {
     res.json(result);
   });
 
+  // ── Memory APIs (hub-and-swarm) ──────────────────────────────────────────
+
+  // Look up an IOC value (analyst-facing): returns prior observations.
+  app.get('/api/memory/iocs', authenticate, (req: any, res) => {
+    const value = String(req.query.value || '').trim();
+    if (!value) return res.status(400).json({ error: 'value query param required' });
+    const row = db.prepare(
+      `SELECT value, type, first_seen, last_seen, alert_count, threat_level, notes FROM ioc_memory WHERE value = ?`
+    ).get(value) as any;
+    res.json(row ?? null);
+  });
+
+  // Recent IOC observations across all alerts (paged).
+  app.get('/api/memory/iocs/recent', authenticate, (req: any, res) => {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const rows  = db.prepare(
+      `SELECT value, type, first_seen, last_seen, alert_count, threat_level FROM ioc_memory ORDER BY last_seen DESC LIMIT ?`
+    ).all(limit);
+    res.json(rows);
+  });
+
+  // Recent insights (semantic memory rows) — for the analyst memory UI.
+  app.get('/api/memory/insights/recent', authenticate, (req: any, res) => {
+    const limit = Math.min(Number(req.query.limit) || 30, 100);
+    const rows  = db.prepare(
+      `SELECT alert_id, summary, attack_pattern, threat_actor, outcome, ttp_tags, created_at
+       FROM incident_insights ORDER BY created_at DESC LIMIT ?`
+    ).all(limit);
+    // Parse ttp_tags JSON for the client
+    const parsed = (rows as any[]).map(r => ({ ...r, ttp_tags: safeParseJsonArray(r.ttp_tags) }));
+    res.json(parsed);
+  });
+
+  // Working-memory trail (planner's scratchpad) for a given alert — debug view.
+  app.get('/api/memory/working/:alertId', authenticate, (req: any, res) => {
+    const rows = db.prepare(
+      `SELECT step, trace_id, thought, action, result_summary, created_at
+       FROM working_memory WHERE alert_id = ? ORDER BY created_at DESC, step DESC LIMIT 50`
+    ).all(req.params.alertId);
+    res.json(rows);
+  });
+
   // ── AI: run a single agent phase ──────────────────────────────────────────
   app.post('/api/ai/agent', authenticate, async (req: any, res) => {
     const { phase, state } = req.body;
@@ -1046,11 +1138,26 @@ async function startServer() {
   });
 
   app.post('/api/ai/orchestrate', authenticate, orchestrateLimit, async (req: any, res) => {
-    const { alertId } = req.body;
+    const { alertId, force } = req.body;
     if (!alertId) return res.status(400).json({ error: 'alertId is required' });
     try {
       const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId);
       if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+      // Skip-replay: if a successful agent_runs row exists in the last 5 minutes, return it
+      // unless the caller forces a re-run. Prevents re-orchestrating on every UI refresh.
+      if (!force) {
+        const recent = db.prepare(`
+          SELECT ai_analysis, mitre_attack, remediation_steps, status
+          FROM agent_runs
+          WHERE alert_id = ? AND ai_analysis IS NOT NULL
+            AND run_at >= datetime('now', '-5 minutes')
+          ORDER BY run_at DESC LIMIT 1
+        `).get(alertId) as any;
+        if (recent) {
+          return res.json({ id: alertId, ...recent, replayed: true });
+        }
+      }
 
       const recentAlerts = db.prepare(
         `SELECT * FROM alerts WHERE id != ? AND timestamp >= datetime('now', '-3 days') ORDER BY timestamp DESC LIMIT 50`

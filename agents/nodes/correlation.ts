@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 // related_alerts is intentionally NOT in this schema — the LLM reliably drops
@@ -51,7 +51,7 @@ function findRelatedAlerts(
   return Array.from(related.values());
 }
 
-export async function correlationNode(state: any, model: string = DEFAULT_AGENT_MODELS.correlation) {
+export async function correlationNode(state: any, model: string = DEFAULT_AGENT_MODELS.correlation, ctx?: RunContext) {
   const logs: string[] = [];
   const recentAlertsCount = (state.recentAlerts || []).length;
   logs.push(`[Correlation] Scanning ${recentAlertsCount} recent alerts for multi-stage patterns.`);
@@ -102,6 +102,7 @@ ${recentSummary.map((a, i) => `[${i + 1}] src=${a.source_ip || '—'} dst=${a.de
       kill_chain_stage:     "Exploitation",
       confidence:           0,
     },
+    ctx,
   });
 
   // Always derive related alerts from the graph — never trust the LLM to produce IDs

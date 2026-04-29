@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callStructuredLLM } from "../shared/llm.js";
+import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 
 const TicketSchema = z.object({
@@ -12,11 +12,11 @@ const TicketSchema = z.object({
   confidence:              z.number().min(0).max(1).default(0),
 });
 
-export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MODELS.ticketing) {
+export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MODELS.ticketing, ctx?: RunContext) {
   const logs: string[] = [];
   logs.push(`[Ticketing] Drafting official incident report and assessing business impact.`);
 
-  const ctx = {
+  const promptCtx = {
     alert: {
       description: state.alert?.description,
       severity: state.alert?.severity,
@@ -44,7 +44,7 @@ export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MO
   "business_impact": "<one sentence on business impact>",
   "confidence": 0.8
 }`,
-    userPrompt: `Context:\n${JSON.stringify(ctx, null, 2)}`,
+    userPrompt: `Context:\n${JSON.stringify(promptCtx, null, 2)}`,
     fallback: {
       title: "Incident Ticket — Generation Failed",
       priority: "HIGH",
@@ -54,6 +54,7 @@ export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MO
       business_impact: "Unknown — ticket generation failed.",
       confidence: 0,
     },
+    ctx,
   });
 
   logs.push(`[Ticketing] Ticket created: "${ticket.title}". Priority: ${ticket.priority}.`);

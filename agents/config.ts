@@ -10,6 +10,12 @@ export const AGENT_PHASES = [
 
 export type AgentPhase = (typeof AGENT_PHASES)[number];
 
+/** Hub-and-swarm: planner is a meta-agent; recall/ioc_check are deterministic
+ *  workers that don't appear in the configurable AGENT_PHASES list. */
+export const PLANNER_PHASE = "planner" as const;
+export const OPTIONAL_WORKERS = ["recall", "ioc_check"] as const;
+export type OptionalWorker = (typeof OPTIONAL_WORKERS)[number];
+
 export const OPENROUTER_FREE_MODELS = [
   "openai/gpt-oss-120b:free",
   "openai/gpt-oss-20b:free",
@@ -45,6 +51,9 @@ export const DEFAULT_AGENT_MODELS: Record<AgentPhase, OpenRouterFreeModel> = {
   response:    "nvidia/nemotron-3-super-120b-a12b:free",
   validation:  "nvidia/nemotron-3-super-120b-a12b:free",
 };
+
+/** Planner is small and fast — it makes routing decisions, not deep analysis. */
+export const DEFAULT_PLANNER_MODEL: OpenRouterFreeModel = "meta-llama/llama-3.2-3b-instruct:free";
 
 export const AGENT_METADATA: Record<AgentPhase, { name: string; desc: string }> = {
   analysis: {
