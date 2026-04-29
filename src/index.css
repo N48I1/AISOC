@@ -13,22 +13,186 @@
   --color-success: #1e8e3e;
 }
 
+/* ── Semantic design tokens ─────────────────────────────────────────────── */
 :root {
-  --primary-blue: #004a99;
-  --secondary-blue: #0066cc;
-  --light-blue: #f0f7ff;
-  --border-color: #d1d9e6;
-  --text-main: #1a1a1b;
-  --text-muted: #5f6368;
-  --bg-dashboard: #f4f7fa;
-  --white: #ffffff;
-  --critical: #d93025;
-  --high: #f29900;
-  --success: #1e8e3e;
+  --s0:  #ffffff;
+  --s1:  #f8fafc;
+  --s2:  #f0f4f9;
+  --s3:  #f4f7fa;
+  --sa:  #f0f7ff;
+  --b1:  #d1d9e6;
+  --b2:  #e2e8f0;
+  --b3:  #f1f5f9;
+  --t1:  #1a1a1b;
+  --t2:  #5f6368;
+  --t3:  #94a3b8;
+  --t4:  #64748b;
+  --t5:  #475569;
+  --t6:  #334155;
+  --t7:  #1e293b;
+  --p1:  #004a99;
+  --pd:  #003a7a;
+}
+
+/* ── Wazuh exact dark theme ─────────────────────────────────────────────── */
+html.dark {
+  --s0:  #25262e;   /* Panel / card bg          — Wazuh panel background  */
+  --s1:  #2a2b34;   /* Elevated surfaces / inputs                          */
+  --s2:  #16171c;   /* Sidebar / header deep bg — Wazuh header/sidebar     */
+  --s3:  #1d1e24;   /* Main workspace bg        — Wazuh main background    */
+  --sa:  #1c2536;   /* Accent-tinted panels                                */
+  --b1:  #3a3b45;   /* Default border                                      */
+  --b2:  #32333d;   /* Lighter border                                      */
+  --b3:  #2e2f38;   /* Subtle border                                       */
+  --t1:  #dfe5ef;   /* Primary text             — Wazuh white text         */
+  --t2:  #98a2b3;   /* Muted text               — Wazuh muted text         */
+  --t3:  #6b7280;   /* Dim / placeholder                                   */
+  --t4:  #8892a4;   /* Secondary muted                                     */
+  --t5:  #98a2b3;   /* Same as muted for mid hierarchy                     */
+  --t6:  #b8c4d4;   /* Near-primary muted                                  */
+  --t7:  #dfe5ef;   /* High-contrast (same as t1 on dark)                  */
+  --p1:  #00a9e5;   /* Accent blue              — Wazuh primary blue       */
+  --pd:  #16171c;   /* Deep bg for header/avatar                           */
 }
 
 body {
   font-family: 'Segoe UI', Tahoma, Helvetica, Arial, sans-serif;
-  background-color: var(--bg-dashboard);
-  color: var(--text-main);
+  background-color: var(--s3);
+  color: var(--t1);
+  transition: background-color 0.15s, color 0.15s;
 }
+
+/* ── Dark mode element resets ───────────────────────────────────────────── */
+html.dark input,
+html.dark select,
+html.dark textarea {
+  background-color: var(--s1);
+  color: var(--t1);
+  border-color: var(--b1);
+  color-scheme: dark;
+}
+html.dark input::placeholder,
+html.dark textarea::placeholder { color: var(--t3); }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+html.dark header { background-color: #16171c !important; }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+html.dark aside { background-color: #16171c !important; border-color: #3a3b45 !important; }
+html.dark aside button:hover { background-color: #25262e !important; }
+html.dark aside .border-r-2 { border-color: #00a9e5 !important; }
+
+/* ── Blue buttons & badges (bg-[#004a99]) — swap to Wazuh teal ───────────── */
+html.dark .bg-\[#004a99\] { background-color: #00a9e5 !important; color: #16171c !important; }
+html.dark .text-\[var\(--p1\)\] { color: #00a9e5 !important; }
+html.dark .border-\[var\(--p1\)\] { border-color: #00a9e5 !important; }
+html.dark .bg-\[#0066cc\] { background-color: #00a9e5 !important; }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   STATUS / SEMANTIC COLORS
+   Strategy: dark tinted bg  +  vivid light text  — same hue family, readable
+──────────────────────────────────────────────────────────────────────────── */
+
+/* Red */
+html.dark .bg-red-50   { background-color: #2a1414 !important; }
+html.dark .bg-red-100             { background-color: #321818 !important; }
+html.dark .bg-red-400, html.dark .bg-red-500 { background-color: #dc2626 !important; }
+html.dark .bg-red-600, html.dark .bg-red-700 { background-color: #b91c1c !important; }
+html.dark .text-red-900           { color: #fecaca !important; }
+html.dark .text-red-800           { color: #fca5a5 !important; }
+html.dark .text-red-700           { color: #fca5a5 !important; }
+html.dark .text-red-600           { color: #f87171 !important; }
+html.dark .text-red-500           { color: #f87171 !important; }
+html.dark .text-red-300           { color: #fda4af !important; }
+html.dark .border-red-400, html.dark .border-red-300, html.dark .border-red-200, html.dark .border-red-100 { border-color: #7f1d1d !important; }
+
+/* Amber / Yellow */
+html.dark .bg-amber-50            { background-color: #231700 !important; }
+html.dark .bg-amber-100           { background-color: #2c1f00 !important; }
+html.dark .bg-amber-400, html.dark .bg-amber-500 { background-color: #d97706 !important; }
+html.dark .bg-yellow-50           { background-color: #231700 !important; }
+html.dark .text-amber-900         { color: #fef08a !important; }
+html.dark .text-amber-800         { color: #fde68a !important; }
+html.dark .text-amber-700         { color: #fcd34d !important; }
+html.dark .text-amber-600         { color: #fbbf24 !important; }
+html.dark .text-yellow-800, html.dark .text-yellow-700 { color: #fde68a !important; }
+html.dark .border-amber-300, html.dark .border-amber-200 { border-color: #78350f !important; }
+html.dark .border-yellow-200      { border-color: #78350f !important; }
+
+/* Green / Emerald */
+html.dark .bg-green-50            { background-color: #0a2010 !important; }
+html.dark .bg-green-100           { background-color: #0f2814 !important; }
+html.dark .bg-green-200           { background-color: #14401a !important; }
+html.dark .bg-green-500, html.dark .bg-green-600 { background-color: #16a34a !important; }
+html.dark .bg-green-700           { background-color: #15803d !important; }
+html.dark .bg-emerald-50          { background-color: #0a2010 !important; }
+html.dark .text-green-900         { color: #bbf7d0 !important; }
+html.dark .text-green-800         { color: #86efac !important; }
+html.dark .text-green-700         { color: #86efac !important; }
+html.dark .text-green-600         { color: #4ade80 !important; }
+html.dark .text-emerald-800, html.dark .text-emerald-700 { color: #6ee7b7 !important; }
+html.dark .text-emerald-500, html.dark .text-emerald-400 { color: #34d399 !important; }
+html.dark .text-emerald-300       { color: #6ee7b7 !important; }
+html.dark .border-green-300, html.dark .border-green-200, html.dark .border-green-100 { border-color: #14532d !important; }
+html.dark .border-emerald-200     { border-color: #064e3b !important; }
+
+/* Blue / Sky / Indigo / Cyan */
+html.dark .bg-blue-50, html.dark .bg-sky-50  { background-color: #0c1a2e !important; }
+html.dark .bg-blue-100            { background-color: #0f2038 !important; }
+html.dark .bg-blue-400, html.dark .bg-blue-500, html.dark .bg-blue-600 { background-color: #2563eb !important; }
+html.dark .bg-indigo-50           { background-color: #13112a !important; }
+html.dark .bg-indigo-100          { background-color: #181630 !important; }
+html.dark .bg-cyan-50, html.dark .bg-cyan-100{ background-color: #0c1e28 !important; }
+html.dark .text-blue-900          { color: #bfdbfe !important; }
+html.dark .text-blue-800          { color: #93c5fd !important; }
+html.dark .text-blue-700          { color: #93c5fd !important; }
+html.dark .text-blue-600, html.dark .text-blue-500 { color: #60a5fa !important; }
+html.dark .text-blue-200, html.dark .text-blue-100 { color: #bfdbfe !important; }
+html.dark .text-sky-800, html.dark .text-sky-700   { color: #7dd3fc !important; }
+html.dark .text-indigo-800, html.dark .text-indigo-700 { color: #a5b4fc !important; }
+html.dark .text-cyan-800, html.dark .text-cyan-700 { color: #67e8f9 !important; }
+html.dark .border-blue-400, html.dark .border-blue-300, html.dark .border-blue-200, html.dark .border-blue-100 { border-color: #1e3a5f !important; }
+html.dark .border-sky-200         { border-color: #0c4a6e !important; }
+html.dark .border-indigo-200      { border-color: #3730a3 !important; }
+html.dark .border-cyan-300, html.dark .border-cyan-200 { border-color: #164e63 !important; }
+
+/* Purple / Violet */
+html.dark .bg-purple-50           { background-color: #160e28 !important; }
+html.dark .bg-purple-100          { background-color: #1c1432 !important; }
+html.dark .bg-purple-400          { background-color: #9333ea !important; }
+html.dark .text-purple-800, html.dark .text-purple-700, html.dark .text-purple-600 { color: #d8b4fe !important; }
+html.dark .border-purple-200      { border-color: #4c1d95 !important; }
+
+/* Orange */
+html.dark .bg-orange-50           { background-color: #201008 !important; }
+html.dark .bg-orange-100          { background-color: #281408 !important; }
+html.dark .bg-orange-400, html.dark .bg-orange-500 { background-color: #ea580c !important; }
+html.dark .text-orange-800, html.dark .text-orange-700 { color: #fdba74 !important; }
+html.dark .border-orange-300, html.dark .border-orange-200 { border-color: #7c2d12 !important; }
+
+/* Zinc / Gray / Neutral */
+html.dark .bg-zinc-50             { background-color: var(--s1) !important; }
+html.dark .bg-gray-50             { background-color: var(--s1) !important; }
+html.dark .border-zinc-300        { border-color: var(--b1) !important; }
+html.dark .border-gray-200        { border-color: var(--b1) !important; }
+
+/* ── Hardcoded hex text / bg ─────────────────────────────────────────────── */
+html.dark .text-\[#d93025\]  { color: #fca5a5 !important; }
+html.dark .text-\[#1e8e3e\]  { color: #86efac !important; }
+html.dark .text-\[#e94560\]  { color: #f472b6 !important; }
+html.dark .text-\[#1a73e8\]  { color: #93c5fd !important; }
+html.dark .bg-\[#1e8e3e\]    { background-color: #16a34a !important; }
+html.dark .bg-\[#d93025\]    { background-color: #b91c1c !important; }
+html.dark .bg-\[#f0f0f0\]    { background-color: var(--s1) !important; }
+html.dark .bg-\[#1a1a2e\]    { background-color: #0d0e1a !important; }
+html.dark .border-\[#c8ddf7\]{ border-color: #1e3a5f !important; }
+html.dark .border-\[#f0f0f0\]{ border-color: var(--b1) !important; }
+html.dark .border-\[#e8eef7\]{ border-color: var(--b1) !important; }
+html.dark .border-\[#e94560\]{ border-color: #db2777 !important; }
+
+/* ── Terminal / log blocks ───────────────────────────────────────────────── */
+html.dark .bg-slate-950 { background-color: #0d0e14 !important; }
+html.dark .bg-slate-900 { background-color: #111318 !important; }
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+html.dark * { scrollbar-color: #3a3b45 #1d1e24; scrollbar-width: thin; }

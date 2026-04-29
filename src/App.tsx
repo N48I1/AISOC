@@ -5,6 +5,25 @@ import { io, Socket } from 'socket.io-client';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 
+// --- Dark Mode ---
+const DarkModeContext = createContext<{ dark: boolean; toggle: () => void }>({ dark: false, toggle: () => {} });
+const useDarkMode = () => useContext(DarkModeContext);
+
+const DarkModeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [dark, setDark] = useState<boolean>(() => {
+    const stored = localStorage.getItem('soc_dark_mode');
+    return stored ? stored === 'true' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark);
+    localStorage.setItem('soc_dark_mode', String(dark));
+  }, [dark]);
+
+  const toggle = () => setDark(d => !d);
+  return <DarkModeContext.Provider value={{ dark, toggle }}>{children}</DarkModeContext.Provider>;
+};
+
 // --- Toast System ---
 interface ToastItem { id: string; message: string; type: 'success' | 'error' | 'info'; }
 const ToastContext = createContext<(msg: string, type?: ToastItem['type']) => void>(() => {});
@@ -47,12 +66,12 @@ const ConfirmModal = ({ title, message, confirmLabel = 'Confirm', confirmClass =
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4"
+      className="bg-[var(--s0)] rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4"
     >
-      <h3 className="text-[1rem] font-black text-slate-800">{title}</h3>
-      <p className="text-[0.85rem] text-slate-600 leading-relaxed">{message}</p>
+      <h3 className="text-[1rem] font-black text-[var(--t7)]">{title}</h3>
+      <p className="text-[0.85rem] text-[var(--t5)] leading-relaxed">{message}</p>
       <div className="flex gap-3 pt-2 justify-end">
-        <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-semibold text-[0.82rem] hover:bg-slate-50 transition-colors">Cancel</button>
+        <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] font-semibold text-[0.82rem] hover:bg-[var(--s1)] transition-colors">Cancel</button>
         <button onClick={onConfirm} className={`px-4 py-2 rounded-lg text-white font-bold text-[0.82rem] transition-colors ${confirmClass}`}>{confirmLabel}</button>
       </div>
     </motion.div>
@@ -129,13 +148,13 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   ];
 
   return (
-    <aside className={`bg-white border-r border-[#d1d9e6] h-full flex flex-col transition-[width] duration-250 ease-in-out overflow-hidden shrink-0 ${expanded ? 'w-[200px]' : 'w-14'}`}>
+    <aside className={`bg-[var(--s0)] border-r border-[var(--b1)] h-full flex flex-col transition-[width] duration-250 ease-in-out overflow-hidden shrink-0 ${expanded ? 'w-[200px]' : 'w-14'}`}>
       {/* Toggle — always pinned to the top-right of the sidebar */}
       <div className="flex items-center justify-end px-2 py-2 shrink-0">
         <button
           onClick={() => setExpanded(e => !e)}
           title={expanded ? 'Collapse sidebar' : 'Expand sidebar'}
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-[#5f6368] hover:text-[#004a99] hover:bg-[#f0f7ff] transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--t2)] hover:text-[var(--p1)] hover:bg-[var(--sa)] transition-colors"
         >
           {expanded ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
         </button>
@@ -149,8 +168,8 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
             title={!expanded ? item.label : undefined}
             className={`flex items-center gap-3 py-3 transition-[padding] duration-250 ${expanded ? 'px-5' : 'px-[13px]'} ${
               activeTab === item.id
-                ? 'text-[#004a99] bg-[#f0f7ff] border-r-2 border-[#004a99] font-semibold'
-                : 'text-[#5f6368] hover:bg-[#f0f7ff] hover:text-[#004a99]'
+                ? 'text-[var(--p1)] bg-[var(--sa)] border-r-2 border-[var(--p1)] font-semibold'
+                : 'text-[var(--t2)] hover:bg-[var(--sa)] hover:text-[var(--p1)]'
             }`}
           >
             <item.icon className="w-[18px] h-[18px] shrink-0" />
@@ -161,24 +180,24 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
         ))}
       </nav>
 
-      <div className={`pt-4 border-t border-[#d1d9e6] space-y-1 transition-[padding] duration-250 ${expanded ? 'px-4' : 'px-[9px]'}`}>
+      <div className={`pt-4 border-t border-[var(--b1)] space-y-1 transition-[padding] duration-250 ${expanded ? 'px-4' : 'px-[9px]'}`}>
         <button
           onClick={() => setActiveTab('settings')}
           title={!expanded ? user?.username : undefined}
-          className="w-full flex items-center gap-3 p-1.5 rounded-lg hover:bg-[#f0f7ff] transition-colors text-left"
+          className="w-full flex items-center gap-3 p-1.5 rounded-lg hover:bg-[var(--sa)] transition-colors text-left"
         >
-          <div className="w-8 h-8 rounded-full bg-[#003366] flex items-center justify-center text-white text-xs font-bold border border-white/30 shrink-0">
+          <div className="w-8 h-8 rounded-full bg-[var(--pd)] flex items-center justify-center text-white text-xs font-bold border border-white/30 shrink-0">
             {user?.username?.substring(0, 2).toUpperCase()}
           </div>
           <div className={`overflow-hidden transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>
-            <p className="text-xs font-semibold text-[#1a1a1b] truncate">{user?.username}</p>
-            <p className="text-[10px] text-[#5f6368] uppercase">{user?.role}</p>
+            <p className="text-xs font-semibold text-[var(--t1)] truncate">{user?.username}</p>
+            <p className="text-[10px] text-[var(--t2)] uppercase">{user?.role}</p>
           </div>
         </button>
         <button
           onClick={logout}
           title={!expanded ? 'Sign Out' : undefined}
-          className="w-full flex items-center gap-3 px-1.5 py-1.5 text-[0.8rem] font-semibold text-[#5f6368] hover:text-[#d93025] transition-colors"
+          className="w-full flex items-center gap-3 px-1.5 py-1.5 text-[0.8rem] font-semibold text-[var(--t2)] hover:text-[#d93025] transition-colors"
         >
           <LogOut className="w-[18px] h-[18px] shrink-0" />
           <span className={`whitespace-nowrap transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>Sign Out</span>
@@ -190,10 +209,11 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 
 const Header = () => {
   const { user, logout } = useAuth();
+  const { dark, toggle } = useDarkMode();
   return (
     <header className="h-[48px] bg-[#004a99] text-white flex items-center justify-between px-5 shadow-md z-[100]">
       <div className="flex items-center gap-2.5 font-bold text-[1.05rem] tracking-tight">
-        <div className="w-7 h-7 rounded-full bg-white flex items-center justify-center overflow-hidden shadow-sm shrink-0">
+        <div className="w-7 h-7 rounded-full bg-[var(--s0)] flex items-center justify-center overflow-hidden shadow-sm shrink-0">
           <img src="/logo-BBS.png" className="h-5 w-5 object-contain" alt="BBS Logo" />
         </div>
         BBS AISOC
@@ -205,11 +225,19 @@ const Header = () => {
           Wazuh Cluster: Healthy
         </span>
         <span className="opacity-40">|</span>
+        <button
+          onClick={toggle}
+          title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--s0)]/15 transition-colors text-white"
+        >
+          {dark ? '☀' : '🌙'}
+        </button>
+        <span className="opacity-40">|</span>
         <span className="opacity-80">{user?.username} <span className="opacity-60">({user?.role})</span></span>
         <button
           onClick={logout}
           title="Sign out"
-          className="flex items-center gap-1.5 ml-1 px-2.5 py-1 rounded hover:bg-white/15 hover:text-red-300 transition-colors text-[0.78rem] font-semibold"
+          className="flex items-center gap-1.5 ml-1 px-2.5 py-1 rounded hover:bg-[var(--s0)]/15 hover:text-red-300 transition-colors text-[0.78rem] font-semibold"
         >
           <LogOut className="w-3.5 h-3.5" />
           Sign Out
@@ -220,12 +248,12 @@ const Header = () => {
 };
 
 const StatCard = ({ label, value, icon: Icon, trend, color }: any) => (
-  <div className="bg-white border border-[#d1d9e6] rounded-lg p-5 flex flex-col gap-2 shadow-sm">
+  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-5 flex flex-col gap-2 shadow-sm">
     <div className="flex justify-between items-start">
-      <div className="text-[0.75rem] font-bold text-[#5f6368] uppercase tracking-wider">{label}</div>
+      <div className="text-[0.75rem] font-bold text-[var(--t2)] uppercase tracking-wider">{label}</div>
       <Icon className="w-5 h-5 opacity-20" style={{ color }} />
     </div>
-    <div className="text-[1.8rem] font-bold text-[#1a1a1b] leading-none">{value}</div>
+    <div className="text-[1.8rem] font-bold text-[var(--t1)] leading-none">{value}</div>
     {trend && (
       <div className={`text-[0.7rem] font-bold flex items-center gap-1 ${trend > 0 ? 'text-[#d93025]' : 'text-[#1e8e3e]'}`}>
         {trend > 0 ? '+' : ''}{trend}% from last 24h
@@ -305,7 +333,7 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       onClick={onClick}
-      className={`alert-item p-[12px_15px] border-b border-[#f0f0f0] cursor-pointer transition-colors ${isSelected ? 'bg-[#f0f7ff]' : 'hover:bg-slate-50'}`}
+      className={`alert-item p-[12px_15px] border-b border-[#f0f0f0] cursor-pointer transition-colors ${isSelected ? 'bg-[var(--sa)]' : 'hover:bg-[var(--s1)]'}`}
     >
       <div className="flex items-start gap-3">
         <div className="flex flex-col items-center gap-1 mt-0.5 shrink-0">
@@ -314,20 +342,20 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
               {riskScore != null ? riskScore : alert.severity}
             </span>
           </div>
-          <span className="text-[0.5rem] font-bold text-slate-400 uppercase tracking-wider">{riskScore != null ? 'Risk' : 'Lvl'}</span>
+          <span className="text-[0.5rem] font-bold text-[var(--t3)] uppercase tracking-wider">{riskScore != null ? 'Risk' : 'Lvl'}</span>
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            {isFP && <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 text-[0.55rem] font-black uppercase tracking-wider shrink-0">FP</span>}
-            <h4 className="text-[0.78rem] font-bold text-[#1a1a1b] truncate" title={summary}>{summary}</h4>
+            {isFP && <span className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)] text-[0.55rem] font-black uppercase tracking-wider shrink-0">FP</span>}
+            <h4 className="text-[0.78rem] font-bold text-[var(--t1)] truncate" title={summary}>{summary}</h4>
           </div>
           
           <div className="flex items-center gap-1.5 mt-0.5">
-            <span className="font-mono text-[0.6rem] text-slate-400 bg-slate-100 rounded px-1 py-0.5 shrink-0 select-all">#{alert.id.toUpperCase()}</span>
+            <span className="font-mono text-[0.6rem] text-[var(--t3)] bg-[var(--s1)] rounded px-1 py-0.5 shrink-0 select-all">#{alert.id.toUpperCase()}</span>
           </div>
 
-          <div className="flex justify-between items-center text-[0.7rem] text-[#5f6368] mt-0.5">
+          <div className="flex justify-between items-center text-[0.7rem] text-[var(--t2)] mt-0.5">
             <span className="truncate">{alert.source_ip || alert.agent_name}</span>
             <span className="shrink-0">{new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           </div>
@@ -337,7 +365,7 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
               const isDone = !!pd[a];
               const isRunning = alert.status === 'ANALYZING' && !isDone && (a === 'analysis' || pd[agents[agents.indexOf(a)-1]]);
               return (
-                <div key={a} title={a} className={`w-1.5 h-1.5 rounded-full ${isDone ? 'bg-[#004a99]' : isRunning ? 'bg-blue-400 animate-pulse' : 'bg-slate-200'}`} />
+                <div key={a} title={a} className={`w-1.5 h-1.5 rounded-full ${isDone ? 'bg-[#004a99]' : isRunning ? 'bg-blue-400 animate-pulse' : 'bg-[var(--s2)]'}`} />
               );
             })}
           </div>
@@ -631,7 +659,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
 
   const Section = ({ title, children }: { title: string, children: React.ReactNode }) => (
     <section>
-      <h3 className="text-[0.7rem] font-black text-[#004a99] uppercase tracking-widest mb-3 pb-2 border-b border-[#e8eef7]">
+      <h3 className="text-[0.7rem] font-black text-[var(--p1)] uppercase tracking-widest mb-3 pb-2 border-b border-[#e8eef7]">
         {title}
       </h3>
       {children}
@@ -647,10 +675,10 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col"
+        className="bg-[var(--s0)] rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-7 py-5 bg-[#003a7a] text-white shrink-0">
+        <div className="flex items-center justify-between px-7 py-5 bg-[var(--pd)] text-white shrink-0">
           <div>
             <p className="text-[0.65rem] font-black uppercase tracking-widest text-blue-200 mb-0.5">Aegis SOC — Final Incident Report</p>
             <h2 className="text-[1.1rem] font-black tracking-tight">INC-{alert.id.substring(0, 8).toUpperCase()}</h2>
@@ -660,48 +688,48 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
             <select
               value={exportFormat}
               onChange={(e) => setExportFormat(e.target.value as 'txt' | 'xml' | 'pdf' | 'md')}
-              className="h-9 rounded-lg bg-white/10 border border-white/20 text-white text-[0.75rem] font-bold px-2 outline-none hover:bg-white/20"
+              className="h-9 rounded-lg bg-[var(--s0)]/10 border border-white/20 text-white text-[0.75rem] font-bold px-2 outline-none hover:bg-[var(--s0)]/20"
               title="Export format"
             >
-              <option className="text-slate-900" value="pdf">PDF</option>
-              <option className="text-slate-900" value="txt">Text</option>
-              <option className="text-slate-900" value="xml">XML</option>
-              <option className="text-slate-900" value="md">Markdown</option>
+              <option className="text-[var(--t1)]" value="pdf">PDF</option>
+              <option className="text-[var(--t1)]" value="txt">Text</option>
+              <option className="text-[var(--t1)]" value="xml">XML</option>
+              <option className="text-[var(--t1)]" value="md">Markdown</option>
             </select>
             <button
               onClick={handleDownload}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[0.75rem] font-bold transition-colors border border-white/20"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--s0)]/10 hover:bg-[var(--s0)]/20 text-white text-[0.75rem] font-bold transition-colors border border-white/20"
             >
               <ChevronRight size={13} className="rotate-90" />
               Download
             </button>
-            <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
+            <button onClick={onClose} className="p-2 hover:bg-[var(--s0)]/10 rounded-lg transition-colors">
               <XCircle size={20} />
             </button>
           </div>
         </div>
 
         {/* Status bar */}
-        <div className="flex items-center gap-3 px-7 py-2.5 bg-slate-50 border-b border-slate-200 text-[0.7rem] font-bold shrink-0">
+        <div className="flex items-center gap-3 px-7 py-2.5 bg-[var(--s1)] border-b border-[var(--b2)] text-[0.7rem] font-bold shrink-0">
           <span
             className="px-2.5 py-1 rounded-full uppercase tracking-wide"
             style={{ background: `${sevColor[severity]}18`, color: sevColor[severity] }}
           >
             {severity}
           </span>
-          <span className="text-slate-400">|</span>
+          <span className="text-[var(--t3)]">|</span>
           <span className={`px-2.5 py-1 rounded-full uppercase tracking-wide ${
             alert.status === 'TRIAGED' ? 'bg-green-50 text-green-700' :
             alert.status === 'ANALYZING' ? 'bg-blue-50 text-blue-700' :
-            'bg-slate-100 text-slate-600'
+            'bg-[var(--s1)] text-[var(--t5)]'
           }`}>{alert.status}</span>
           {alert.email_sent === 1 && (
             <>
-              <span className="text-slate-400">|</span>
+              <span className="text-[var(--t3)]">|</span>
               <span className="flex items-center gap-1 text-green-600"><Bell size={11} fill="currentColor" /> Email sent</span>
             </>
           )}
-          <span className="ml-auto text-slate-400">{new Date(alert.timestamp).toLocaleString()}</span>
+          <span className="ml-auto text-[var(--t3)]">{new Date(alert.timestamp).toLocaleString()}</span>
         </div>
 
         {/* Body */}
@@ -714,13 +742,13 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                 { label: 'Hostname', value: alert.agent_name || 'N/A' },
                 { label: 'Rule ID', value: alert.rule_id || 'N/A' },
               ].map(f => (
-                <div key={f.label} className="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                  <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider mb-1">{f.label}</p>
-                  <p className="font-mono font-bold text-[0.8rem] text-slate-800 truncate">{f.value}</p>
+                <div key={f.label} className="bg-[var(--s1)] border border-[var(--b2)] rounded-lg p-3">
+                  <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider mb-1">{f.label}</p>
+                  <p className="font-mono font-bold text-[0.8rem] text-[var(--t7)] truncate">{f.value}</p>
                 </div>
               ))}
             </div>
-            <div className="bg-[#f0f7ff] border border-[#c8ddf7] rounded-xl p-4 text-slate-700 leading-relaxed italic text-[0.85rem]">
+            <div className="bg-[var(--sa)] border border-[#c8ddf7] rounded-xl p-4 text-[var(--t6)] leading-relaxed italic text-[0.85rem]">
               {aiData?.summary || 'No AI summary available. Run the Alert Triage agent first.'}
             </div>
             {(() => {
@@ -736,7 +764,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
               if (!ac && !kc && rs == null && !ra) return null;
               const rsColor = rs == null ? 'bg-slate-300' : rs >= 80 ? 'bg-red-500' : rs >= 60 ? 'bg-orange-500' : rs >= 40 ? 'bg-amber-400' : 'bg-emerald-500';
               const svColor: Record<string, string> = { CRITICAL: 'bg-red-100 text-red-800 border-red-300', HIGH: 'bg-orange-100 text-orange-800 border-orange-300', MEDIUM: 'bg-blue-100 text-blue-800 border-blue-300', LOW: 'bg-green-100 text-green-800 border-green-300' };
-              const raColor: Record<string, string> = { IGNORE: 'bg-slate-100 text-slate-600 border-slate-300', MONITOR: 'bg-blue-100 text-blue-700 border-blue-300', INVESTIGATE: 'bg-cyan-100 text-cyan-700 border-cyan-300', ESCALATE: 'bg-amber-100 text-amber-700 border-amber-300', CONTAIN: 'bg-orange-100 text-orange-700 border-orange-300', BLOCK: 'bg-red-100 text-red-700 border-red-300' };
+              const raColor: Record<string, string> = { IGNORE: 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b1)]', MONITOR: 'bg-blue-100 text-blue-700 border-blue-300', INVESTIGATE: 'bg-cyan-100 text-cyan-700 border-cyan-300', ESCALATE: 'bg-amber-100 text-amber-700 border-amber-300', CONTAIN: 'bg-orange-100 text-orange-700 border-orange-300', BLOCK: 'bg-red-100 text-red-700 border-red-300' };
               return (
                 <div className="mt-3 space-y-2.5">
                   <div className="flex flex-wrap gap-2 items-center">
@@ -748,16 +776,16 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                   </div>
                   {rs != null && (
                     <div className="space-y-1">
-                      <div className="flex justify-between text-[0.65rem] text-slate-500 font-semibold">
+                      <div className="flex justify-between text-[0.65rem] text-[var(--t4)] font-semibold">
                         <span>Risk Score</span><span>{rs}/100</span>
                       </div>
-                      <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="w-full h-2 bg-[var(--s1)] rounded-full overflow-hidden">
                         <div className={`h-full rounded-full ${rsColor}`} style={{ width: `${rs}%` }} />
                       </div>
                     </div>
                   )}
                   {isFP && fpReason && (
-                    <p className="text-[0.72rem] text-slate-500 italic">{fpReason}</p>
+                    <p className="text-[0.72rem] text-[var(--t4)] italic">{fpReason}</p>
                   )}
                 </div>
               );
@@ -797,7 +825,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                 </span>
               ))}
               {(iocs.hashes || []).map((h: string) => (
-                <span key={h} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-50 border border-zinc-300 rounded-lg text-zinc-700 font-mono text-[0.75rem] font-bold" title={h}>
+                <span key={h} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-50 border border-zinc-300 rounded-lg text-[var(--t5)] font-mono text-[0.75rem] font-bold" title={h}>
                   <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0" />Hash: {h.length > 12 ? h.slice(0, 12) + '…' : h}
                 </span>
               ))}
@@ -808,7 +836,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
               )}
               {!iocs.ips?.length && !alert.source_ip && !iocs.users?.length && !iocs.hosts?.length && !alert.agent_name &&
                !iocs.domains?.length && !iocs.processes?.length && !iocs.files?.length && !iocs.hashes?.length && !iocs.ports?.length && (
-                <p className="text-slate-400 text-xs italic">No IOCs extracted yet.</p>
+                <p className="text-[var(--t3)] text-xs italic">No IOCs extracted yet.</p>
               )}
             </div>
           </Section>
@@ -823,7 +851,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                 ))}
               </div>
             ) : (
-              <p className="text-slate-400 text-xs italic">No techniques mapped. Run Threat Intel agent.</p>
+              <p className="text-[var(--t3)] text-xs italic">No techniques mapped. Run Threat Intel agent.</p>
             )}
           </Section>
 
@@ -832,23 +860,23 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
               const misp = aiData?.phaseData?.intel?.misp;
               if (!misp) return null;
               if (!misp.available) {
-                return <div className="mb-3 text-[0.72rem] text-slate-500 italic">MISP: unavailable (no API key configured or instance unreachable)</div>;
+                return <div className="mb-3 text-[0.72rem] text-[var(--t4)] italic">MISP: unavailable (no API key configured or instance unreachable)</div>;
               }
               if (misp.hits === 0) {
-                return <div className="mb-3 text-[0.72rem] text-slate-500">MISP: queried — no matches for these IOCs.</div>;
+                return <div className="mb-3 text-[0.72rem] text-[var(--t4)]">MISP: queried — no matches for these IOCs.</div>;
               }
               const lvlColor: Record<string, string> = {
                 High: 'bg-red-100 text-red-800 border-red-200',
                 Medium: 'bg-orange-100 text-orange-800 border-orange-200',
                 Low: 'bg-amber-50 text-amber-700 border-amber-200',
-                Undefined: 'bg-slate-100 text-slate-600 border-slate-200',
+                Undefined: 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]',
               };
               const tagColor = (t: string) => {
                 if (t.startsWith('tlp:')) {
                   if (t.includes('red')) return 'bg-red-600 text-white';
                   if (t.includes('amber')) return 'bg-amber-500 text-white';
                   if (t.includes('green')) return 'bg-green-600 text-white';
-                  if (t.includes('white')) return 'bg-slate-200 text-slate-800 border border-slate-300';
+                  if (t.includes('white')) return 'bg-[var(--s2)] text-[var(--t7)] border border-[var(--b1)]';
                 }
                 return 'bg-blue-50 text-blue-800 border border-blue-200';
               };
@@ -867,7 +895,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                     <div className="grid grid-cols-2 gap-3">
                       {misp.threat_actors?.length > 0 && (
                         <div>
-                          <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Threat Actors</p>
+                          <p className="text-[0.6rem] font-black text-[var(--t4)] uppercase tracking-wider mb-1.5">Threat Actors</p>
                           <div className="flex flex-wrap gap-1">
                             {misp.threat_actors.map((a: string) => (
                               <span key={a} className="px-2 py-0.5 rounded bg-red-100 text-red-800 text-[0.7rem] font-bold">{a}</span>
@@ -877,7 +905,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                       )}
                       {misp.malware_families?.length > 0 && (
                         <div>
-                          <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Malware / Tools</p>
+                          <p className="text-[0.6rem] font-black text-[var(--t4)] uppercase tracking-wider mb-1.5">Malware / Tools</p>
                           <div className="flex flex-wrap gap-1">
                             {misp.malware_families.map((m: string) => (
                               <span key={m} className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.7rem] font-bold">{m}</span>
@@ -890,14 +918,14 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
 
                   {misp.events?.length > 0 && (
                     <div>
-                      <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Related MISP Events</p>
+                      <p className="text-[0.6rem] font-black text-[var(--t4)] uppercase tracking-wider mb-1.5">Related MISP Events</p>
                       <div className="space-y-1">
                         {misp.events.slice(0, 5).map((e: any) => (
-                          <div key={e.id} className="flex items-center gap-2 text-[0.72rem] bg-white/60 rounded px-2 py-1 border border-blue-100">
+                          <div key={e.id} className="flex items-center gap-2 text-[0.72rem] bg-[var(--s0)]/60 rounded px-2 py-1 border border-blue-100">
                             <span className="font-mono font-bold text-blue-700">#{e.id}</span>
-                            <span className="flex-1 truncate text-slate-700">{e.info}</span>
+                            <span className="flex-1 truncate text-[var(--t6)]">{e.info}</span>
                             <span className={`px-1.5 py-0.5 rounded text-[0.6rem] font-bold border ${lvlColor[e.threat_level]}`}>{e.threat_level}</span>
-                            {e.date && <span className="text-[0.62rem] text-slate-500 font-mono">{e.date}</span>}
+                            {e.date && <span className="text-[0.62rem] text-[var(--t4)] font-mono">{e.date}</span>}
                           </div>
                         ))}
                       </div>
@@ -906,7 +934,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
 
                   {misp.tags?.length > 0 && (
                     <div>
-                      <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Tags</p>
+                      <p className="text-[0.6rem] font-black text-[var(--t4)] uppercase tracking-wider mb-1.5">Tags</p>
                       <div className="flex flex-wrap gap-1">
                         {misp.tags.map((t: string) => (
                           <span key={t} className={`px-1.5 py-0.5 rounded text-[0.62rem] font-bold font-mono ${tagColor(t)}`}>{t}</span>
@@ -917,8 +945,8 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
 
                   {misp.matched_iocs?.length > 0 && (
                     <div>
-                      <p className="text-[0.6rem] font-black text-slate-500 uppercase tracking-wider mb-1.5">Matched IOCs ({misp.matched_iocs.length})</p>
-                      <div className="text-[0.68rem] font-mono text-slate-600 bg-white/50 rounded px-2 py-1 break-all">
+                      <p className="text-[0.6rem] font-black text-[var(--t4)] uppercase tracking-wider mb-1.5">Matched IOCs ({misp.matched_iocs.length})</p>
+                      <div className="text-[0.68rem] font-mono text-[var(--t5)] bg-[var(--s0)]/50 rounded px-2 py-1 break-all">
                         {misp.matched_iocs.slice(0, 10).join(' · ')}{misp.matched_iocs.length > 10 ? ` +${misp.matched_iocs.length - 10} more` : ''}
                       </div>
                     </div>
@@ -926,8 +954,8 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                 </div>
               );
             })()}
-            <div className="bg-slate-900 rounded-xl p-4 text-slate-200 text-[0.8rem] leading-relaxed whitespace-pre-wrap font-mono">
-              {aiData?.intel || <span className="italic text-slate-500">No intel data. Run the Threat Intel agent.</span>}
+            <div className="bg-slate-900 rounded-xl p-4 text-[var(--t3)] text-[0.8rem] leading-relaxed whitespace-pre-wrap font-mono">
+              {aiData?.intel || <span className="italic text-[var(--t4)]">No intel data. Run the Threat Intel agent.</span>}
             </div>
           </Section>
 
@@ -937,12 +965,12 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                 {alert.remediation_steps.split('\n').filter(Boolean).map((step, i) => (
                   <div key={i} className="flex gap-3 items-start p-3 bg-green-50 border border-green-100 rounded-lg">
                     <span className="w-5 h-5 shrink-0 rounded-full bg-green-200 text-green-800 font-black text-[0.65rem] flex items-center justify-center mt-0.5">{i + 1}</span>
-                    <p className="text-[0.82rem] text-slate-700 leading-relaxed">{step.replace(/^\d+[\.\)]\s*/, '').replace(/^[-•]\s*/, '')}</p>
+                    <p className="text-[0.82rem] text-[var(--t6)] leading-relaxed">{step.replace(/^\d+[\.\)]\s*/, '').replace(/^[-•]\s*/, '')}</p>
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-slate-400 text-xs italic">No playbook retrieved. Run the RAG Knowledge agent.</p>
+              <p className="text-[var(--t3)] text-xs italic">No playbook retrieved. Run the RAG Knowledge agent.</p>
             )}
           </Section>
 
@@ -950,12 +978,12 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
             {(() => {
               const corrObj = aiData?.phaseData?.correlation;
               if (!corrObj) return (
-                <div className="rounded-xl p-4 border border-slate-200 bg-slate-50 text-[0.82rem] text-slate-500 italic">
+                <div className="rounded-xl p-4 border border-[var(--b2)] bg-[var(--s1)] text-[0.82rem] text-[var(--t4)] italic">
                   No correlation data. Run the Correlation agent.
                 </div>
               );
               if (!corrObj.campaign_detected) return (
-                <div className="rounded-xl p-4 border border-slate-200 bg-slate-50 text-[0.82rem] text-slate-500 italic">
+                <div className="rounded-xl p-4 border border-[var(--b2)] bg-[var(--s1)] text-[0.82rem] text-[var(--t4)] italic">
                   {corrObj.campaign_name || 'No campaign pattern detected — isolated incident.'}
                 </div>
               );
@@ -979,7 +1007,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                       <div className="mt-2 pt-3 border-t border-amber-200 space-y-1.5">
                         <p className="text-[0.62rem] font-black text-amber-700 uppercase tracking-widest">{corrObj.related_alerts.length} Related Alert{corrObj.related_alerts.length !== 1 ? 's' : ''}</p>
                         {corrObj.related_alerts.map((ra: { id: string; description: string }) => (
-                          <div key={ra.id} className="rounded-lg bg-white/70 border border-amber-200 px-3 py-2 space-y-1">
+                          <div key={ra.id} className="rounded-lg bg-[var(--s0)]/70 border border-amber-200 px-3 py-2 space-y-1">
                             <span className="font-mono text-[0.68rem] text-amber-700 font-black bg-amber-100 rounded px-1.5 py-0.5 select-all">#{ra.id.toUpperCase()}</span>
                             <p className="text-[0.78rem] text-amber-900 leading-snug">{ra.description}</p>
                           </div>
@@ -996,7 +1024,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
             {responseActions.length > 0 ? (
               <div className="space-y-2">
                 {responseActions.map((action: any, i: number) => (
-                  <div key={i} className="flex items-start gap-3 p-3.5 border border-slate-200 rounded-xl bg-white">
+                  <div key={i} className="flex items-start gap-3 p-3.5 border border-[var(--b2)] rounded-xl bg-[var(--s0)]">
                     <span className={`px-2 py-0.5 rounded text-[0.6rem] font-black uppercase tracking-wide shrink-0 mt-0.5 ${
                       action.type === 'BLOCK_IP' ? 'bg-red-100 text-red-700' :
                       action.type === 'ISOLATE_HOST' ? 'bg-orange-100 text-orange-700' :
@@ -1004,8 +1032,8 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                       'bg-blue-100 text-blue-700'
                     }`}>{action.type?.replace('_', ' ')}</span>
                     <div className="flex-1 min-w-0">
-                      <p className="font-mono font-bold text-[0.8rem] text-slate-800 truncate">{action.target}</p>
-                      <p className="text-[0.75rem] text-slate-500 mt-0.5">{action.reason}</p>
+                      <p className="font-mono font-bold text-[0.8rem] text-[var(--t7)] truncate">{action.target}</p>
+                      <p className="text-[0.75rem] text-[var(--t4)] mt-0.5">{action.reason}</p>
                     </div>
                   </div>
                 ))}
@@ -1016,12 +1044,12 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
                 )}
               </div>
             ) : (
-              <p className="text-slate-400 text-xs italic">No response plan generated. Run the Response agent.</p>
+              <p className="text-[var(--t3)] text-xs italic">No response plan generated. Run the Response agent.</p>
             )}
           </Section>
 
           <Section title="8 — SLA & Validation">
-            <div className={`rounded-xl p-4 border text-[0.82rem] ${aiData?.validation ? 'bg-green-50 border-green-200 text-green-900' : 'bg-slate-50 border-slate-200 text-slate-500 italic'}`}>
+            <div className={`rounded-xl p-4 border text-[0.82rem] ${aiData?.validation ? 'bg-green-50 border-green-200 text-green-900' : 'bg-[var(--s1)] border-[var(--b2)] text-[var(--t4)] italic'}`}>
               {aiData?.validation || 'SLA validation pending. Run the Validation agent.'}
             </div>
           </Section>
@@ -1033,8 +1061,8 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
           </Section>
         </div>
 
-        <div className="px-7 py-4 border-t bg-slate-50 flex justify-end shrink-0">
-          <button onClick={onClose} className="px-6 py-2.5 rounded-lg font-bold text-slate-600 hover:bg-slate-100 transition-colors border border-slate-200 text-sm">
+        <div className="px-7 py-4 border-t bg-[var(--s1)] flex justify-end shrink-0">
+          <button onClick={onClose} className="px-6 py-2.5 rounded-lg font-bold text-[var(--t5)] hover:bg-[var(--s1)] transition-colors border border-[var(--b2)] text-sm">
             Close Report
           </button>
         </div>
@@ -1088,7 +1116,7 @@ const RiskGauge = ({ value, size = 96 }: { value: number | null, size?: number }
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-[1.4rem] font-black" style={{ color }}>{value == null ? '—' : Math.round(v)}</span>
-          <span className="text-[0.55rem] font-bold text-slate-400 uppercase tracking-widest">/100</span>
+          <span className="text-[0.55rem] font-bold text-[var(--t3)] uppercase tracking-widest">/100</span>
         </div>
       </div>
       <span className="text-[0.6rem] font-black uppercase tracking-widest" style={{ color }}>{label}</span>
@@ -1097,7 +1125,7 @@ const RiskGauge = ({ value, size = 96 }: { value: number | null, size?: number }
 };
 
 const MiniBar = ({ value, color }: { value: number, color: string }) => (
-  <div className="h-1 w-full bg-slate-100 rounded-full overflow-hidden">
+  <div className="h-1 w-full bg-[var(--s1)] rounded-full overflow-hidden">
     <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
   </div>
 );
@@ -1125,47 +1153,47 @@ const AlertHeroStrip = ({ alert, aiData, severity, sevStyle, agentDefs, agentCon
   const threatLabel = [actorLabel, attackCat?.replace(/_/g,' ')].filter(Boolean).join(' · ') || alert.description;
 
   return (
-    <div className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
+    <div className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] shadow-sm overflow-hidden">
       <div className="grid grid-cols-12 gap-0 divide-x divide-slate-100">
         {/* Identity */}
         <div className="col-span-12 md:col-span-6 p-4 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-mono text-[0.68rem] font-bold text-slate-400">#{alert.id.substring(0,10).toUpperCase()}</span>
+            <span className="font-mono text-[0.68rem] font-bold text-[var(--t3)]">#{alert.id.substring(0,10).toUpperCase()}</span>
             <span className={`px-2 py-0.5 rounded-full border font-black uppercase text-[0.6rem] tracking-wider ${sevStyle[severity]}`}>{severity}</span>
-            {analysis?.is_false_positive && <span className="px-2 py-0.5 rounded-full border bg-slate-50 text-slate-500 border-slate-200 font-black uppercase text-[0.6rem] tracking-wider">FP</span>}
+            {analysis?.is_false_positive && <span className="px-2 py-0.5 rounded-full border bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] font-black uppercase text-[0.6rem] tracking-wider">FP</span>}
             {killChain && <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 font-bold text-[0.6rem] uppercase tracking-wide">{killChain.replace(/_/g,' ')}</span>}
             {alert.email_sent === 1 && <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 font-bold text-[0.6rem] uppercase">✓ Emailed</span>}
           </div>
-          <p className="text-[0.95rem] font-bold text-slate-800 leading-snug">{threatLabel}</p>
-          <p className="text-[0.78rem] text-slate-500 leading-snug line-clamp-2">{alert.description}</p>
-          <div className="flex items-center gap-4 pt-1 text-[0.68rem] text-slate-500">
-            {alert.source_ip && <span>SRC <span className="font-mono font-bold text-slate-700">{alert.source_ip}</span></span>}
-            <span>HOST <span className="font-mono font-bold text-slate-700">{alert.agent_name}</span></span>
-            <span>RULE <span className="font-mono font-bold text-slate-700">{alert.rule_id}</span></span>
+          <p className="text-[0.95rem] font-bold text-[var(--t7)] leading-snug">{threatLabel}</p>
+          <p className="text-[0.78rem] text-[var(--t4)] leading-snug line-clamp-2">{alert.description}</p>
+          <div className="flex items-center gap-4 pt-1 text-[0.68rem] text-[var(--t4)]">
+            {alert.source_ip && <span>SRC <span className="font-mono font-bold text-[var(--t6)]">{alert.source_ip}</span></span>}
+            <span>HOST <span className="font-mono font-bold text-[var(--t6)]">{alert.agent_name}</span></span>
+            <span>RULE <span className="font-mono font-bold text-[var(--t6)]">{alert.rule_id}</span></span>
             <span className="font-mono">{new Date(alert.timestamp).toLocaleString()}</span>
           </div>
         </div>
 
         {/* Risk gauge */}
-        <div className="col-span-6 md:col-span-3 p-4 flex items-center justify-center bg-slate-50/50">
+        <div className="col-span-6 md:col-span-3 p-4 flex items-center justify-center bg-[var(--s1)]/50">
           <RiskGauge value={risk} size={110} />
         </div>
 
         {/* Agent pipeline */}
         <div className="col-span-6 md:col-span-3 p-4">
           <button type="button" onClick={scrollToAgents} className="w-full text-left group">
-            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-2">Agent Pipeline</p>
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Agent Pipeline</p>
             <div className="space-y-1">
               {agentDefs.map((a) => {
                 const c = agentConfidence(a.id);
                 const pct = c == null ? null : Math.round(c * 100);
-                const color = pct == null ? 'bg-slate-200' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+                const color = pct == null ? 'bg-[var(--s2)]' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
                 return (
                   <div key={a.id} className="flex items-center gap-2 group-hover:opacity-90">
-                    <a.icon size={10} className="text-slate-400 shrink-0" />
-                    <span className="text-[0.62rem] text-slate-600 w-20 truncate">{a.label}</span>
+                    <a.icon size={10} className="text-[var(--t3)] shrink-0" />
+                    <span className="text-[0.62rem] text-[var(--t5)] w-20 truncate">{a.label}</span>
                     <div className="flex-1"><MiniBar value={pct ?? 0} color={color} /></div>
-                    <span className="text-[0.58rem] font-mono font-bold text-slate-500 w-8 text-right">{pct == null ? '—' : `${pct}%`}</span>
+                    <span className="text-[0.58rem] font-mono font-bold text-[var(--t4)] w-8 text-right">{pct == null ? '—' : `${pct}%`}</span>
                   </div>
                 );
               })}
@@ -1186,12 +1214,12 @@ const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[]
   const actions = pd.response?.actions || aiData?.response?.actions || [];
   const approvalRequired = pd.response?.approval_required ?? aiData?.response?.approval_required;
   const sla = pd.validation?.sla_status || aiData?.validation;
-  const slaTone = sla ? (String(sla).toLowerCase().includes('breach') ? 'text-red-700 bg-red-50 border-red-200' : String(sla).toLowerCase().includes('risk') ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-green-700 bg-green-50 border-green-200') : 'text-slate-500 bg-slate-50 border-slate-200';
+  const slaTone = sla ? (String(sla).toLowerCase().includes('breach') ? 'text-red-700 bg-red-50 border-red-200' : String(sla).toLowerCase().includes('risk') ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-green-700 bg-green-50 border-green-200') : 'text-[var(--t4)] bg-[var(--s1)] border-[var(--b2)]';
   const confidences = ['analysis','intel','knowledge','correlation','ticket','response','validation'].map(k => pd[k]?.confidence).filter((v): v is number => typeof v === 'number');
   const avgConf = confidences.length ? Math.round(confidences.reduce((a,b) => a+b, 0) / confidences.length * 100) : null;
-  const mispLevelCls: Record<string,string> = { High: 'text-red-700 bg-red-50 border-red-200', Medium: 'text-orange-700 bg-orange-50 border-orange-200', Low: 'text-amber-700 bg-amber-50 border-amber-200', Undefined: 'text-slate-600 bg-slate-50 border-slate-200' };
+  const mispLevelCls: Record<string,string> = { High: 'text-red-700 bg-red-50 border-red-200', Medium: 'text-orange-700 bg-orange-50 border-orange-200', Low: 'text-amber-700 bg-amber-50 border-amber-200', Undefined: 'text-[var(--t5)] bg-[var(--s1)] border-[var(--b2)]' };
 
-  const Chip = ({ title, value, sub, tone = 'text-slate-700 bg-white border-slate-200' }: { title: string, value: React.ReactNode, sub?: React.ReactNode, tone?: string }) => (
+  const Chip = ({ title, value, sub, tone = 'text-[var(--t6)] bg-[var(--s0)] border-[var(--b2)]' }: { title: string, value: React.ReactNode, sub?: React.ReactNode, tone?: string }) => (
     <div className={`rounded-xl border px-3 py-2.5 ${tone} flex flex-col gap-0.5 min-w-0`}>
       <p className="text-[0.55rem] font-black uppercase tracking-widest opacity-70">{title}</p>
       <div className="text-[1rem] font-black leading-tight truncate">{value}</div>
@@ -1200,7 +1228,7 @@ const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[]
   );
 
   const riskScore = pd.analysis?.risk_score;
-  const riskTone  = riskScore == null ? 'text-slate-500 bg-slate-50 border-slate-200'
+  const riskTone  = riskScore == null ? 'text-[var(--t4)] bg-[var(--s1)] border-[var(--b2)]'
     : riskScore >= 80 ? 'text-red-700 bg-red-50 border-red-200'
     : riskScore >= 60 ? 'text-orange-700 bg-orange-50 border-orange-200'
     : riskScore >= 40 ? 'text-amber-700 bg-amber-50 border-amber-200'
@@ -1210,10 +1238,10 @@ const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[]
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
       <Chip title="Risk Score"    value={riskScore != null ? `${riskScore}/100` : '—'} sub={pd.analysis?.severity_validation || 'not assessed'} tone={riskTone} />
       <Chip title="MITRE"        value={`${mitreTags.length} technique${mitreTags.length===1?'':'s'}`} sub={mitreTags.slice(0,3).join(' · ') || '—'} />
-      <Chip title="MISP"         value={misp?.available ? `${misp.hits || 0} hits` : 'n/a'} sub={misp?.highest_threat_level || (misp?.available ? 'no matches' : 'unavailable')} tone={misp?.available && misp.hits > 0 ? mispLevelCls[misp.highest_threat_level] : 'text-slate-600 bg-slate-50 border-slate-200'} />
+      <Chip title="MISP"         value={misp?.available ? `${misp.hits || 0} hits` : 'n/a'} sub={misp?.highest_threat_level || (misp?.available ? 'no matches' : 'unavailable')} tone={misp?.available && misp.hits > 0 ? mispLevelCls[misp.highest_threat_level] : 'text-[var(--t5)] bg-[var(--s1)] border-[var(--b2)]'} />
       <Chip title="IOCs"         value={iocCount} sub={`${iocTypes} type${iocTypes===1?'':'s'}`} />
-      <Chip title="Actions"      value={actions.length} sub={approvalRequired ? 'approval required' : 'auto-executable'} tone={approvalRequired ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-700 bg-white border-slate-200'} />
-      <Chip title="Avg Confidence" value={avgConf == null ? '—' : `${avgConf}%`} sub={avgConf == null ? 'no runs' : `${confidences.length}/7 agents`} tone={avgConf == null ? 'text-slate-500 bg-slate-50 border-slate-200' : avgConf >= 80 ? 'text-green-700 bg-green-50 border-green-200' : avgConf >= 60 ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-red-700 bg-red-50 border-red-200'} />
+      <Chip title="Actions"      value={actions.length} sub={approvalRequired ? 'approval required' : 'auto-executable'} tone={approvalRequired ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-[var(--t6)] bg-[var(--s0)] border-[var(--b2)]'} />
+      <Chip title="Avg Confidence" value={avgConf == null ? '—' : `${avgConf}%`} sub={avgConf == null ? 'no runs' : `${confidences.length}/7 agents`} tone={avgConf == null ? 'text-[var(--t4)] bg-[var(--s1)] border-[var(--b2)]' : avgConf >= 80 ? 'text-green-700 bg-green-50 border-green-200' : avgConf >= 60 ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-red-700 bg-red-50 border-red-200'} />
     </div>
   );
 };
@@ -1226,7 +1254,7 @@ const IocTable = ({ iocs }: { iocs: any }) => {
     { key: 'domains', label: 'Domain', tone: 'text-sky-700 bg-sky-50' },
     { key: 'processes', label: 'Proc', tone: 'text-emerald-700 bg-emerald-50' },
     { key: 'files', label: 'File', tone: 'text-yellow-700 bg-yellow-50' },
-    { key: 'hashes', label: 'Hash', tone: 'text-zinc-700 bg-zinc-50' },
+    { key: 'hashes', label: 'Hash', tone: 'text-[var(--t5)] bg-zinc-50' },
   ];
   const rows: { type: string; value: string; tone: string }[] = [];
   for (const g of groups) {
@@ -1234,15 +1262,15 @@ const IocTable = ({ iocs }: { iocs: any }) => {
     for (const v of arr) rows.push({ type: g.label, value: String(v), tone: g.tone });
   }
   if (iocs?.ports?.length) rows.push({ type: 'Ports', value: iocs.ports.join(', '), tone: 'text-indigo-700 bg-indigo-50' });
-  if (rows.length === 0) return <p className="text-[0.72rem] text-slate-400 italic">No IOCs extracted yet.</p>;
+  if (rows.length === 0) return <p className="text-[0.72rem] text-[var(--t3)] italic">No IOCs extracted yet.</p>;
   return (
-    <div className="overflow-hidden rounded border border-slate-200">
+    <div className="overflow-hidden rounded border border-[var(--b2)]">
       <table className="w-full text-[0.72rem]">
         <tbody className="divide-y divide-slate-100">
           {rows.map((r, i) => (
-            <tr key={i} className="hover:bg-slate-50">
+            <tr key={i} className="hover:bg-[var(--s1)]">
               <td className={`px-2 py-1 font-black uppercase tracking-wide text-[0.58rem] ${r.tone} w-16`}>{r.type}</td>
-              <td className="px-2 py-1 font-mono text-slate-700 break-all">{r.value}</td>
+              <td className="px-2 py-1 font-mono text-[var(--t6)] break-all">{r.value}</td>
             </tr>
           ))}
         </tbody>
@@ -1265,14 +1293,14 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
     High: 'bg-red-100 text-red-800 border-red-200',
     Medium: 'bg-orange-100 text-orange-800 border-orange-200',
     Low: 'bg-amber-50 text-amber-700 border-amber-200',
-    Undefined: 'bg-slate-100 text-slate-600 border-slate-200',
+    Undefined: 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]',
   };
   const tagColor = (t: string) => {
     if (t.startsWith('tlp:')) {
       if (t.includes('red')) return 'bg-red-600 text-white';
       if (t.includes('amber')) return 'bg-amber-500 text-white';
       if (t.includes('green')) return 'bg-green-600 text-white';
-      if (t.includes('white')) return 'bg-slate-200 text-slate-800 border border-slate-300';
+      if (t.includes('white')) return 'bg-[var(--s2)] text-[var(--t7)] border border-[var(--b1)]';
     }
     return 'bg-blue-50 text-blue-800 border border-blue-200';
   };
@@ -1285,12 +1313,12 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
   };
 
   const Panel = ({ title, accent, children, right }: { title: string, accent: string, children: React.ReactNode, right?: React.ReactNode }) => (
-    <div className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden flex flex-col min-h-[220px]">
-      <div className={`flex items-center justify-between px-4 py-2 border-b border-slate-100 ${accent}`}>
+    <div className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] shadow-sm overflow-hidden flex flex-col min-h-[220px]">
+      <div className={`flex items-center justify-between px-4 py-2 border-b border-[var(--b3)] ${accent}`}>
         <p className="text-[0.62rem] font-black uppercase tracking-widest">{title}</p>
         {right}
       </div>
-      <div className="p-4 flex-1 overflow-y-auto space-y-3 text-[0.78rem] text-slate-700">{children}</div>
+      <div className="p-4 flex-1 overflow-y-auto space-y-3 text-[0.78rem] text-[var(--t6)]">{children}</div>
     </div>
   );
 
@@ -1298,35 +1326,35 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
     <div className="space-y-3">
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
       {/* Column 1 — Threat Context */}
-      <Panel title="Threat Context" accent="bg-slate-50 text-[#004a99]">
+      <Panel title="Threat Context" accent="bg-[var(--s1)] text-[var(--p1)]">
         {aiData?.summary ? (
-          <div className="bg-[#f0f7ff] border border-[#c8ddf7] rounded-lg px-3 py-2 text-[0.78rem] text-[#003a7a] italic leading-snug">
+          <div className="bg-[var(--sa)] border border-[#c8ddf7] rounded-lg px-3 py-2 text-[0.78rem] text-[var(--p1)] italic leading-snug">
             {aiData.summary}
           </div>
         ) : (
-          <p className="text-slate-400 italic text-[0.72rem]">No AI summary yet. Run the Alert Triage agent.</p>
+          <p className="text-[var(--t3)] italic text-[0.72rem]">No AI summary yet. Run the Alert Triage agent.</p>
         )}
 
         <div>
-          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">MITRE ATT&CK</p>
+          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">MITRE ATT&CK</p>
           {mitreTags.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {mitreTags.map(t => (
                 <span key={t} className="px-2 py-0.5 bg-[#1a1a2e] text-[#e94560] border border-[#e94560]/30 rounded text-[0.62rem] font-black font-mono">{t}</span>
               ))}
             </div>
-          ) : <p className="text-slate-400 italic text-[0.68rem]">None mapped. Run Threat Intel agent.</p>}
+          ) : <p className="text-[var(--t3)] italic text-[0.68rem]">None mapped. Run Threat Intel agent.</p>}
         </div>
 
         <div>
-          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">IOCs</p>
+          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">IOCs</p>
           <IocTable iocs={aiData?.iocs || {}} />
         </div>
 
         {correlationObj && !correlationObj.campaign_detected && (
           <div>
-            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Campaign Correlation</p>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[0.72rem] text-slate-500 italic">
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Campaign Correlation</p>
+            <div className="rounded-lg border border-[var(--b2)] bg-[var(--s1)] px-3 py-2 text-[0.72rem] text-[var(--t4)] italic">
               {correlationObj.campaign_name || 'No campaign pattern detected — isolated incident.'}
             </div>
           </div>
@@ -1336,25 +1364,25 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
       {/* Column 2 — MISP Enrichment */}
       <Panel
         title="Threat Intelligence"
-        accent="bg-gradient-to-r from-blue-50 to-indigo-50 text-[#004a99]"
+        accent="bg-gradient-to-r from-blue-50 to-indigo-50 text-[var(--p1)]"
         right={misp?.available && misp.hits > 0 ? (
           <span className={`px-2 py-0.5 rounded-full border font-black uppercase text-[0.55rem] tracking-wider ${lvlColor[misp.highest_threat_level]}`}>{misp.highest_threat_level}</span>
         ) : misp?.available ? (
-          <span className="text-[0.58rem] font-semibold text-slate-400">queried · 0 hits</span>
+          <span className="text-[0.58rem] font-semibold text-[var(--t3)]">queried · 0 hits</span>
         ) : (
-          <span className="text-[0.58rem] font-semibold text-slate-400">unavailable</span>
+          <span className="text-[0.58rem] font-semibold text-[var(--t3)]">unavailable</span>
         )}
       >
         {misp?.available && misp.hits > 0 ? (
           <>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="px-2.5 py-0.5 rounded-full bg-blue-600 text-white text-[0.6rem] font-black uppercase tracking-wider">✓ {misp.hits} MISP match{misp.hits === 1 ? '' : 'es'}</span>
-              {misp.matched_iocs?.length > 0 && <span className="text-[0.62rem] text-slate-500 font-mono">{misp.matched_iocs.length} IOC{misp.matched_iocs.length===1?'':'s'}</span>}
+              {misp.matched_iocs?.length > 0 && <span className="text-[0.62rem] text-[var(--t4)] font-mono">{misp.matched_iocs.length} IOC{misp.matched_iocs.length===1?'':'s'}</span>}
             </div>
 
             {misp.threat_actors?.length > 0 && (
               <div>
-                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Threat Actors</p>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Threat Actors</p>
                 <div className="flex flex-wrap gap-1">
                   {misp.threat_actors.map((a: string) => (
                     <span key={a} className="px-2 py-0.5 rounded bg-red-100 text-red-800 text-[0.68rem] font-bold">{a}</span>
@@ -1365,7 +1393,7 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
 
             {misp.malware_families?.length > 0 && (
               <div>
-                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Malware / Tools</p>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Malware / Tools</p>
                 <div className="flex flex-wrap gap-1">
                   {misp.malware_families.map((m: string) => (
                     <span key={m} className="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[0.68rem] font-bold">{m}</span>
@@ -1376,12 +1404,12 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
 
             {misp.events?.length > 0 && (
               <div>
-                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Related Events</p>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Related Events</p>
                 <div className="space-y-1">
                   {misp.events.slice(0, 5).map((e: any) => (
-                    <div key={e.id} className="flex items-center gap-2 text-[0.7rem] bg-slate-50 rounded px-2 py-1 border border-slate-100">
+                    <div key={e.id} className="flex items-center gap-2 text-[0.7rem] bg-[var(--s1)] rounded px-2 py-1 border border-[var(--b3)]">
                       <span className="font-mono font-bold text-blue-700">#{e.id}</span>
-                      <span className="flex-1 truncate text-slate-700">{e.info}</span>
+                      <span className="flex-1 truncate text-[var(--t6)]">{e.info}</span>
                       <span className={`px-1.5 py-0.5 rounded text-[0.56rem] font-bold border ${lvlColor[e.threat_level]}`}>{e.threat_level}</span>
                     </div>
                   ))}
@@ -1391,7 +1419,7 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
 
             {misp.tags?.length > 0 && (
               <div>
-                <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1">Tags</p>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Tags</p>
                 <div className="flex flex-wrap gap-1">
                   {misp.tags.map((t: string) => (
                     <span key={t} className={`px-1.5 py-0.5 rounded text-[0.58rem] font-bold font-mono ${tagColor(t)}`}>{t}</span>
@@ -1401,12 +1429,12 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
             )}
           </>
         ) : (
-          <p className="text-slate-400 italic text-[0.72rem]">No MISP matches for these IOCs.</p>
+          <p className="text-[var(--t3)] italic text-[0.72rem]">No MISP matches for these IOCs.</p>
         )}
 
         {aiData?.intel && (
           <div>
-            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Analyst Summary</p>
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Analyst Summary</p>
             <div className="bg-slate-900 text-emerald-300 rounded-lg p-3 text-[0.72rem] leading-relaxed whitespace-pre-wrap font-mono">
               {aiData.intel}
             </div>
@@ -1415,45 +1443,45 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
       </Panel>
 
       {/* Column 3 — Response Pipeline */}
-      <Panel title="Response Pipeline" accent="bg-slate-50 text-[#004a99]">
+      <Panel title="Response Pipeline" accent="bg-[var(--s1)] text-[var(--p1)]">
         <div>
-          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Playbook</p>
+          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Playbook</p>
           {playbookSteps.length > 0 ? (
             <ol className="space-y-1">
               {playbookSteps.map((s, i) => (
                 <li key={i} className="flex gap-2 items-start text-[0.74rem] leading-snug">
                   <span className="w-4 h-4 rounded-full bg-green-200 text-green-800 font-black text-[0.58rem] flex items-center justify-center shrink-0 mt-0.5">{i+1}</span>
-                  <span className="text-slate-700">{s.replace(/^\d+[\.\)]\s*/, '').replace(/^[-•]\s*/, '')}</span>
+                  <span className="text-[var(--t6)]">{s.replace(/^\d+[\.\)]\s*/, '').replace(/^[-•]\s*/, '')}</span>
                 </li>
               ))}
             </ol>
-          ) : <p className="text-slate-400 italic text-[0.68rem]">No playbook retrieved. Run RAG Knowledge agent.</p>}
+          ) : <p className="text-[var(--t3)] italic text-[0.68rem]">No playbook retrieved. Run RAG Knowledge agent.</p>}
         </div>
 
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest">Response Actions</p>
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Response Actions</p>
             {approvalRequired && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[0.56rem] font-black uppercase tracking-wider">⚠ Approval</span>}
           </div>
           {actions.length > 0 ? (
             <div className="space-y-1">
               {actions.map((a: any, i: number) => (
-                <div key={i} className="flex items-center gap-2 bg-slate-50 rounded px-2 py-1.5 border border-slate-100">
+                <div key={i} className="flex items-center gap-2 bg-[var(--s1)] rounded px-2 py-1.5 border border-[var(--b3)]">
                   <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wider ${actionTone[a.type] || 'bg-blue-100 text-blue-700'}`}>{(a.type || '').replace(/_/g,' ')}</span>
-                  <span className="flex-1 text-[0.7rem] font-mono font-bold text-slate-700 truncate">{a.target || '—'}</span>
+                  <span className="flex-1 text-[0.7rem] font-mono font-bold text-[var(--t6)] truncate">{a.target || '—'}</span>
                 </div>
               ))}
-              {actions[0]?.reason && <p className="text-[0.65rem] text-slate-500 italic leading-snug">{actions[0].reason}</p>}
+              {actions[0]?.reason && <p className="text-[0.65rem] text-[var(--t4)] italic leading-snug">{actions[0].reason}</p>}
             </div>
-          ) : <p className="text-slate-400 italic text-[0.68rem]">No response plan. Run Response agent.</p>}
+          ) : <p className="text-[var(--t3)] italic text-[0.68rem]">No response plan. Run Response agent.</p>}
         </div>
 
         <div>
-          <p className="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">Validation / SLA</p>
+          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Validation / SLA</p>
           {(() => {
             const v = pd.validation;
             if (!v) return (
-              <div className="rounded-lg border px-3 py-2 text-[0.72rem] bg-slate-50 border-slate-200 text-slate-500 italic">
+              <div className="rounded-lg border px-3 py-2 text-[0.72rem] bg-[var(--s1)] border-[var(--b2)] text-[var(--t4)] italic">
                 SLA validation pending. Run Validation agent.
               </div>
             );
@@ -1472,7 +1500,7 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
                 <div className="flex items-center justify-between">
                   <span className="text-[0.72rem] font-black uppercase tracking-wide">{v.sla_status?.replace(/_/g,' ')}</span>
                   {v.recommendation && (
-                    <span className={`px-2 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wide ${recColor[v.recommendation] || 'bg-slate-100 text-slate-700'}`}>
+                    <span className={`px-2 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wide ${recColor[v.recommendation] || 'bg-[var(--s1)] text-[var(--t6)]'}`}>
                       {v.recommendation.replace(/_/g,' ')}
                     </span>
                   )}
@@ -1532,7 +1560,7 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
                 </p>
                 <div className="space-y-1.5">
                   {correlationObj.related_alerts.map((ra: { id: string; description: string }) => (
-                    <div key={ra.id} className="flex items-start gap-2.5 bg-white/70 rounded-lg border border-amber-200 px-3 py-2">
+                    <div key={ra.id} className="flex items-start gap-2.5 bg-[var(--s0)]/70 rounded-lg border border-amber-200 px-3 py-2">
                       <span className="font-mono text-[0.62rem] text-amber-700 font-black bg-amber-100 rounded px-1.5 py-0.5 select-all shrink-0 mt-0.5 whitespace-nowrap">#{ra.id.toUpperCase()}</span>
                       <p className="text-[0.74rem] text-amber-900 leading-snug">{ra.description}</p>
                     </div>
@@ -1674,7 +1702,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
   };
 
   const getConfidenceStatus = (confidence: number | null) => {
-    if (confidence === null) return { label: 'Unknown', cls: 'bg-slate-100 text-slate-500 border-slate-200' };
+    if (confidence === null) return { label: 'Unknown', cls: 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]' };
     if (confidence >= 0.8) return { label: 'High', cls: 'bg-green-50 text-green-700 border-green-200' };
     if (confidence >= 0.6) return { label: 'Medium', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
     return { label: 'Low', cls: 'bg-red-50 text-red-700 border-red-200' };
@@ -1892,28 +1920,28 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
   const completedCount = agentDefs.filter(a => (agentRunHistory[a.id]?.length || 0) > 0).length;
 
   return (
-    <div className="flex flex-col h-full bg-[#f0f4f9] overflow-hidden">
+    <div className="flex flex-col h-full bg-[var(--s2)] overflow-hidden">
 
       {/* Slim top bar — title + pipeline progress only */}
-      <div className="bg-white border-b border-[#d1d9e6] px-5 h-11 flex items-center gap-3 shrink-0">
+      <div className="bg-[var(--s0)] border-b border-[var(--b1)] px-5 h-11 flex items-center gap-3 shrink-0">
         <button
           type="button"
           onClick={() => { onClose(); if (returnTab && setActiveTab) setActiveTab(returnTab); }}
-          className="text-[0.72rem] font-semibold text-slate-500 hover:text-[#004a99] transition-colors shrink-0"
+          className="text-[0.72rem] font-semibold text-[var(--t4)] hover:text-[var(--p1)] transition-colors shrink-0"
         >
           ← Back
         </button>
-        <div className="w-px h-4 bg-slate-200 shrink-0" />
-        <p className="text-[0.82rem] font-semibold text-slate-800 truncate flex-1">{alert.description}</p>
+        <div className="w-px h-4 bg-[var(--s2)] shrink-0" />
+        <p className="text-[0.82rem] font-semibold text-[var(--t7)] truncate flex-1">{alert.description}</p>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest">Pipeline</span>
-          <div className="w-28 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+          <span className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Pipeline</span>
+          <div className="w-28 h-1.5 bg-[var(--s1)] rounded-full overflow-hidden">
             <div
               className="h-full bg-[#004a99] rounded-full transition-all duration-700"
               style={{ width: `${(completedCount / agentDefs.length) * 100}%` }}
             />
           </div>
-          <span className="text-[0.65rem] font-bold text-slate-500">{completedCount}/{agentDefs.length}</span>
+          <span className="text-[0.65rem] font-bold text-[var(--t4)]">{completedCount}/{agentDefs.length}</span>
         </div>
       </div>
 
@@ -1921,7 +1949,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
 
         {/* Alert identity + actions card */}
-        <div className="bg-white rounded-xl border border-[#d1d9e6] px-5 py-4 flex items-start justify-between gap-4">
+        <div className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] px-5 py-4 flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-1.5">
               <span className={`px-2.5 py-0.5 rounded-full text-[0.62rem] font-black uppercase tracking-wide border ${sevStyle[severity]}`}>
@@ -1930,8 +1958,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               <span className={`px-2.5 py-0.5 rounded-full text-[0.62rem] font-black uppercase tracking-wide border ${
                 alert.status === 'TRIAGED' ? 'bg-green-50 text-green-700 border-green-200' :
                 alert.status === 'ANALYZING' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                alert.status === 'FALSE_POSITIVE' ? 'bg-gray-50 text-gray-500 border-gray-200' :
-                'bg-slate-50 text-slate-600 border-slate-200'
+                alert.status === 'FALSE_POSITIVE' ? 'bg-gray-50 text-[var(--t2)] border-gray-200' :
+                'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]'
               }`}>{alert.status}</span>
               {alert.email_sent === 1 && (
                 <span className="flex items-center gap-1 text-[0.62rem] font-bold text-green-600 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full uppercase">
@@ -1939,10 +1967,10 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-4 text-[0.7rem] text-slate-500">
-              <span className="font-mono font-bold text-slate-400">#{alert.id.substring(0, 10).toUpperCase()}</span>
-              {alert.source_ip && <span>SRC: <span className="font-mono font-bold text-slate-700">{alert.source_ip}</span></span>}
-              <span>Host: <span className="font-mono font-bold text-slate-700">{alert.agent_name}</span></span>
+            <div className="flex items-center gap-4 text-[0.7rem] text-[var(--t4)]">
+              <span className="font-mono font-bold text-[var(--t3)]">#{alert.id.substring(0, 10).toUpperCase()}</span>
+              {alert.source_ip && <span>SRC: <span className="font-mono font-bold text-[var(--t6)]">{alert.source_ip}</span></span>}
+              <span>Host: <span className="font-mono font-bold text-[var(--t6)]">{alert.agent_name}</span></span>
               <span>{new Date(alert.timestamp).toLocaleString()}</span>
             </div>
           </div>
@@ -1950,7 +1978,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
             <button
               type="button"
               onClick={() => setShowReport(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.72rem] font-bold transition-colors border border-slate-200"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] text-[0.72rem] font-bold transition-colors border border-[var(--b2)]"
             >
               <FileText size={13} /> Report
             </button>
@@ -1963,7 +1991,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                   getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
                 }
               }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[#004a99] text-white border-[#004a99]' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[#004a99] text-white border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
             >
               {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={13} />}
               History {runs.length > 0 ? `(${runs.length})` : ''}
@@ -1973,7 +2001,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 type="button"
                 onClick={handleSaveSnapshot}
                 disabled={isSavingSnapshot || isAnalyzing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[0.72rem] font-bold transition-colors border border-slate-200 disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] text-[0.72rem] font-bold transition-colors border border-[var(--b2)] disabled:opacity-50"
               >
                 {isSavingSnapshot ? <div className="w-3 h-3 rounded-full border-2 border-slate-400/40 border-t-slate-600 animate-spin" /> : <Plus size={13} />}
                 Snapshot
@@ -1983,7 +2011,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               type="button"
               onClick={handleRerunFresh}
               disabled={isAnalyzing}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#004a99] hover:bg-[#003a7a] text-white text-[0.72rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#004a99] hover:bg-[var(--pd)] text-white text-[0.72rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
             >
               {isRerunning ? (
                 <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running...</>
@@ -2027,16 +2055,16 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
         {showHistory && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest">
+              <p className="text-[0.65rem] font-black text-[var(--t3)] uppercase tracking-widest">
                 Run History — {runs.length} saved run{runs.length !== 1 ? 's' : ''}
               </p>
-              <button type="button" onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-slate-600">
+              <button type="button" onClick={() => setShowHistory(false)} className="text-[var(--t3)] hover:text-[var(--t5)]">
                 <X size={14} />
               </button>
             </div>
             {runs.length === 0 ? (
-              <div className="bg-white rounded-xl border border-[#d1d9e6] p-6 text-center text-[0.8rem] text-slate-400">
-                No saved runs yet. Use <span className="font-bold text-slate-600">Run Agents</span> to run all agents, or <span className="font-bold text-slate-600">Save Snapshot</span> to record the current state.
+              <div className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] p-6 text-center text-[0.8rem] text-[var(--t3)]">
+                No saved runs yet. Use <span className="font-bold text-[var(--t5)]">Run Agents</span> to run all agents, or <span className="font-bold text-[var(--t5)]">Save Snapshot</span> to record the current state.
               </div>
             ) : (
               runs.map((run) => {
@@ -2055,23 +2083,23 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 const isExpanded = expandedRunId === run.id;
 
                 return (
-                  <div key={run.id} className="bg-white rounded-xl border border-[#d1d9e6] overflow-hidden">
+                  <div key={run.id} className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] overflow-hidden">
                     <button
                       type="button"
                       onClick={() => setExpandedRunId(isExpanded ? null : run.id)}
-                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-[var(--s1)] transition-colors text-left"
                     >
                       <div className="flex items-center gap-3 flex-wrap">
-                        <span className="text-[0.72rem] font-mono text-slate-500">
+                        <span className="text-[0.72rem] font-mono text-[var(--t4)]">
                           {new Date(run.run_at).toLocaleString()}
                         </span>
                         <span className={`px-2 py-0.5 rounded-full border text-[0.6rem] font-black uppercase tracking-wide ${
                           run.status === 'TRIAGED' ? 'bg-green-50 text-green-700 border-green-200' :
-                          run.status === 'FALSE_POSITIVE' ? 'bg-slate-100 text-slate-500 border-slate-200' :
+                          run.status === 'FALSE_POSITIVE' ? 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]' :
                           'bg-blue-50 text-blue-700 border-blue-200'
                         }`}>{run.status || 'TRIAGED'}</span>
                         {isFP !== undefined && (
-                          <span className={`px-2 py-0.5 rounded-full border text-[0.6rem] font-black uppercase tracking-wide ${isFP ? 'bg-red-50 text-red-600 border-red-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                          <span className={`px-2 py-0.5 rounded-full border text-[0.6rem] font-black uppercase tracking-wide ${isFP ? 'bg-red-50 text-red-600 border-red-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]'}`}>
                             FP: {isFP ? 'YES' : 'No'}
                           </span>
                         )}
@@ -2080,22 +2108,22 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                             Avg Conf: {avgConf}%
                           </span>
                         )}
-                        <span className="text-[0.65rem] text-slate-400">{completedAgents}/7 agents</span>
+                        <span className="text-[0.65rem] text-[var(--t3)]">{completedAgents}/7 agents</span>
                       </div>
-                      <ChevronRight size={14} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                      <ChevronRight size={14} className={`text-[var(--t3)] transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                     </button>
 
                     {isExpanded && (
-                      <div className="border-t border-slate-100 px-4 py-3 space-y-3">
+                      <div className="border-t border-[var(--b3)] px-4 py-3 space-y-3">
                         {runAiData?.summary && (
                           <div>
-                            <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-1">Analysis Summary</p>
-                            <p className="text-[0.78rem] text-slate-700 leading-relaxed">{runAiData.summary}</p>
+                            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Analysis Summary</p>
+                            <p className="text-[0.78rem] text-[var(--t6)] leading-relaxed">{runAiData.summary}</p>
                           </div>
                         )}
                         {runMitre.length > 0 && (
                           <div>
-                            <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-1.5">MITRE ATT&CK</p>
+                            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">MITRE ATT&CK</p>
                             <div className="flex flex-wrap gap-1.5">
                               {runMitre.map((tag: string) => (
                                 <span key={tag} className="px-2 py-1 bg-[#1a1a2e] text-[#e94560] border border-[#e94560]/30 rounded text-[0.65rem] font-black font-mono">
@@ -2106,21 +2134,21 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                           </div>
                         )}
                         <div>
-                          <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-2">Agent Confidence</p>
+                          <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Agent Confidence</p>
                           <div className="grid grid-cols-7 gap-1">
                             {['analysis','intel','knowledge','correlation','ticketing','response','validation'].map((p) => {
                               const raw = p === 'ticketing' ? runPhaseData?.ticket?.confidence : runPhaseData?.[p]?.confidence;
                               const pct = typeof raw === 'number' ? Math.round(raw * 100) : null;
                               return (
                                 <div key={p} className="flex flex-col items-center gap-1">
-                                  <div className="h-8 w-full bg-slate-100 rounded-sm overflow-hidden flex flex-col-reverse">
+                                  <div className="h-8 w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse">
                                     <div
                                       className={`w-full transition-all ${pct === null ? 'h-0' : pct >= 80 ? 'bg-green-400' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400'}`}
                                       style={{ height: pct !== null ? `${pct}%` : '0%' }}
                                     />
                                   </div>
-                                  <span className="text-[0.55rem] text-slate-500 text-center leading-none">{pct !== null ? `${pct}%` : '—'}</span>
-                                  <span className="text-[0.5rem] text-slate-400 text-center leading-none capitalize">{p.slice(0,4)}</span>
+                                  <span className="text-[0.55rem] text-[var(--t4)] text-center leading-none">{pct !== null ? `${pct}%` : '—'}</span>
+                                  <span className="text-[0.5rem] text-[var(--t3)] text-center leading-none capitalize">{p.slice(0,4)}</span>
                                 </div>
                               );
                             })}
@@ -2128,8 +2156,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                         </div>
                         {run.remediation_steps && (
                           <div>
-                            <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-1">Remediation</p>
-                            <p className="text-[0.75rem] text-slate-600 whitespace-pre-line leading-relaxed">{run.remediation_steps}</p>
+                            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Remediation</p>
+                            <p className="text-[0.75rem] text-[var(--t5)] whitespace-pre-line leading-relaxed">{run.remediation_steps}</p>
                           </div>
                         )}
                       </div>
@@ -2154,10 +2182,10 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           scrollToAgents={() => agentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
 
-        <div ref={agentsRef} className="bg-white rounded-xl border border-[#d1d9e6] shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100 bg-slate-50">
-            <p className="text-[0.62rem] font-black uppercase tracking-widest text-[#004a99]">Agent Pipeline · click a card to expand</p>
-            <span className="text-[0.6rem] font-semibold text-slate-400">{completedCount}/{agentDefs.length} completed</span>
+        <div ref={agentsRef} className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--b3)] bg-[var(--s1)]">
+            <p className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--p1)]">Agent Pipeline · click a card to expand</p>
+            <span className="text-[0.6rem] font-semibold text-[var(--t3)]">{completedCount}/{agentDefs.length} completed</span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 divide-x divide-slate-100">
             {agentDefs.map((agent) => {
@@ -2170,7 +2198,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               const pct = confidence == null ? null : Math.round(confidence * 100);
               const isViewingLatest = currentIdx === runCount - 1;
               const isExpanded = expandedAgent === agent.id;
-              const bar       = pct == null ? 'bg-slate-200' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+              const bar       = pct == null ? 'bg-[var(--s2)]' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
               const isFallback= Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
 
               return (
@@ -2179,24 +2207,24 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                   type="button"
                   onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
                   className={`p-3 text-left transition-colors relative ${
-                    isExpanded ? 'bg-blue-50/50' : 'hover:bg-slate-50'
+                    isExpanded ? 'bg-blue-50/50' : 'hover:bg-[var(--s1)]'
                   } ${isRunningThis ? 'bg-blue-50' : ''}`}
                 >
                   <div className="flex items-center gap-2 mb-2">
                     <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
-                      isRunningThis ? 'bg-[#004a99]' : isDone ? 'bg-green-600' : 'bg-slate-200'
+                      isRunningThis ? 'bg-[#004a99]' : isDone ? 'bg-green-600' : 'bg-[var(--s2)]'
                     }`}>
                       {isRunningThis
                         ? <div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                        : <agent.icon size={12} className={isDone ? 'text-white' : 'text-slate-500'} />
+                        : <agent.icon size={12} className={isDone ? 'text-white' : 'text-[var(--t4)]'} />
                       }
                     </div>
-                    <p className="text-[0.7rem] font-bold text-slate-800 truncate flex-1">{agent.label}</p>
+                    <p className="text-[0.7rem] font-bold text-[var(--t7)] truncate flex-1">{agent.label}</p>
                   </div>
                   <div className="space-y-1">
                     <MiniBar value={pct ?? 0} color={bar} />
                     <div className="flex items-center justify-between text-[0.6rem] font-mono">
-                      <span className={pct == null ? 'text-slate-400' : 'text-slate-600 font-bold'}>{pct == null ? '— waiting' : `${pct}%`}</span>
+                      <span className={pct == null ? 'text-[var(--t3)]' : 'text-[var(--t5)] font-bold'}>{pct == null ? '— waiting' : `${pct}%`}</span>
                       {runCount > 0 && <span className={`${isViewingLatest ? 'text-green-600' : 'text-amber-600'} font-black`}>{currentIdx + 1}/{runCount}</span>}
                     </div>
                     {isFallback && <span className="text-[0.55rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5 font-bold uppercase tracking-wide">⚠ Unavailable</span>}
@@ -2206,7 +2234,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                     onClick={(e) => { e.stopPropagation(); handleAgentRun(agent.id); }}
                     disabled={isAnalyzing || isRerunning}
                     className={`mt-2 w-full flex items-center justify-center gap-1 text-[0.58rem] font-black px-2 py-1 rounded transition-colors disabled:opacity-50 uppercase tracking-wider ${
-                      isDone ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-[#004a99] text-white hover:bg-[#003a7a]'
+                      isDone ? 'bg-[var(--s1)] text-[var(--t5)] hover:bg-[var(--s2)]' : 'bg-[#004a99] text-white hover:bg-[var(--pd)]'
                     }`}
                   >
                     {isRunningThis ? 'Running' : isDone ? '↺ Rerun' : 'Run'}
@@ -2224,22 +2252,22 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
             const displayResult = runCount > 0 ? hist[Math.min(currentIdx, runCount - 1)] : null;
             const isViewingLatest = currentIdx === runCount - 1;
             if (!displayResult) {
-              return <div className="p-4 border-t border-slate-100 text-[0.75rem] text-slate-400 italic">No results yet for <span className="font-bold">{agent.label}</span>. Click Run on the card above.</div>;
+              return <div className="p-4 border-t border-[var(--b3)] text-[0.75rem] text-[var(--t3)] italic">No results yet for <span className="font-bold">{agent.label}</span>. Click Run on the card above.</div>;
             }
             return (
-              <div className="border-t border-slate-100 p-4 bg-slate-50/60 space-y-2">
+              <div className="border-t border-[var(--b3)] p-4 bg-[var(--s1)]/60 space-y-2">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
-                    <agent.icon size={14} className="text-[#004a99]" />
-                    <p className="text-[0.75rem] font-black uppercase tracking-wider text-slate-700">{agent.label}</p>
-                    <span className="text-[0.62rem] text-slate-500">{agent.desc}</span>
+                    <agent.icon size={14} className="text-[var(--p1)]" />
+                    <p className="text-[0.75rem] font-black uppercase tracking-wider text-[var(--t6)]">{agent.label}</p>
+                    <span className="text-[0.62rem] text-[var(--t4)]">{agent.desc}</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1 border-r border-slate-200 pr-3 mr-1">
+                    <div className="flex items-center gap-1 border-r border-[var(--b2)] pr-3 mr-1">
                       <button
                         onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, true); }}
                         disabled={feedbackLoading[`${agent.id}-true`] || !!feedbackSubmitted[agent.id]}
-                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'up' ? 'text-green-600 bg-green-100' : 'hover:bg-green-100 text-slate-400 hover:text-green-600'}`}
+                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'up' ? 'text-green-600 bg-green-100' : 'hover:bg-green-100 text-[var(--t3)] hover:text-green-600'}`}
                         title="Mark as accurate"
                       >
                         <ThumbsUp size={14} className={feedbackLoading[`${agent.id}-true`] ? 'animate-pulse' : ''} />
@@ -2247,17 +2275,17 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                       <button
                         onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, false); }}
                         disabled={feedbackLoading[`${agent.id}-false`] || !!feedbackSubmitted[agent.id]}
-                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'down' ? 'text-red-600 bg-red-100' : 'hover:bg-red-100 text-slate-400 hover:text-red-600'}`}
+                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'down' ? 'text-red-600 bg-red-100' : 'hover:bg-red-100 text-[var(--t3)] hover:text-red-600'}`}
                         title="Mark as inaccurate"
                       >
                         <ThumbsDown size={14} className={feedbackLoading[`${agent.id}-false`] ? 'animate-pulse' : ''} />
                       </button>
                     </div>
                     {runCount > 0 && (
-                      <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded-full px-1.5 py-0.5">
-                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">‹</button>
+                      <div className="flex items-center gap-0.5 bg-[var(--s0)] border border-[var(--b2)] rounded-full px-1.5 py-0.5">
+                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t6)] disabled:opacity-25">‹</button>
                         <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>{currentIdx + 1}/{runCount}</span>
-                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-25">›</button>
+                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t6)] disabled:opacity-25">›</button>
                       </div>
                     )}
                   </div>
@@ -2291,7 +2319,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 </div>
               ))
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-600 italic gap-2 opacity-50">
+              <div className="h-full flex flex-col items-center justify-center text-[var(--t5)] italic gap-2 opacity-50">
                 <Activity size={24} className={isAnalyzing ? 'animate-pulse' : ''} />
                 <p>{isAnalyzing ? 'Agents are communicating...' : 'Standby — Waiting for swarm activation'}</p>
               </div>
@@ -2300,14 +2328,14 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           </div>
         </div>
 
-        <div className="bg-white rounded-xl border border-[#d1d9e6] overflow-hidden">
+        <div className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] overflow-hidden">
           <button
             type="button"
             onClick={() => toggleSection('rawlog')}
-            className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-[var(--s1)] transition-colors text-left"
           >
-            <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest">Raw Wazuh Log</p>
-            <ChevronDown size={14} className={`text-slate-400 transition-transform ${collapsedSections.rawlog ? '' : 'rotate-180'}`} />
+            <p className="text-[0.65rem] font-black text-[var(--t3)] uppercase tracking-widest">Raw Wazuh Log</p>
+            <ChevronDown size={14} className={`text-[var(--t3)] transition-transform ${collapsedSections.rawlog ? '' : 'rotate-180'}`} />
           </button>
           {!collapsedSections.rawlog && (
             <div className="px-4 pb-4">
@@ -2320,10 +2348,10 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
       </div>
 
       {/* Action footer */}
-      <div className="bg-white border-t border-[#d1d9e6] px-6 py-3.5 flex items-center justify-between shrink-0">
-        <div className="text-[0.72rem] text-slate-500">
+      <div className="bg-[var(--s0)] border-t border-[var(--b1)] px-6 py-3.5 flex items-center justify-between shrink-0">
+        <div className="text-[0.72rem] text-[var(--t4)]">
           {aiData?.response?.actions?.length
-            ? <span className="font-semibold text-slate-700">Recommended: {aiData.response.actions[0]?.type?.replace('_', ' ')} → <span className="font-mono">{aiData.response.actions[0]?.target}</span></span>
+            ? <span className="font-semibold text-[var(--t6)]">Recommended: {aiData.response.actions[0]?.type?.replace('_', ' ')} → <span className="font-mono">{aiData.response.actions[0]?.target}</span></span>
             : 'Run agents to generate recommended actions.'
           }
         </div>
@@ -2331,21 +2359,21 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           <button
             type="button"
             onClick={() => setConfirmAction({ status: 'FALSE_POSITIVE', label: 'Mark as False Positive', message: 'Mark this alert as a False Positive? This will suppress further notifications for this alert.', cls: 'bg-slate-600 hover:bg-slate-700' })}
-            className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 font-semibold text-[0.8rem] bg-white hover:bg-slate-50 transition-colors"
+            className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] font-semibold text-[0.8rem] bg-[var(--s0)] hover:bg-[var(--s1)] transition-colors"
           >
             False Positive
           </button>
           <button
             type="button"
-            onClick={() => setConfirmAction({ status: 'ESCALATED', label: 'Escalate', message: 'Escalate this alert to the incident queue for immediate analyst attention?', cls: 'bg-[#004a99] hover:bg-[#003a7a]' })}
-            className="px-4 py-2 rounded-lg border border-[#004a99] text-[#004a99] font-semibold text-[0.8rem] bg-white hover:bg-blue-50 transition-colors"
+            onClick={() => setConfirmAction({ status: 'ESCALATED', label: 'Escalate', message: 'Escalate this alert to the incident queue for immediate analyst attention?', cls: 'bg-[#004a99] hover:bg-[var(--pd)]' })}
+            className="px-4 py-2 rounded-lg border border-[var(--p1)] text-[var(--p1)] font-semibold text-[0.8rem] bg-[var(--s0)] hover:bg-blue-50 transition-colors"
           >
             Escalate
           </button>
           <button
             type="button"
             onClick={() => setConfirmAction({ status: 'CLOSED', label: 'Close Incident', message: 'Close this incident? This marks the alert as resolved.', cls: 'bg-[#1e8e3e] hover:bg-green-700' })}
-            className="px-4 py-2 rounded-lg bg-[#004a99] text-white font-bold text-[0.8rem] hover:bg-[#003a7a] transition-colors shadow-sm"
+            className="px-4 py-2 rounded-lg bg-[#004a99] text-white font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
           >
             Close Incident
           </button>
@@ -2380,7 +2408,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
 };
 
 const SkeletonVal = () => (
-  <div className="h-8 w-16 bg-slate-200 animate-pulse rounded mt-1" />
+  <div className="h-8 w-16 bg-[var(--s2)] animate-pulse rounded mt-1" />
 );
 
 const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[], onAlertClick: (a: Alert) => void, setActiveTab: (t: string) => void }) => {
@@ -2420,13 +2448,13 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      <div className="flex items-end justify-between border-b border-slate-200 pb-4">
+      <div className="flex items-end justify-between border-b border-[var(--b2)] pb-4">
         <div>
-          <p className="text-[0.65rem] font-black uppercase tracking-widest text-slate-400 mb-1">Academic Prototype</p>
-          <h2 className="text-2xl font-bold text-[#004a99]">Multi-Agent SOC Research Overview</h2>
-          <p className="text-sm text-slate-500 mt-1">Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface.</p>
+          <p className="text-[0.65rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1">Academic Prototype</p>
+          <h2 className="text-2xl font-bold text-[var(--p1)]">Multi-Agent SOC Research Overview</h2>
+          <p className="text-sm text-[var(--t4)] mt-1">Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface.</p>
         </div>
-        <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[#003a7a] transition-colors">
+        <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
           <AlertTriangle size={14} />
           Open Investigation
         </button>
@@ -2434,22 +2462,22 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
 
       <div className="grid grid-cols-5 gap-4">
         {cards.map(card => (
-          <div key={card.label} className="bg-white border border-[#d1d9e6] rounded-lg p-4 shadow-sm">
+          <div key={card.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
             <div className="flex items-start justify-between gap-3">
-              <p className="text-[0.62rem] font-black text-slate-400 uppercase tracking-widest">{card.label}</p>
+              <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest">{card.label}</p>
               <card.icon size={18} style={{ color: card.color }} className="opacity-50" />
             </div>
-            <p className="text-[1.7rem] font-black text-slate-900 mt-2 leading-none">{card.value}</p>
-            <p className="text-[0.68rem] text-slate-500 mt-2">{card.sub}</p>
+            <p className="text-[1.7rem] font-black text-[var(--t1)] mt-2 leading-none">{card.value}</p>
+            <p className="text-[0.68rem] text-[var(--t4)] mt-2">{card.sub}</p>
           </div>
         ))}
       </div>
 
       <div className="grid grid-cols-3 gap-5">
-        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
-            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">7-Agent LangGraph Pipeline</p>
-            <span className="text-[0.65rem] text-slate-400 font-mono">linear execution · START to END</span>
+        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">7-Agent LangGraph Pipeline</p>
+            <span className="text-[0.65rem] text-[var(--t3)] font-mono">linear execution · START to END</span>
           </div>
           <div className="p-5 grid grid-cols-7 gap-2">
             {AGENT_PHASES_UI.map((agent, i) => {
@@ -2458,19 +2486,19 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
               const confidence = stat?.avg_confidence;
               return (
                 <button key={agent.phase} onClick={() => setActiveTab('agents')} className="text-left group">
-                  <div className={`min-h-[146px] border rounded-lg p-3 transition-colors ${fallbackPct > 20 ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200 bg-white group-hover:bg-[#f0f7ff]'}`}>
+                  <div className={`min-h-[146px] border rounded-lg p-3 transition-colors ${fallbackPct > 20 ? 'border-amber-200 bg-amber-50/50' : 'border-[var(--b2)] bg-[var(--s0)] group-hover:bg-[var(--sa)]'}`}>
                     <div className="flex items-center justify-between mb-3">
                       <span className="w-6 h-6 rounded bg-[#004a99] text-white flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
-                      <span className="text-[0.58rem] text-slate-400 font-mono">{stat?.total_runs || 0} runs</span>
+                      <span className="text-[0.58rem] text-[var(--t3)] font-mono">{stat?.total_runs || 0} runs</span>
                     </div>
-                    <p className="text-[0.72rem] font-black text-slate-800 leading-tight">{agent.short}</p>
+                    <p className="text-[0.72rem] font-black text-[var(--t7)] leading-tight">{agent.short}</p>
                     <div className="mt-3 space-y-2">
                       <div>
-                        <div className="flex justify-between text-[0.58rem] text-slate-400 mb-0.5"><span>Conf</span><span>{confidence == null ? '—' : `${confidence}%`}</span></div>
-                        <MiniBar value={confidence || 0} color={confidence == null ? 'bg-slate-200' : confidence >= 80 ? 'bg-green-500' : confidence >= 60 ? 'bg-amber-400' : 'bg-red-400'} />
+                        <div className="flex justify-between text-[0.58rem] text-[var(--t3)] mb-0.5"><span>Conf</span><span>{confidence == null ? '—' : `${confidence}%`}</span></div>
+                        <MiniBar value={confidence || 0} color={confidence == null ? 'bg-[var(--s2)]' : confidence >= 80 ? 'bg-green-500' : confidence >= 60 ? 'bg-amber-400' : 'bg-red-400'} />
                       </div>
                       <div>
-                        <div className="flex justify-between text-[0.58rem] text-slate-400 mb-0.5"><span>Fallback</span><span>{fallbackPct}%</span></div>
+                        <div className="flex justify-between text-[0.58rem] text-[var(--t3)] mb-0.5"><span>Fallback</span><span>{fallbackPct}%</span></div>
                         <MiniBar value={fallbackPct} color={fallbackPct > 20 ? 'bg-amber-500' : 'bg-slate-300'} />
                       </div>
                     </div>
@@ -2481,33 +2509,33 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
           </div>
         </div>
 
-        <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50">
-            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">7-Day Alert Volume</p>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">7-Day Alert Volume</p>
           </div>
           <div className="p-5 h-[210px]">
             {trends ? (
               <div className="flex items-end gap-2 h-full">
                 {trends.map(t => (
                   <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="w-full bg-slate-100 rounded-sm overflow-hidden flex flex-col-reverse h-32">
+                    <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse h-32">
                       <div className="w-full bg-[#004a99] rounded-sm" style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 4 : 0 }} />
                     </div>
-                    <span className="text-[0.6rem] text-slate-500 font-mono">{t.count}</span>
-                    <span className="text-[0.52rem] text-slate-300">{t.day.slice(5)}</span>
+                    <span className="text-[0.6rem] text-[var(--t4)] font-mono">{t.count}</span>
+                    <span className="text-[0.52rem] text-[var(--t2)]">{t.day.slice(5)}</span>
                   </div>
                 ))}
               </div>
-            ) : <div className="h-full flex items-center justify-center text-slate-400 text-sm">Loading trend data...</div>}
+            ) : <div className="h-full flex items-center justify-center text-[var(--t3)] text-sm">Loading trend data...</div>}
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-3 gap-5">
-        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
-            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Highest-Risk Research Samples</p>
-            <button onClick={() => setActiveTab('alerts')} className="text-[0.68rem] font-bold text-[#004a99] hover:underline">View queue</button>
+        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Highest-Risk Research Samples</p>
+            <button onClick={() => setActiveTab('alerts')} className="text-[0.68rem] font-bold text-[var(--p1)] hover:underline">View queue</button>
           </div>
           <div className="divide-y divide-slate-100">
             {topCritical.length ? topCritical.map(alert => {
@@ -2515,25 +2543,25 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
               const risk = getAlertRiskScore(alert);
               const fallbackCount = Array.isArray(ai?.fallback_phases) ? ai.fallback_phases.length : 0;
               return (
-                <button key={alert.id} onClick={() => onAlertClick(alert)} className="w-full px-5 py-3 text-left hover:bg-slate-50 flex items-center gap-4">
+                <button key={alert.id} onClick={() => onAlertClick(alert)} className="w-full px-5 py-3 text-left hover:bg-[var(--s1)] flex items-center gap-4">
                   <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : 'bg-blue-500'}`} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-[0.82rem] font-bold text-slate-800 truncate">{alert.description}</p>
-                    <p className="text-[0.65rem] text-slate-400 font-mono mt-0.5">{alert.id} · rule {alert.rule_id} · {alert.agent_name}</p>
+                    <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{alert.description}</p>
+                    <p className="text-[0.65rem] text-[var(--t3)] font-mono mt-0.5">{alert.id} · rule {alert.rule_id} · {alert.agent_name}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-[0.72rem] font-black text-slate-700">{risk == null ? `L${alert.severity}` : `${risk}% risk`}</p>
+                    <p className="text-[0.72rem] font-black text-[var(--t6)]">{risk == null ? `L${alert.severity}` : `${risk}% risk`}</p>
                     <p className={`text-[0.6rem] font-bold ${fallbackCount > 0 ? 'text-amber-600' : 'text-green-600'}`}>{fallbackCount > 0 ? `${fallbackCount} fallback` : alert.status}</p>
                   </div>
                 </button>
               );
-            }) : <div className="p-8 text-center text-slate-400 text-sm">No alerts available.</div>}
+            }) : <div className="p-8 text-center text-[var(--t3)] text-sm">No alerts available.</div>}
           </div>
         </div>
 
-        <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50">
-            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Research Shortcuts</p>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Research Shortcuts</p>
           </div>
           <div className="p-4 grid gap-2">
             {[
@@ -2542,9 +2570,9 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
               { tab: 'reports', label: 'Review generated reports and run snapshots', icon: FileText },
               { tab: 'response', label: 'Audit containment and firewall controls', icon: Shield },
             ].map(item => (
-              <button key={item.tab} onClick={() => setActiveTab(item.tab)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-slate-200 hover:bg-[#f0f7ff] hover:border-[#004a99]/30 text-left transition-colors">
-                <item.icon size={16} className="text-[#004a99] shrink-0" />
-                <span className="text-[0.76rem] font-semibold text-slate-700">{item.label}</span>
+              <button key={item.tab} onClick={() => setActiveTab(item.tab)} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-[var(--b2)] hover:bg-[var(--sa)] hover:border-[var(--p1)]/30 text-left transition-colors">
+                <item.icon size={16} className="text-[var(--p1)] shrink-0" />
+                <span className="text-[0.76rem] font-semibold text-[var(--t6)]">{item.label}</span>
               </button>
             ))}
           </div>
@@ -2602,13 +2630,13 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
     <div className="p-6 flex flex-col gap-6 h-full overflow-y-auto">
       <div className="grid grid-cols-5 gap-4">
         {statCards.map((stat, i) => (
-          <div key={i} className="bg-white border border-[#d1d9e6] rounded-lg p-5 flex flex-col gap-2 shadow-sm">
+          <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-5 flex flex-col gap-2 shadow-sm">
             <div className="flex justify-between items-start">
-              <div className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">{stat.label}</div>
+              <div className="text-[0.7rem] font-bold text-[var(--t2)] uppercase tracking-wider">{stat.label}</div>
               <stat.icon className="w-5 h-5 opacity-20" style={{ color: stat.color }} />
             </div>
             {stat.ready
-              ? <div className="text-[1.8rem] font-bold text-[#1a1a1b] leading-none">{stat.value}</div>
+              ? <div className="text-[1.8rem] font-bold text-[var(--t1)] leading-none">{stat.value}</div>
               : <SkeletonVal />}
           </div>
         ))}
@@ -2617,35 +2645,35 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
       <div className="grid grid-cols-3 gap-5 flex-1 min-h-0">
         {/* Trend chart */}
         {trends && (
-          <div className="col-span-3 bg-white border border-[#d1d9e6] rounded-lg p-4 shadow-sm">
+          <div className="col-span-3 bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
             <div className="flex justify-between items-center mb-3">
-              <p className="text-[0.75rem] font-bold text-[#004a99] uppercase tracking-wider">7-Day Alert Volume</p>
-              <p className="text-[0.65rem] text-slate-400 font-mono">{trends.reduce((s, t) => s + t.count, 0)} total</p>
+              <p className="text-[0.75rem] font-bold text-[var(--p1)] uppercase tracking-wider">7-Day Alert Volume</p>
+              <p className="text-[0.65rem] text-[var(--t3)] font-mono">{trends.reduce((s, t) => s + t.count, 0)} total</p>
             </div>
             <div className="flex items-end gap-1.5 h-16">
               {trends.map(t => (
                 <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
-                  <div className="w-full bg-slate-100 rounded-sm overflow-hidden flex flex-col-reverse" style={{ height: 48 }}>
+                  <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse" style={{ height: 48 }}>
                     <div
                       className="w-full bg-[#004a99] rounded-sm transition-all duration-700"
                       style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 3 : 0 }}
                     />
                   </div>
-                  <span className="text-[0.55rem] text-slate-400 font-mono">{t.count}</span>
-                  <span className="text-[0.5rem] text-slate-300">{t.day.slice(5)}</span>
+                  <span className="text-[0.55rem] text-[var(--t3)] font-mono">{t.count}</span>
+                  <span className="text-[0.5rem] text-[var(--t2)]">{t.day.slice(5)}</span>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-lg flex flex-col overflow-hidden shadow-sm">
-          <div className="p-4 border-b border-[#d1d9e6] flex justify-between items-center bg-slate-50/50">
-            <h3 className="text-[0.9rem] font-bold text-[#004a99] flex items-center gap-2">
+        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-lg flex flex-col overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
+            <h3 className="text-[0.9rem] font-bold text-[var(--p1)] flex items-center gap-2">
               <Activity className="w-4 h-4" />
               LIVE ALERT STREAM (WAZUH)
             </h3>
-            <span className="text-[0.7rem] text-[#5f6368] font-mono">REFRESH: 5S</span>
+            <span className="text-[0.7rem] text-[var(--t2)] font-mono">REFRESH: 5S</span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {alerts.length > 0 ? (
@@ -2653,7 +2681,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
                 <AlertRow key={alert.id} alert={alert} onClick={() => onAlertClick(alert)} />
               ))
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-3 opacity-50">
+              <div className="h-full flex flex-col items-center justify-center text-[var(--t3)] gap-3 opacity-50">
                 <Activity className="w-12 h-12 animate-pulse" />
                 <p className="text-sm font-medium">Waiting for incoming alerts...</p>
               </div>
@@ -2661,9 +2689,9 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
           </div>
         </div>
 
-        <div className="bg-white border border-[#d1d9e6] rounded-lg flex flex-col shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-[#d1d9e6] bg-slate-50/50">
-            <h3 className="text-[0.9rem] font-bold text-[#004a99]">AI AGENT STATUS</h3>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg flex flex-col shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-[var(--b1)] bg-[var(--s1)]/50">
+            <h3 className="text-[0.9rem] font-bold text-[var(--p1)]">AI AGENT STATUS</h3>
           </div>
           <div className="p-4 flex flex-col gap-3 flex-1 overflow-y-auto">
             {swarmAgents.map((agent) => {
@@ -2672,11 +2700,11 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
               return (
                 <div key={agent.phaseKey} className="flex flex-col gap-1">
                   <div className="flex justify-between text-[0.72rem]">
-                    <span className="font-semibold text-[#1a1a1b] truncate">{agent.name}</span>
+                    <span className="font-semibold text-[var(--t1)] truncate">{agent.name}</span>
                     <span className={
                       agentStatus.label === 'Online' ? 'text-[#1e8e3e]' :
                       agentStatus.label === 'Analyzing' ? 'text-[#1a73e8]' :
-                      'text-[#5f6368]'
+                      'text-[var(--t2)]'
                     }>{agentStatus.label}</span>
                   </div>
                   <div className="h-1.5 w-full bg-[#f0f0f0] rounded-full overflow-hidden">
@@ -2689,9 +2717,9 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
               );
             })}
 
-            <div className="mt-2 p-3 bg-[#f0f7ff] rounded-lg border border-[#d1d9e6]">
-              <div className="text-[0.8rem] font-bold text-[#004a99] mb-1">System Health</div>
-              <div className="text-[0.7rem] text-[#5f6368] leading-relaxed">
+            <div className="mt-2 p-3 bg-[var(--sa)] rounded-lg border border-[var(--b1)]">
+              <div className="text-[0.8rem] font-bold text-[var(--p1)] mb-1">System Health</div>
+              <div className="text-[0.7rem] text-[var(--t2)] leading-relaxed">
                 {swarmAgents.filter(a => getAgentStatus(a.phaseKey).label !== 'Standby').length}/{swarmAgents.length} agents have processed alerts. Model assignments are configurable below.
               </div>
             </div>
@@ -2772,10 +2800,10 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
   const activeCount = alerts.filter(a => a.status === 'ANALYZING').length;
 
   return (
-    <div className="flex flex-col h-full bg-[#f0f4f9]">
+    <div className="flex flex-col h-full bg-[var(--s2)]">
       {/* Analyst HUD */}
-      <div className="bg-white border-b border-[#d1d9e6] px-6 pt-2 pb-3 shrink-0 shadow-sm z-10 relative">
-        <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-widest mb-2">Queue Intelligence</p>
+      <div className="bg-[var(--s0)] border-b border-[var(--b1)] px-6 pt-2 pb-3 shrink-0 shadow-sm z-10 relative">
+        <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Queue Intelligence</p>
       <div className="flex gap-6">
         <div className="flex-1 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
           <div>
@@ -2798,14 +2826,14 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        <section className="w-[340px] border-r border-[#d1d9e6] bg-white flex flex-col overflow-hidden shrink-0 shadow-sm z-0">
-          <div className="p-3 border-b border-[#d1d9e6] bg-slate-50 flex flex-col gap-2">
+        <section className="w-[340px] border-r border-[var(--b1)] bg-[var(--s0)] flex flex-col overflow-hidden shrink-0 shadow-sm z-0">
+          <div className="p-3 border-b border-[var(--b1)] bg-[var(--s1)] flex flex-col gap-2">
             <div className="flex justify-between items-center relative">
-              <span className="font-bold text-[0.8rem] text-[#004a99]">ALERT QUEUE ({filteredAlerts.length})</span>
+              <span className="font-bold text-[0.8rem] text-[var(--p1)]">ALERT QUEUE ({filteredAlerts.length})</span>
               <button
                 onClick={() => setFilterOpen(!filterOpen)}
                 className={`flex items-center gap-1 text-[0.65rem] font-black uppercase tracking-wider px-2 py-1 rounded transition-colors ${
-                  hasFilters ? 'bg-[#004a99] text-white' : 'text-[#004a99] hover:bg-[#f0f7ff]'
+                  hasFilters ? 'bg-[#004a99] text-white' : 'text-[var(--p1)] hover:bg-[var(--sa)]'
                 }`}
               >
                 <Filter className="w-3 h-3" />
@@ -2813,13 +2841,13 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
               </button>
 
               {filterOpen && (
-                <div className="absolute top-full right-0 mt-1 z-20 w-56 bg-white border border-[#d1d9e6] rounded-xl shadow-xl p-4 space-y-3">
+                <div className="absolute top-full right-0 mt-1 z-20 w-56 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-xl p-4 space-y-3">
                   <div>
-                    <label className="text-[0.6rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Severity</label>
+                    <label className="text-[0.6rem] font-black text-[var(--t2)] uppercase tracking-wider block mb-1">Severity</label>
                     <select
                       value={filterSeverity}
                       onChange={e => setFilterSev(e.target.value)}
-                      className="w-full text-[0.8rem] border border-[#d1d9e6] rounded px-2 py-1.5 outline-none focus:border-[#004a99]"
+                      className="w-full text-[0.8rem] border border-[var(--b1)] rounded px-2 py-1.5 outline-none focus:border-[var(--p1)]"
                     >
                       <option value="">All</option>
                       <option value="CRITICAL">Critical (13+)</option>
@@ -2829,11 +2857,11 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
                     </select>
                   </div>
                   <div>
-                    <label className="text-[0.6rem] font-black text-[#5f6368] uppercase tracking-wider block mb-1">Status</label>
+                    <label className="text-[0.6rem] font-black text-[var(--t2)] uppercase tracking-wider block mb-1">Status</label>
                     <select
                       value={filterStatus}
                       onChange={e => setFilterStatus(e.target.value)}
-                      className="w-full text-[0.8rem] border border-[#d1d9e6] rounded px-2 py-1.5 outline-none focus:border-[#004a99]"
+                      className="w-full text-[0.8rem] border border-[var(--b1)] rounded px-2 py-1.5 outline-none focus:border-[var(--p1)]"
                     >
                       <option value="">All</option>
                       {['NEW','ANALYZING','TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED'].map(s => (
@@ -2853,13 +2881,13 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
               )}
             </div>
             <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 placeholder="Search alerts, IPs, rules..."
-                className="w-full bg-white border border-slate-200 rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                className="w-full bg-[var(--s0)] border border-[var(--b2)] rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
               />
             </div>
           </div>
@@ -2874,7 +2902,7 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
                 />
               ))
             ) : (
-              <div className="p-10 text-center text-slate-400 text-sm">No alerts match the current filters.</div>
+              <div className="p-10 text-center text-[var(--t3)] text-sm">No alerts match the current filters.</div>
             )}
           </div>
         </section>
@@ -2888,7 +2916,7 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
               setActiveTab={setActiveTab}
             />
           ) : (
-            <div className="flex items-center justify-center h-full text-slate-400 flex-col gap-4">
+            <div className="flex items-center justify-center h-full text-[var(--t3)] flex-col gap-4">
               <Shield className="w-16 h-16 opacity-10" />
               <p className="font-semibold text-sm">Select an alert from the queue to start investigation</p>
             </div>
@@ -2952,64 +2980,64 @@ const MitreIntelligence = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertC
     users: 'bg-blue-50 text-blue-700 border-blue-200',
     hosts: 'bg-green-50 text-green-700 border-green-200',
     domains: 'bg-purple-50 text-purple-700 border-purple-200',
-    hashes: 'bg-slate-100 text-slate-700 border-slate-200',
+    hashes: 'bg-[var(--s1)] text-[var(--t6)] border-[var(--b2)]',
     files: 'bg-amber-50 text-amber-700 border-amber-200',
     processes: 'bg-cyan-50 text-cyan-700 border-cyan-200',
   };
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      <div className="flex items-end justify-between border-b border-slate-200 pb-4">
+      <div className="flex items-end justify-between border-b border-[var(--b2)] pb-4">
         <div>
-          <p className="text-[0.65rem] font-black uppercase tracking-widest text-slate-400 mb-1">Evidence Map</p>
-          <h2 className="text-2xl font-bold text-[#004a99]">MITRE & Threat Intelligence</h2>
-          <p className="text-sm text-slate-500 mt-1">A research view of techniques, indicators, MISP enrichment, and the alerts that produced them.</p>
+          <p className="text-[0.65rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1">Evidence Map</p>
+          <h2 className="text-2xl font-bold text-[var(--p1)]">MITRE & Threat Intelligence</h2>
+          <p className="text-sm text-[var(--t4)] mt-1">A research view of techniques, indicators, MISP enrichment, and the alerts that produced them.</p>
         </div>
         <div className="grid grid-cols-3 gap-2 text-right">
-          <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2">
-            <p className="text-[0.58rem] font-black uppercase text-slate-400">Techniques</p>
-            <p className="text-lg font-black text-[#004a99]">{topMitre.length}</p>
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
+            <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Techniques</p>
+            <p className="text-lg font-black text-[var(--p1)]">{topMitre.length}</p>
           </div>
-          <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2">
-            <p className="text-[0.58rem] font-black uppercase text-slate-400">Unique IOCs</p>
-            <p className="text-lg font-black text-[#004a99]">{uniqueIocs.size}</p>
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
+            <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Unique IOCs</p>
+            <p className="text-lg font-black text-[var(--p1)]">{uniqueIocs.size}</p>
           </div>
-          <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2">
-            <p className="text-[0.58rem] font-black uppercase text-slate-400">MISP Hits</p>
-            <p className="text-lg font-black text-[#004a99]">{mispRows.reduce((a, b) => a + b.hits, 0)}</p>
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
+            <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">MISP Hits</p>
+            <p className="text-lg font-black text-[var(--p1)]">{mispRows.reduce((a, b) => a + b.hits, 0)}</p>
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-5 gap-5">
-        <div className="col-span-2 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50">
-            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Top MITRE Techniques</p>
+        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Top MITRE Techniques</p>
           </div>
           <div className="p-5 space-y-3">
             {topMitre.length ? topMitre.map(([tech, data]) => (
               <button key={tech} onClick={() => onAlertClick(data.alerts[0])} className="w-full text-left group">
                 <div className="flex items-center gap-3">
-                  <span className="w-20 font-mono text-[0.78rem] font-black text-[#004a99]">{tech}</span>
-                  <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <span className="w-20 font-mono text-[0.78rem] font-black text-[var(--p1)]">{tech}</span>
+                  <div className="flex-1 h-2 bg-[var(--s1)] rounded-full overflow-hidden">
                     <div className="h-full bg-[#004a99] group-hover:bg-[#0066cc]" style={{ width: `${Math.max(8, (data.count / maxMitre) * 100)}%` }} />
                   </div>
-                  <span className="w-16 text-right text-[0.68rem] font-bold text-slate-500">{data.count} alerts</span>
+                  <span className="w-16 text-right text-[0.68rem] font-bold text-[var(--t4)]">{data.count} alerts</span>
                 </div>
               </button>
-            )) : <div className="p-8 text-center text-slate-400 text-sm">Run agents to generate MITRE mappings.</div>}
+            )) : <div className="p-8 text-center text-[var(--t3)] text-sm">Run agents to generate MITRE mappings.</div>}
           </div>
         </div>
 
-        <div className="col-span-3 bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
-            <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">IOC Inventory</p>
-            <span className="text-[0.65rem] text-slate-400">first 80 unique indicators</span>
+        <div className="col-span-3 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">IOC Inventory</p>
+            <span className="text-[0.65rem] text-[var(--t3)]">first 80 unique indicators</span>
           </div>
           {iocs.length ? (
             <div className="max-h-[360px] overflow-y-auto">
               <table className="w-full text-left text-[0.76rem]">
-                <thead className="sticky top-0 bg-slate-50 border-b border-slate-100 text-[0.6rem] text-slate-400 uppercase tracking-wider">
+                <thead className="sticky top-0 bg-[var(--s1)] border-b border-[var(--b3)] text-[0.6rem] text-[var(--t3)] uppercase tracking-wider">
                   <tr>
                     <th className="px-4 py-2">Type</th>
                     <th className="px-4 py-2">Indicator</th>
@@ -3020,46 +3048,46 @@ const MitreIntelligence = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertC
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {iocs.map(row => (
-                    <tr key={`${row.type}:${row.value}`} className="hover:bg-slate-50">
-                      <td className="px-4 py-2"><span className={`px-2 py-0.5 rounded border text-[0.6rem] font-black uppercase ${typeTone[row.type] || 'bg-slate-50 text-slate-600 border-slate-200'}`}>{row.type}</span></td>
-                      <td className="px-4 py-2 font-mono text-slate-800 max-w-[220px] truncate" title={row.value}>{row.value}</td>
-                      <td className="px-4 py-2 text-slate-600 max-w-[180px] truncate">{row.threat}</td>
-                      <td className="px-4 py-2"><button onClick={() => onAlertClick(row.alert)} className="font-mono text-[#004a99] hover:underline">{row.alert.id.substring(0, 8).toUpperCase()}</button></td>
-                      <td className="px-4 py-2 text-slate-500">{row.confidence == null ? '—' : `${row.confidence}%`}</td>
+                    <tr key={`${row.type}:${row.value}`} className="hover:bg-[var(--s1)]">
+                      <td className="px-4 py-2"><span className={`px-2 py-0.5 rounded border text-[0.6rem] font-black uppercase ${typeTone[row.type] || 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]'}`}>{row.type}</span></td>
+                      <td className="px-4 py-2 font-mono text-[var(--t7)] max-w-[220px] truncate" title={row.value}>{row.value}</td>
+                      <td className="px-4 py-2 text-[var(--t5)] max-w-[180px] truncate">{row.threat}</td>
+                      <td className="px-4 py-2"><button onClick={() => onAlertClick(row.alert)} className="font-mono text-[var(--p1)] hover:underline">{row.alert.id.substring(0, 8).toUpperCase()}</button></td>
+                      <td className="px-4 py-2 text-[var(--t4)]">{row.confidence == null ? '—' : `${row.confidence}%`}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          ) : <div className="p-10 text-center text-slate-400 text-sm">No extracted IOCs yet.</div>}
+          ) : <div className="p-10 text-center text-[var(--t3)] text-sm">No extracted IOCs yet.</div>}
         </div>
       </div>
 
-      <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50">
-          <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">MISP Enrichment Evidence</p>
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b bg-[var(--s1)]">
+          <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">MISP Enrichment Evidence</p>
         </div>
         {mispRows.length ? (
           <div className="divide-y divide-slate-100">
             {mispRows.slice(0, 20).map(row => (
-              <button key={row.alert.id} onClick={() => onAlertClick(row.alert)} className="w-full px-5 py-3 text-left hover:bg-slate-50 flex items-center gap-4">
+              <button key={row.alert.id} onClick={() => onAlertClick(row.alert)} className="w-full px-5 py-3 text-left hover:bg-[var(--s1)] flex items-center gap-4">
                 <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase ${
                   row.level === 'High' ? 'bg-red-100 text-red-800' :
                   row.level === 'Medium' ? 'bg-orange-100 text-orange-800' :
                   row.level === 'Low' ? 'bg-amber-100 text-amber-800' :
-                  'bg-slate-100 text-slate-600'
+                  'bg-[var(--s1)] text-[var(--t5)]'
                 }`}>{row.level}</span>
                 <div className="flex-1 min-w-0">
-                  <p className="text-[0.82rem] font-bold text-slate-800 truncate">{row.alert.description}</p>
-                  <p className="text-[0.68rem] text-slate-500 truncate">
+                  <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{row.alert.description}</p>
+                  <p className="text-[0.68rem] text-[var(--t4)] truncate">
                     {row.hits} hits · {[...row.actors, ...row.families].filter(Boolean).join(' · ') || 'No actor or family label'}
                   </p>
                 </div>
-                <span className="font-mono text-[0.65rem] text-[#004a99]">{row.alert.id.substring(0, 8).toUpperCase()}</span>
+                <span className="font-mono text-[0.65rem] text-[var(--p1)]">{row.alert.id.substring(0, 8).toUpperCase()}</span>
               </button>
             ))}
           </div>
-        ) : <div className="p-10 text-center text-slate-400 text-sm">No MISP hits found in analyzed alerts.</div>}
+        ) : <div className="p-10 text-center text-[var(--t3)] text-sm">No MISP hits found in analyzed alerts.</div>}
       </div>
     </div>
   );
@@ -3172,24 +3200,24 @@ const ActionsTab = () => {
     HIGH:     'bg-orange-100 text-orange-800 border-orange-200',
     MEDIUM:   'bg-blue-100 text-blue-800 border-blue-200',
     LOW:      'bg-green-100 text-green-800 border-green-200',
-    NEVER:    'bg-slate-100 text-slate-600 border-slate-200',
+    NEVER:    'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]',
   };
 
   const statusIcon: Record<string, string> = { success: '✓', failed: '✕', skipped: '↷' };
   const statusColor: Record<string, string> = {
     success: 'text-green-700 bg-green-50',
     failed:  'text-red-700 bg-red-50',
-    skipped: 'text-slate-500 bg-slate-50',
+    skipped: 'text-[var(--t4)] bg-[var(--s1)]',
   };
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[#004a99]">Notification Integrations</h2>
-          <p className="text-sm text-slate-500 mt-0.5">Connect agent-generated evidence to Email, GLPI, and Telegram dispatch paths.</p>
+          <h2 className="text-2xl font-bold text-[var(--p1)]">Notification Integrations</h2>
+          <p className="text-sm text-[var(--t4)] mt-0.5">Connect agent-generated evidence to Email, GLPI, and Telegram dispatch paths.</p>
         </div>
-        <button onClick={refresh} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-[0.78rem] font-semibold hover:bg-slate-50 transition-colors">
+        <button onClick={refresh} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.78rem] font-semibold hover:bg-[var(--s1)] transition-colors">
           <RefreshCw size={13} />
           Refresh
         </button>
@@ -3199,13 +3227,13 @@ const ActionsTab = () => {
       {actionStats && (
         <div className="grid grid-cols-4 gap-3">
           {[
-            { label: 'Total Actions',  value: actionStats.total,        color: 'text-[#004a99]' },
-            { label: 'Today',          value: actionStats.today,        color: 'text-[#004a99]' },
+            { label: 'Total Actions',  value: actionStats.total,        color: 'text-[var(--p1)]' },
+            { label: 'Today',          value: actionStats.today,        color: 'text-[var(--p1)]' },
             { label: 'Success Rate',   value: `${actionStats.success_rate}%`, color: actionStats.success_rate >= 80 ? 'text-[#1e8e3e]' : 'text-[#d93025]' },
-            { label: 'Integrations',   value: `${integrations.filter(i => i.enabled).length} / ${integrations.length} active`, color: 'text-[#004a99]' },
+            { label: 'Integrations',   value: `${integrations.filter(i => i.enabled).length} / ${integrations.length} active`, color: 'text-[var(--p1)]' },
           ].map((s, i) => (
-            <div key={i} className="bg-white border border-[#d1d9e6] rounded-lg p-4 shadow-sm">
-              <p className="text-[0.65rem] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+            <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
+              <p className="text-[0.65rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">{s.label}</p>
               <p className={`text-[1.6rem] font-black ${s.color}`}>{s.value}</p>
             </div>
           ))}
@@ -3222,14 +3250,14 @@ const ActionsTab = () => {
           const cfgValues  = localCfg[intg.name] ?? intg.config ?? {};
 
           return (
-            <div key={intg.name} className={`bg-white border rounded-xl shadow-sm overflow-hidden transition-all ${intg.enabled ? 'border-[#004a99]/30' : 'border-[#d1d9e6]'}`}>
+            <div key={intg.name} className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden transition-all ${intg.enabled ? 'border-[var(--p1)]/30' : 'border-[var(--b1)]'}`}>
               {/* Card header */}
-              <div className={`flex items-center justify-between px-4 py-3 border-b ${intg.enabled ? 'bg-[#f0f7ff]' : 'bg-slate-50'}`}>
+              <div className={`flex items-center justify-between px-4 py-3 border-b ${intg.enabled ? 'bg-[var(--sa)]' : 'bg-[var(--s1)]'}`}>
                 <div className="flex items-center gap-2">
                   <span className={`p-1.5 rounded-lg border ${meta.color}`}>{meta.icon}</span>
                   <div>
-                    <p className="text-[0.82rem] font-black text-slate-800">{meta.label}</p>
-                    <span className={`text-[0.58rem] font-black uppercase tracking-wider ${intg.enabled ? 'text-[#1e8e3e]' : 'text-slate-400'}`}>
+                    <p className="text-[0.82rem] font-black text-[var(--t7)]">{meta.label}</p>
+                    <span className={`text-[0.58rem] font-black uppercase tracking-wider ${intg.enabled ? 'text-[#1e8e3e]' : 'text-[var(--t3)]'}`}>
                       {intg.enabled ? '● ACTIVE' : '○ DISABLED'}
                     </span>
                   </div>
@@ -3238,33 +3266,33 @@ const ActionsTab = () => {
                   <button
                     onClick={() => handleToggle(intg.name, !intg.enabled)}
                     disabled={saving[intg.name]}
-                    className="text-slate-400 hover:text-[#004a99] transition-colors disabled:opacity-50"
+                    className="text-[var(--t3)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
                     title={intg.enabled ? 'Disable' : 'Enable'}
                   >
                     {intg.enabled
-                      ? <ToggleRight size={28} className="text-[#004a99]" />
+                      ? <ToggleRight size={28} className="text-[var(--p1)]" />
                       : <ToggleLeft  size={28} />}
                   </button>
                 )}
               </div>
 
               {/* Stats row */}
-              <div className="grid grid-cols-3 divide-x divide-slate-100 border-b border-slate-100">
+              <div className="grid grid-cols-3 divide-x divide-slate-100 border-b border-[var(--b3)]">
                 {[
                   { label: '24h sent',  value: s24.total },
                   { label: 'success',   value: s24.success },
                   { label: 'failed',    value: s24.failed },
                 ].map((m, i) => (
                   <div key={i} className="py-2 text-center">
-                    <p className={`text-[1rem] font-black ${i === 2 && m.value > 0 ? 'text-red-600' : 'text-slate-700'}`}>{m.value}</p>
-                    <p className="text-[0.58rem] text-slate-400 uppercase tracking-wider">{m.label}</p>
+                    <p className={`text-[1rem] font-black ${i === 2 && m.value > 0 ? 'text-red-600' : 'text-[var(--t6)]'}`}>{m.value}</p>
+                    <p className="text-[0.58rem] text-[var(--t3)] uppercase tracking-wider">{m.label}</p>
                   </div>
                 ))}
               </div>
 
               {/* Auto-fire setting */}
-              <div className="px-4 py-3 flex items-center justify-between border-b border-slate-100">
-                <p className="text-[0.7rem] font-bold text-slate-500 uppercase tracking-wider">Auto-fire on</p>
+              <div className="px-4 py-3 flex items-center justify-between border-b border-[var(--b3)]">
+                <p className="text-[0.7rem] font-bold text-[var(--t4)] uppercase tracking-wider">Auto-fire on</p>
                 <select
                   value={intg.auto_send_threshold}
                   disabled={!isAdmin}
@@ -3277,13 +3305,13 @@ const ActionsTab = () => {
 
               {/* Config section */}
               {isAdmin && (
-                <div className="px-4 py-2 border-b border-slate-100">
+                <div className="px-4 py-2 border-b border-[var(--b3)]">
                   <button
                     onClick={() => {
                       setExpandedCfg(isExpanded ? null : intg.name);
                       if (!localCfg[intg.name]) setLocalCfg(prev => ({ ...prev, [intg.name]: { ...intg.config } }));
                     }}
-                    className="flex items-center gap-1 text-[0.7rem] font-bold text-[#004a99] hover:underline"
+                    className="flex items-center gap-1 text-[0.7rem] font-bold text-[var(--p1)] hover:underline"
                   >
                     <ChevronDown size={12} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                     Configure
@@ -3292,20 +3320,20 @@ const ActionsTab = () => {
                     <div className="mt-2 space-y-2">
                       {meta.fields.map(f => (
                         <div key={f.key}>
-                          <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-0.5">{f.label}</label>
+                          <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-0.5">{f.label}</label>
                           <input
                             type={f.secret ? 'password' : 'text'}
                             value={cfgValues[f.key] || ''}
                             onChange={e => setLocalCfg(prev => ({ ...prev, [intg.name]: { ...(prev[intg.name] || {}), [f.key]: e.target.value } }))}
                             placeholder={f.placeholder}
-                            className="w-full border border-slate-200 rounded px-2 py-1.5 text-[0.75rem] outline-none focus:border-[#004a99] font-mono"
+                            className="w-full border border-[var(--b2)] rounded px-2 py-1.5 text-[0.75rem] outline-none focus:border-[var(--p1)] font-mono"
                           />
                         </div>
                       ))}
                       <button
                         onClick={() => handleSaveConfig(intg.name)}
                         disabled={saving[`cfg_${intg.name}`]}
-                        className="w-full mt-1 py-1.5 rounded bg-[#004a99] text-white text-[0.72rem] font-bold hover:bg-[#003a7a] transition-colors disabled:opacity-50"
+                        className="w-full mt-1 py-1.5 rounded bg-[#004a99] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
                       >
                         {saving[`cfg_${intg.name}`] ? 'Saving…' : 'Save Configuration'}
                       </button>
@@ -3319,10 +3347,10 @@ const ActionsTab = () => {
                 <button
                   onClick={() => handleTest(intg.name)}
                   disabled={testing[intg.name] || !isAdmin}
-                  className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#004a99] text-[#004a99] text-[0.72rem] font-bold hover:bg-[#f0f7ff] transition-colors disabled:opacity-50"
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.72rem] font-bold hover:bg-[var(--sa)] transition-colors disabled:opacity-50"
                 >
                   {testing[intg.name]
-                    ? <><div className="w-3 h-3 rounded-full border-2 border-[#004a99]/40 border-t-[#004a99] animate-spin" />Testing…</>
+                    ? <><div className="w-3 h-3 rounded-full border-2 border-[var(--p1)]/40 border-t-[#004a99] animate-spin" />Testing…</>
                     : <><Send size={12} />Send Test</>}
                 </button>
               </div>
@@ -3332,16 +3360,16 @@ const ActionsTab = () => {
       </div>
 
       {/* Action log table */}
-      <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
-          <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide">Action Log</p>
-          <p className="text-[0.65rem] text-slate-400">Last 50 dispatches</p>
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+          <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Action Log</p>
+          <p className="text-[0.65rem] text-[var(--t3)]">Last 50 dispatches</p>
         </div>
         {actionLogs.length === 0 ? (
-          <div className="p-10 text-center text-slate-400 text-sm">No actions dispatched yet. Enable an integration and run agents on a HIGH or CRITICAL alert.</div>
+          <div className="p-10 text-center text-[var(--t3)] text-sm">No actions dispatched yet. Enable an integration and run agents on a HIGH or CRITICAL alert.</div>
         ) : (
           <table className="w-full text-left text-[0.78rem]">
-            <thead className="bg-slate-50/50 border-b border-slate-100 text-[0.65rem] text-slate-400 font-black uppercase tracking-wider">
+            <thead className="bg-[var(--s1)]/50 border-b border-[var(--b3)] text-[0.65rem] text-[var(--t3)] font-black uppercase tracking-wider">
               <tr>
                 <th className="px-4 py-2">Time</th>
                 <th className="px-4 py-2">Integration</th>
@@ -3352,8 +3380,8 @@ const ActionsTab = () => {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {actionLogs.map((log: any) => (
-                <tr key={log.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-2 font-mono text-slate-500 text-[0.7rem] whitespace-nowrap">
+                <tr key={log.id} className="hover:bg-[var(--s1)] transition-colors">
+                  <td className="px-4 py-2 font-mono text-[var(--t4)] text-[0.7rem] whitespace-nowrap">
                     {new Date(log.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </td>
                   <td className="px-4 py-2">
@@ -3363,10 +3391,10 @@ const ActionsTab = () => {
                       'bg-purple-100 text-purple-800'
                     }`}>{log.integration}</span>
                   </td>
-                  <td className="px-4 py-2 text-slate-600 font-mono text-[0.68rem]">{log.action}</td>
-                  <td className="px-4 py-2 text-slate-700 truncate max-w-[200px]" title={log.payload}>{log.payload || '—'}</td>
+                  <td className="px-4 py-2 text-[var(--t5)] font-mono text-[0.68rem]">{log.action}</td>
+                  <td className="px-4 py-2 text-[var(--t6)] truncate max-w-[200px]" title={log.payload}>{log.payload || '—'}</td>
                   <td className="px-4 py-2">
-                    <span className={`px-2 py-0.5 rounded text-[0.65rem] font-black ${statusColor[log.status] || 'bg-slate-50 text-slate-500'}`}>
+                    <span className={`px-2 py-0.5 rounded text-[0.65rem] font-black ${statusColor[log.status] || 'bg-[var(--s1)] text-[var(--t4)]'}`}>
                       {statusIcon[log.status] || '?'} {log.status}
                     </span>
                     {log.error && <p className="text-[0.62rem] text-red-500 mt-0.5 truncate max-w-[150px]" title={log.error}>{log.error}</p>}
@@ -3522,14 +3550,14 @@ const FirewallSection = () => {
       {/* Section header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5 text-[#004a99]" />
-          <h3 className="text-[1rem] font-black text-[#004a99]">Firewall Integrations</h3>
-          <span className="text-[0.65rem] text-slate-400 font-semibold">Sophos · FortiGate · pfSense</span>
+          <Shield className="w-5 h-5 text-[var(--p1)]" />
+          <h3 className="text-[1rem] font-black text-[var(--p1)]">Firewall Integrations</h3>
+          <span className="text-[0.65rem] text-[var(--t3)] font-semibold">Sophos · FortiGate · pfSense</span>
         </div>
         {isAdmin && (
           <button
             onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[#003a7a] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] transition-colors"
           >
             <Plus size={13} />
             Add Firewall
@@ -3539,16 +3567,16 @@ const FirewallSection = () => {
 
       {/* Add form */}
       {showAdd && isAdmin && (
-        <form onSubmit={handleAdd} className="bg-white border border-[#d1d9e6] rounded-xl p-5 shadow-sm space-y-4">
-          <p className="text-[0.78rem] font-black text-slate-600 uppercase tracking-wide">New Firewall Integration</p>
+        <form onSubmit={handleAdd} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-5 shadow-sm space-y-4">
+          <p className="text-[0.78rem] font-black text-[var(--t5)] uppercase tracking-wide">New Firewall Integration</p>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">Display Name</label>
-              <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Perimeter-FW-01" className="w-full border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Display Name</label>
+              <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Perimeter-FW-01" className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
             </div>
             <div>
-              <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">Firewall Type</label>
-              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="w-full border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]">
+              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Firewall Type</label>
+              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
                 <option value="fortigate">FortiGate (FortiOS)</option>
                 <option value="pfsense">pfSense (REST API)</option>
                 <option value="sophos">Sophos XG / SFOS</option>
@@ -3558,30 +3586,30 @@ const FirewallSection = () => {
           <div className="grid grid-cols-2 gap-3">
             {FW_META[form.type]?.fields.map(f => (
               <div key={f.key}>
-                <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">{f.label}</label>
+                <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">{f.label}</label>
                 <input
                   type={f.secret ? 'password' : 'text'}
                   value={form[f.key as keyof typeof form] as string}
                   onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                   placeholder={f.placeholder}
-                  className="w-full border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:border-[#004a99] font-mono"
+                  className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] font-mono"
                 />
               </div>
             ))}
           </div>
           <div className="flex gap-2 pt-1">
-            <button type="submit" className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[#003a7a]">Add Firewall</button>
-            <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-[0.78rem] font-semibold hover:bg-slate-50">Cancel</button>
+            <button type="submit" className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)]">Add Firewall</button>
+            <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.78rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
           </div>
         </form>
       )}
 
       {/* No firewalls */}
       {firewalls.length === 0 && !showAdd && (
-        <div className="bg-white border border-dashed border-slate-300 rounded-xl p-8 text-center space-y-2">
-          <Shield className="w-10 h-10 text-slate-300 mx-auto" />
-          <p className="text-slate-500 font-semibold">No firewalls configured</p>
-          <p className="text-slate-400 text-[0.78rem]">Add a FortiGate, pfSense, or Sophos XG to enable automatic IP blocking from agent response actions.</p>
+        <div className="bg-[var(--s0)] border border-dashed border-[var(--b1)] rounded-xl p-8 text-center space-y-2">
+          <Shield className="w-10 h-10 text-[var(--t2)] mx-auto" />
+          <p className="text-[var(--t4)] font-semibold">No firewalls configured</p>
+          <p className="text-[var(--t3)] text-[0.78rem]">Add a FortiGate, pfSense, or Sophos XG to enable automatic IP blocking from agent response actions.</p>
         </div>
       )}
 
@@ -3592,18 +3620,18 @@ const FirewallSection = () => {
         const isExpanded = expandedFw === fw.id;
 
         return (
-          <div key={fw.id} className={`bg-white border rounded-xl shadow-sm overflow-hidden ${fw.enabled ? 'border-[#004a99]/30' : 'border-[#d1d9e6]'}`}>
+          <div key={fw.id} className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden ${fw.enabled ? 'border-[var(--p1)]/30' : 'border-[var(--b1)]'}`}>
             {/* Card header */}
-            <div className={`flex items-center justify-between px-5 py-3 border-b ${fw.enabled ? 'bg-[#f0f7ff]' : 'bg-slate-50'}`}>
+            <div className={`flex items-center justify-between px-5 py-3 border-b ${fw.enabled ? 'bg-[var(--sa)]' : 'bg-[var(--s1)]'}`}>
               <div className="flex items-center gap-3">
                 {statusDot(fw.enabled)}
                 <div>
-                  <p className="text-[0.88rem] font-black text-slate-800">{fw.name}</p>
-                  <span className={`text-[0.6rem] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${meta?.color || 'bg-slate-50 text-slate-500 border-slate-200'}`}>{meta?.label || fw.type}</span>
+                  <p className="text-[0.88rem] font-black text-[var(--t7)]">{fw.name}</p>
+                  <span className={`text-[0.6rem] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${meta?.color || 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]'}`}>{meta?.label || fw.type}</span>
                 </div>
                 <div className="ml-2 text-[0.72rem]">
-                  <span className="font-mono text-slate-500">{fw.active_blocks || 0}</span>
-                  <span className="text-slate-400"> IPs blocked</span>
+                  <span className="font-mono text-[var(--t4)]">{fw.active_blocks || 0}</span>
+                  <span className="text-[var(--t3)]"> IPs blocked</span>
                 </div>
               </div>
 
@@ -3615,36 +3643,36 @@ const FirewallSection = () => {
 
                 {isAdmin && (
                   <>
-                    <button onClick={() => handleToggle(fw, 'enabled')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.enabled ? 'border-[#1e8e3e] text-[#1e8e3e] hover:bg-green-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+                    <button onClick={() => handleToggle(fw, 'enabled')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.enabled ? 'border-[#1e8e3e] text-[#1e8e3e] hover:bg-green-50' : 'border-[var(--b1)] text-[var(--t4)] hover:bg-[var(--s1)]'}`}>
                       {fw.enabled ? 'Enabled' : 'Disabled'}
                     </button>
-                    <button onClick={() => handleToggle(fw, 'auto_block')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.auto_block ? 'border-red-400 text-red-600 hover:bg-red-50' : 'border-slate-300 text-slate-400 hover:bg-slate-50'}`} title="Auto-block IPs from BLOCK_IP agent actions">
+                    <button onClick={() => handleToggle(fw, 'auto_block')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.auto_block ? 'border-red-400 text-red-600 hover:bg-red-50' : 'border-[var(--b1)] text-[var(--t3)] hover:bg-[var(--s1)]'}`} title="Auto-block IPs from BLOCK_IP agent actions">
                       Auto-block
                     </button>
-                    <button onClick={() => handleTest(fw)} disabled={testing[fw.id]} className="text-[0.68rem] font-bold px-2.5 py-1 rounded border border-[#004a99] text-[#004a99] hover:bg-[#f0f7ff] transition-colors disabled:opacity-50">
+                    <button onClick={() => handleTest(fw)} disabled={testing[fw.id]} className="text-[0.68rem] font-bold px-2.5 py-1 rounded border border-[var(--p1)] text-[var(--p1)] hover:bg-[var(--sa)] transition-colors disabled:opacity-50">
                       {testing[fw.id] ? '…' : 'Test'}
                     </button>
-                    <button onClick={() => handleDelete(fw)} className="p-1.5 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors">
+                    <button onClick={() => handleDelete(fw)} className="p-1.5 rounded hover:bg-red-50 text-[var(--t2)] hover:text-red-500 transition-colors">
                       <Trash2 size={13} />
                     </button>
                   </>
                 )}
 
-                <button onClick={() => { setExpandedFw(isExpanded ? null : fw.id); if (!isExpanded) loadBlocks(fw.id); }} className="p-1.5 rounded hover:bg-slate-100 transition-colors">
-                  <ChevronDown size={14} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                <button onClick={() => { setExpandedFw(isExpanded ? null : fw.id); if (!isExpanded) loadBlocks(fw.id); }} className="p-1.5 rounded hover:bg-[var(--s1)] transition-colors">
+                  <ChevronDown size={14} className={`text-[var(--t3)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                 </button>
               </div>
             </div>
 
             {/* Manual block input */}
-            <div className="px-5 py-3 flex items-center gap-2 border-b border-slate-100">
+            <div className="px-5 py-3 flex items-center gap-2 border-b border-[var(--b3)]">
               <input
                 type="text"
                 value={blockIpInput[fw.id] || ''}
                 onChange={e => setBlockIpInput(prev => ({ ...prev, [fw.id]: e.target.value }))}
                 onKeyDown={e => e.key === 'Enter' && handleBlockIp(fw)}
                 placeholder="Block IP address manually (e.g. 185.220.101.47)"
-                className="flex-1 border border-slate-200 rounded px-3 py-1.5 text-[0.78rem] font-mono outline-none focus:border-red-400 focus:ring-1 focus:ring-red-100"
+                className="flex-1 border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] font-mono outline-none focus:border-red-400 focus:ring-1 focus:ring-red-100"
               />
               <button
                 onClick={() => handleBlockIp(fw)}
@@ -3658,15 +3686,15 @@ const FirewallSection = () => {
 
             {/* Blocked IPs list (expanded) */}
             {isExpanded && (
-              <div className="border-t border-slate-100">
+              <div className="border-t border-[var(--b3)]">
                 {!fwBlocks ? (
-                  <div className="p-4 text-center text-slate-400 text-[0.75rem]">Loading…</div>
+                  <div className="p-4 text-center text-[var(--t3)] text-[0.75rem]">Loading…</div>
                 ) : fwBlocks.filter((b: any) => b.status === 'blocked').length === 0 ? (
-                  <div className="p-4 text-center text-slate-400 text-[0.75rem]">No IPs currently blocked on this firewall.</div>
+                  <div className="p-4 text-center text-[var(--t3)] text-[0.75rem]">No IPs currently blocked on this firewall.</div>
                 ) : (
                   <table className="w-full text-[0.75rem]">
-                    <thead className="bg-slate-50 border-b border-slate-100">
-                      <tr className="text-[0.6rem] text-slate-400 font-black uppercase tracking-wider">
+                    <thead className="bg-[var(--s1)] border-b border-[var(--b3)]">
+                      <tr className="text-[0.6rem] text-[var(--t3)] font-black uppercase tracking-wider">
                         <th className="px-4 py-2 text-left">IP Address</th>
                         <th className="px-4 py-2 text-left">Reason</th>
                         <th className="px-4 py-2 text-left">Blocked At</th>
@@ -3676,16 +3704,16 @@ const FirewallSection = () => {
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {fwBlocks.filter((b: any) => b.status === 'blocked').map((b: any) => (
-                        <tr key={b.id} className="hover:bg-slate-50">
+                        <tr key={b.id} className="hover:bg-[var(--s1)]">
                           <td className="px-4 py-2 font-mono font-bold text-red-700">{b.ip}</td>
-                          <td className="px-4 py-2 text-slate-600 truncate max-w-[180px]">{b.reason}</td>
-                          <td className="px-4 py-2 text-slate-500 text-[0.68rem] whitespace-nowrap">
+                          <td className="px-4 py-2 text-[var(--t5)] truncate max-w-[180px]">{b.reason}</td>
+                          <td className="px-4 py-2 text-[var(--t4)] text-[0.68rem] whitespace-nowrap">
                             {new Date(b.blocked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                           </td>
-                          <td className="px-4 py-2 font-mono text-[#004a99] text-[0.65rem]">{b.alert_id?.substring(0, 8).toUpperCase() || '—'}</td>
+                          <td className="px-4 py-2 font-mono text-[var(--p1)] text-[0.65rem]">{b.alert_id?.substring(0, 8).toUpperCase() || '—'}</td>
                           {isAdmin && (
                             <td className="px-4 py-2">
-                              <button onClick={() => handleUnblock(fw, b.ip)} className="px-2 py-0.5 rounded border border-slate-200 text-[0.62rem] font-bold text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors">
+                              <button onClick={() => handleUnblock(fw, b.ip)} className="px-2 py-0.5 rounded border border-[var(--b2)] text-[0.62rem] font-bold text-[var(--t4)] hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors">
                                 Unblock
                               </button>
                             </td>
@@ -3706,15 +3734,15 @@ const FirewallSection = () => {
 
 const ResponseControls = () => (
   <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
-    <div className="flex items-end justify-between border-b border-slate-200 pb-4">
+    <div className="flex items-end justify-between border-b border-[var(--b2)] pb-4">
       <div>
-        <p className="text-[0.65rem] font-black uppercase tracking-widest text-slate-400 mb-1">Containment Layer</p>
-        <h2 className="text-2xl font-bold text-[#004a99]">Response Controls</h2>
-        <p className="text-sm text-slate-500 mt-1">Firewall enforcement, manual block/unblock, and auto-block readiness for agent response actions.</p>
+        <p className="text-[0.65rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1">Containment Layer</p>
+        <h2 className="text-2xl font-bold text-[var(--p1)]">Response Controls</h2>
+        <p className="text-sm text-[var(--t4)] mt-1">Firewall enforcement, manual block/unblock, and auto-block readiness for agent response actions.</p>
       </div>
-      <div className="bg-white border border-[#d1d9e6] rounded-lg px-4 py-2 text-right">
-        <p className="text-[0.58rem] font-black uppercase text-slate-400">Supported</p>
-        <p className="text-[0.78rem] font-black text-[#004a99]">FortiGate · pfSense · Sophos</p>
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2 text-right">
+        <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Supported</p>
+        <p className="text-[0.78rem] font-black text-[var(--p1)]">FortiGate · pfSense · Sophos</p>
       </div>
     </div>
     <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-[0.78rem] text-amber-800 font-semibold">
@@ -3877,7 +3905,7 @@ const AgentsTab = () => {
     agentStats.find(s => s.phase === phase);
 
   const statusColor: Record<string, string> = {
-    unknown:     'text-slate-400',
+    unknown:     'text-[var(--t3)]',
     checking:    'text-blue-500',
     connected:   'text-[#1e8e3e]',
     unreachable: 'text-[#d93025]',
@@ -3892,8 +3920,8 @@ const AgentsTab = () => {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
       <div>
-        <h2 className="text-2xl font-bold text-[#004a99]">AI Agents</h2>
-        <p className="text-[0.8rem] text-slate-500 mt-0.5">
+        <h2 className="text-2xl font-bold text-[var(--p1)]">AI Agents</h2>
+        <p className="text-[0.8rem] text-[var(--t4)] mt-0.5">
           {isAdmin ? 'Configure model assignments and local LLM server.' : 'Model selection is admin-only.'}
         </p>
       </div>
@@ -3903,12 +3931,12 @@ const AgentsTab = () => {
       )}
 
       {/* ── Local LLM Server Card ──────────────────────────────────────────── */}
-      <div className={`bg-white border rounded-xl shadow-sm overflow-hidden ${localEnabled && localStatus === 'connected' ? 'border-[#1e8e3e]/40' : 'border-[#d1d9e6]'}`}>
-        <div className={`flex items-center justify-between px-5 py-3 border-b ${localEnabled && localStatus === 'connected' ? 'bg-green-50/50' : 'bg-slate-50'}`}>
+      <div className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden ${localEnabled && localStatus === 'connected' ? 'border-[#1e8e3e]/40' : 'border-[var(--b1)]'}`}>
+        <div className={`flex items-center justify-between px-5 py-3 border-b ${localEnabled && localStatus === 'connected' ? 'bg-green-50/50' : 'bg-[var(--s1)]'}`}>
           <div className="flex items-center gap-3">
             <div className={`w-2 h-2 rounded-full ${localEnabled && localStatus === 'connected' ? 'bg-[#1e8e3e]' : 'bg-slate-300'}`} />
-            <p className="text-[0.9rem] font-black text-slate-800">Local LLM Server</p>
-            <span className="text-[0.65rem] text-slate-400 font-semibold">Ollama · OpenAI-compatible</span>
+            <p className="text-[0.9rem] font-black text-[var(--t7)]">Local LLM Server</p>
+            <span className="text-[0.65rem] text-[var(--t3)] font-semibold">Ollama · OpenAI-compatible</span>
           </div>
           <span className={`text-[0.7rem] font-bold ${statusColor[localStatus]}`}>{statusLabel[localStatus]}</span>
         </div>
@@ -3916,32 +3944,32 @@ const AgentsTab = () => {
         <div className="p-5 space-y-4">
           <div className="flex items-end gap-3">
             <div className="flex-1">
-              <label className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider block mb-1">Ollama Server URL</label>
+              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Ollama Server URL</label>
               <input
                 type="text"
                 value={localUrl}
                 onChange={e => setLocalUrl(e.target.value)}
                 disabled={!isAdmin}
                 placeholder="http://localhost:11434"
-                className="w-full border border-slate-200 rounded px-3 py-2 text-[0.82rem] font-mono outline-none focus:border-[#004a99] disabled:opacity-60"
+                className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.82rem] font-mono outline-none focus:border-[var(--p1)] disabled:opacity-60"
               />
             </div>
             <div className="flex items-center gap-2 pb-0.5">
-              <label className="text-[0.7rem] font-bold text-slate-600">Enable</label>
+              <label className="text-[0.7rem] font-bold text-[var(--t5)]">Enable</label>
               <button
                 onClick={() => isAdmin && setLocalEnabled(v => !v)}
                 disabled={!isAdmin}
                 className={`relative w-10 h-5 rounded-full transition-colors disabled:opacity-50 ${localEnabled ? 'bg-[#1e8e3e]' : 'bg-slate-300'}`}
               >
-                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${localEnabled ? 'left-5' : 'left-0.5'}`} />
+                <span className={`absolute top-0.5 w-4 h-4 bg-[var(--s0)] rounded-full shadow transition-all ${localEnabled ? 'left-5' : 'left-0.5'}`} />
               </button>
             </div>
             {isAdmin && (
               <>
-                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[#003a7a] disabled:opacity-50 transition-colors">
+                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
                   {savingLocal ? 'Saving…' : 'Save'}
                 </button>
-                <button onClick={handleTestLocal} disabled={localStatus === 'checking'} className="px-4 py-2 rounded-lg border border-[#004a99] text-[#004a99] text-[0.75rem] font-bold hover:bg-[#f0f7ff] disabled:opacity-50 transition-colors">
+                <button onClick={handleTestLocal} disabled={localStatus === 'checking'} className="px-4 py-2 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.75rem] font-bold hover:bg-[var(--sa)] disabled:opacity-50 transition-colors">
                   {localStatus === 'checking' ? '…' : 'Test'}
                 </button>
               </>
@@ -3951,7 +3979,7 @@ const AgentsTab = () => {
           {/* Available models list */}
           {localStatus === 'connected' && localModels.length > 0 && (
             <div>
-              <p className="text-[0.62rem] font-black text-slate-400 uppercase tracking-wider mb-2">Available Models ({localModels.length})</p>
+              <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider mb-2">Available Models ({localModels.length})</p>
               <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
                 {localModels.map(m => (
                   <span key={m.name} className="px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-green-800 text-[0.68rem] font-bold font-mono">
@@ -3960,7 +3988,7 @@ const AgentsTab = () => {
                   </span>
                 ))}
               </div>
-              <p className="text-[0.62rem] text-slate-400 mt-1.5">Select a local model from the dropdown below using the <span className="font-mono bg-slate-100 px-1 rounded">🖥 Local (Ollama)</span> group.</p>
+              <p className="text-[0.62rem] text-[var(--t3)] mt-1.5">Select a local model from the dropdown below using the <span className="font-mono bg-[var(--s1)] px-1 rounded">🖥 Local (Ollama)</span> group.</p>
             </div>
           )}
           {localStatus === 'unreachable' && (
@@ -3983,9 +4011,9 @@ const AgentsTab = () => {
           const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
 
           return (
-            <div key={i} className={`bg-white border rounded-xl shadow-sm overflow-hidden ${isLocalAssigned ? 'border-green-300' : 'border-[#d1d9e6]'}`}>
-              <div className={`flex justify-between items-center px-5 py-3 border-b ${isLocalAssigned ? 'bg-green-50/50' : 'bg-slate-50/50'}`}>
-                <h3 className="font-black text-[0.88rem] text-[#004a99]">{agent.name}</h3>
+            <div key={i} className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden ${isLocalAssigned ? 'border-green-300' : 'border-[var(--b1)]'}`}>
+              <div className={`flex justify-between items-center px-5 py-3 border-b ${isLocalAssigned ? 'bg-green-50/50' : 'bg-[var(--s1)]/50'}`}>
+                <h3 className="font-black text-[0.88rem] text-[var(--p1)]">{agent.name}</h3>
                 <div className="flex items-center gap-2">
                   {isLocalAssigned && <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200 text-[0.58rem] font-black uppercase tracking-wide">🖥 LOCAL</span>}
                   <span className="bg-green-50 text-green-600 px-2 py-0.5 rounded text-[0.6rem] font-bold uppercase border border-green-100">Active</span>
@@ -3993,16 +4021,16 @@ const AgentsTab = () => {
               </div>
 
               <div className="p-5 space-y-4">
-                <p className="text-[0.78rem] text-slate-500">{agent.desc}</p>
+                <p className="text-[0.78rem] text-[var(--t4)]">{agent.desc}</p>
 
                 {/* Model dropdown with groups */}
                 <div className="space-y-1.5">
-                  <label className="text-[0.62rem] font-black uppercase tracking-wider text-slate-400 block">Model</label>
+                  <label className="text-[0.62rem] font-black uppercase tracking-wider text-[var(--t3)] block">Model</label>
                   <select
                     value={currentModel}
                     disabled={!isAdmin || loading || isSaving}
                     onChange={(e) => handleModelChange(agent.phase, e.target.value)}
-                    className="w-full border border-[#d1d9e6] rounded px-2.5 py-2 text-[0.72rem] outline-none focus:border-[#004a99] disabled:opacity-60"
+                    className="w-full border border-[var(--b1)] rounded px-2.5 py-2 text-[0.72rem] outline-none focus:border-[var(--p1)] disabled:opacity-60"
                   >
                     <optgroup label="☁ Cloud (OpenRouter)">
                       {cloudOptions.map((model) => (
@@ -4018,10 +4046,10 @@ const AgentsTab = () => {
                     )}
                   </select>
                   <div className="flex justify-between items-center">
-                    <span className="text-[0.62rem] text-slate-400">
+                    <span className="text-[0.62rem] text-[var(--t3)]">
                       {isSaving ? 'Saving…' : isLocalAssigned ? `🖥 Ollama · ${currentModel.replace('local::','')}` : 'OpenRouter'}
                     </span>
-                    <button onClick={() => setPromptModal({ name: agent.name, prompt: agent.prompt })} className="flex items-center gap-1 text-[#004a99] text-[0.68rem] font-bold hover:underline">
+                    <button onClick={() => setPromptModal({ name: agent.name, prompt: agent.prompt })} className="flex items-center gap-1 text-[var(--p1)] text-[0.68rem] font-bold hover:underline">
                       <Eye className="w-3 h-3" />
                       Prompt
                     </button>
@@ -4030,23 +4058,23 @@ const AgentsTab = () => {
 
                 {/* Stats strip */}
                 {stat && (
-                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-100">
+                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-[var(--b3)]">
                     <div className="text-center">
-                      <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider">Runs</p>
-                      <p className="text-[0.88rem] font-black text-slate-700">{stat.total_runs || '—'}</p>
+                      <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">Runs</p>
+                      <p className="text-[0.88rem] font-black text-[var(--t6)]">{stat.total_runs || '—'}</p>
                     </div>
                     <div className="text-center">
-                      <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider">Avg Conf</p>
+                      <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">Avg Conf</p>
                       <p className={`text-[0.88rem] font-black ${
-                        stat.avg_confidence == null ? 'text-slate-400' :
+                        stat.avg_confidence == null ? 'text-[var(--t3)]' :
                         stat.avg_confidence >= 80 ? 'text-[#1e8e3e]' :
                         stat.avg_confidence >= 60 ? 'text-amber-600' : 'text-[#d93025]'
                       }`}>{stat.avg_confidence != null ? `${stat.avg_confidence}%` : '—'}</p>
                     </div>
                     <div className="text-center">
-                      <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider">Feedback</p>
+                      <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">Feedback</p>
                       <p className={`text-[0.88rem] font-black ${
-                        stat.feedback_total === 0 ? 'text-slate-400' :
+                        stat.feedback_total === 0 ? 'text-[var(--t3)]' :
                         (stat.feedback_accurate / stat.feedback_total) >= 0.75 ? 'text-[#1e8e3e]' :
                         (stat.feedback_accurate / stat.feedback_total) >= 0.5  ? 'text-amber-600' : 'text-[#d93025]'
                       }`}>{stat.feedback_total > 0 ? `${stat.feedback_accurate}/${stat.feedback_total}` : '—'}</p>
@@ -4068,19 +4096,19 @@ const AgentsTab = () => {
       {/* Prompt modal */}
       {promptModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-7 py-5 bg-[#003a7a] text-white shrink-0">
+          <div className="bg-[var(--s0)] rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-7 py-5 bg-[var(--pd)] text-white shrink-0">
               <div>
                 <p className="text-[0.65rem] font-black uppercase tracking-widest text-blue-200 mb-0.5">System Prompt</p>
                 <h3 className="text-[1rem] font-black">{promptModal.name}</h3>
               </div>
-              <button onClick={() => setPromptModal(null)} className="p-1 hover:bg-white/10 rounded"><X size={18} /></button>
+              <button onClick={() => setPromptModal(null)} className="p-1 hover:bg-[var(--s0)]/10 rounded"><X size={18} /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
               <pre className="text-[0.78rem] bg-slate-950 text-emerald-400 p-5 rounded-xl font-mono leading-relaxed whitespace-pre-wrap">{promptModal.prompt}</pre>
             </div>
-            <div className="px-6 py-4 border-t bg-slate-50 flex justify-end shrink-0">
-              <button onClick={() => setPromptModal(null)} className="px-5 py-2 rounded border border-slate-200 text-slate-600 font-semibold text-sm hover:bg-slate-100">Close</button>
+            <div className="px-6 py-4 border-t bg-[var(--s1)] flex justify-end shrink-0">
+              <button onClick={() => setPromptModal(null)} className="px-5 py-2 rounded border border-[var(--b2)] text-[var(--t5)] font-semibold text-sm hover:bg-[var(--s1)]">Close</button>
             </div>
           </div>
         </div>
@@ -4197,28 +4225,47 @@ const SettingsTab = () => {
     }
   };
 
+  const { dark, toggle: toggleDark } = useDarkMode();
+
   return (
     <div className="p-8 max-w-4xl mx-auto space-y-8 overflow-y-auto h-full">
-      <h2 className="text-2xl font-bold text-[#004a99]">System Administration</h2>
+      <h2 className="text-2xl font-bold text-[var(--p1)]">System Administration</h2>
 
-      <div className="bg-white border border-[#d1d9e6] rounded-lg p-6 shadow-sm">
-        <h3 className="text-[0.85rem] font-bold text-[#5f6368] uppercase mb-4">Your Profile</h3>
+      {/* Appearance */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-6 shadow-sm">
+        <h3 className="text-[0.85rem] font-bold text-[var(--t2)] uppercase mb-4">Appearance</h3>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[0.9rem] font-semibold text-[var(--t7)]">Dark Mode</p>
+            <p className="text-[0.75rem] text-[var(--t4)] mt-0.5">Switch between light and dark interface</p>
+          </div>
+          <button
+            onClick={toggleDark}
+            className={`relative inline-flex h-7 w-13 items-center rounded-full transition-colors duration-200 focus:outline-none ${dark ? 'bg-[#004a99]' : 'bg-slate-300'}`}
+          >
+            <span className={`inline-block h-5 w-5 transform rounded-full bg-[var(--s0)] shadow-md transition-transform duration-200 ${dark ? 'translate-x-7' : 'translate-x-1'}`} />
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-6 shadow-sm">
+        <h3 className="text-[0.85rem] font-bold text-[var(--t2)] uppercase mb-4">Your Profile</h3>
         <div className="grid grid-cols-3 gap-4">
           {[
             { label: 'Username', value: user?.username },
             { label: 'Role',     value: user?.role },
             { label: 'User ID',  value: `#${user?.id}` },
           ].map(f => (
-            <div key={f.label} className="bg-slate-50 border border-slate-200 rounded-lg p-3">
-              <p className="text-[0.6rem] font-black text-slate-400 uppercase tracking-wider mb-1">{f.label}</p>
-              <p className="font-bold text-[0.9rem] text-slate-800">{f.value}</p>
+            <div key={f.label} className="bg-[var(--s1)] border border-[var(--b2)] rounded-lg p-3">
+              <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider mb-1">{f.label}</p>
+              <p className="font-bold text-[0.9rem] text-[var(--t7)]">{f.value}</p>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="bg-white border border-[#d1d9e6] rounded-lg p-6 shadow-sm">
-        <h3 className="text-[0.85rem] font-bold text-[#5f6368] uppercase mb-4">Security — Change Password</h3>
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-6 shadow-sm">
+        <h3 className="text-[0.85rem] font-bold text-[var(--t2)] uppercase mb-4">Security — Change Password</h3>
         <form onSubmit={handleChangePassword} className="space-y-3 max-w-sm">
           {pwError && <p className="text-[0.8rem] text-[#d93025] bg-red-50 border border-red-100 rounded px-3 py-2">{pwError}</p>}
           {pwOk    && <p className="text-[0.8rem] text-[#1e8e3e] bg-green-50 border border-green-100 rounded px-3 py-2">✓ {pwOk}</p>}
@@ -4228,20 +4275,20 @@ const SettingsTab = () => {
             { label: 'Confirm New Password', key: 'confirm' },
           ].map(({ label, key }) => (
             <div key={key} className="space-y-1">
-              <label className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">{label}</label>
+              <label className="text-[0.7rem] font-bold text-[var(--t2)] uppercase tracking-wider">{label}</label>
               <input
                 type="password"
                 required
                 value={(pwForm as any)[key]}
                 onChange={e => setPwForm(prev => ({ ...prev, [key]: e.target.value }))}
-                className="w-full px-3 py-2 bg-slate-50 border border-[#d1d9e6] rounded text-[0.88rem] outline-none focus:border-[#004a99] transition-colors"
+                className="w-full px-3 py-2 bg-[var(--s1)] border border-[var(--b1)] rounded text-[0.88rem] outline-none focus:border-[var(--p1)] transition-colors"
               />
             </div>
           ))}
           <button
             type="submit"
             disabled={pwLoading}
-            className="mt-1 px-4 py-2 bg-[#004a99] text-white text-[0.82rem] font-bold rounded hover:bg-[#003366] transition-colors disabled:opacity-50"
+            className="mt-1 px-4 py-2 bg-[#004a99] text-white text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
           >
             {pwLoading ? 'Updating…' : 'Update Password'}
           </button>
@@ -4249,12 +4296,12 @@ const SettingsTab = () => {
       </div>
 
       {isAdmin ? (
-        <div className="bg-white border border-[#d1d9e6] rounded-lg overflow-hidden shadow-sm">
-          <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
-            <h3 className="text-[0.85rem] font-bold text-[#004a99]">User Management</h3>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+          <div className="p-4 border-b bg-[var(--s1)] flex justify-between items-center">
+            <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">User Management</h3>
             <button
               onClick={() => setShowCreate(!showCreateForm)}
-              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[#003a7a] transition-colors"
+              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <UserPlus className="w-3 h-3" />
               Add User
@@ -4262,34 +4309,34 @@ const SettingsTab = () => {
           </div>
 
           {showCreateForm && (
-            <form onSubmit={handleCreateUser} className="p-5 border-b border-[#d1d9e6] bg-[#f0f7ff] space-y-3">
+            <form onSubmit={handleCreateUser} className="p-5 border-b border-[var(--b1)] bg-[var(--sa)] space-y-3">
               {createError  && <div className="text-[#d93025] text-sm font-semibold">{createError}</div>}
               {createSuccess && <div className="text-[#1e8e3e] text-sm font-semibold">{createSuccess}</div>}
               <div className="grid grid-cols-2 gap-3">
                 <input required placeholder="Username" value={form.username}
                   onChange={e => setForm({...form, username: e.target.value})}
-                  className="border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
                 <input required type="password" placeholder="Password" value={form.password}
                   onChange={e => setForm({...form, password: e.target.value})}
-                  className="border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
                 <input placeholder="Email (optional)" value={form.email}
                   onChange={e => setForm({...form, email: e.target.value})}
-                  className="border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
                 <select value={form.role} onChange={e => setForm({...form, role: e.target.value})}
-                  className="border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]">
+                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
                   <option value="ANALYST">ANALYST</option>
                   <option value="ADMIN">ADMIN</option>
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[#003a7a]">Create</button>
-                <button type="button" onClick={() => setShowCreate(false)} className="border border-slate-200 text-slate-600 px-4 py-1.5 rounded text-sm font-semibold hover:bg-slate-50">Cancel</button>
+                <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+                <button type="button" onClick={() => setShowCreate(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
               </div>
             </form>
           )}
 
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 border-b border-[#d1d9e6] text-[#5f6368] font-bold uppercase text-[0.7rem] tracking-wider">
+            <thead className="bg-[var(--s1)] border-b border-[var(--b1)] text-[var(--t2)] font-bold uppercase text-[0.7rem] tracking-wider">
               <tr>
                 <th className="p-4">ID</th>
                 <th className="p-4">Username</th>
@@ -4299,12 +4346,12 @@ const SettingsTab = () => {
             </thead>
             <tbody className="divide-y divide-[#f0f0f0]">
               {loadingUsers ? (
-                <tr><td colSpan={4} className="p-6 text-center text-slate-400">Loading users...</td></tr>
+                <tr><td colSpan={4} className="p-6 text-center text-[var(--t3)]">Loading users...</td></tr>
               ) : users.map(u => (
-                <tr key={u.id} className="hover:bg-slate-50">
-                  <td className="p-4 font-mono text-slate-400">#{u.id}</td>
+                <tr key={u.id} className="hover:bg-[var(--s1)]">
+                  <td className="p-4 font-mono text-[var(--t3)]">#{u.id}</td>
                   <td className="p-4 font-semibold">{u.username}</td>
-                  <td className="p-4 text-slate-500">{u.email || '—'}</td>
+                  <td className="p-4 text-[var(--t4)]">{u.email || '—'}</td>
                   <td className="p-4">
                     <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${u.role === 'ADMIN' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
                       {u.role}
@@ -4322,17 +4369,17 @@ const SettingsTab = () => {
       )}
 
       {/* Playbooks */}
-      <div className="bg-white border border-[#d1d9e6] rounded-lg overflow-hidden shadow-sm">
-        <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+        <div className="p-4 border-b bg-[var(--s1)] flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-[#004a99]" />
-            <h3 className="text-[0.85rem] font-bold text-[#004a99]">SOC Playbooks</h3>
-            <span className="text-[0.65rem] text-slate-400">({playbooks.length} total)</span>
+            <BookOpen className="w-4 h-4 text-[var(--p1)]" />
+            <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">SOC Playbooks</h3>
+            <span className="text-[0.65rem] text-[var(--t3)]">({playbooks.length} total)</span>
           </div>
           {isAdmin && (
             <button
               onClick={() => setShowPBForm(!showPBForm)}
-              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[#003a7a] transition-colors"
+              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Playbook
@@ -4341,45 +4388,45 @@ const SettingsTab = () => {
         </div>
 
         {showPBForm && isAdmin && (
-          <form onSubmit={handleCreatePlaybook} className="p-5 border-b bg-[#f0f7ff] space-y-3">
+          <form onSubmit={handleCreatePlaybook} className="p-5 border-b bg-[var(--sa)] space-y-3">
             {pbError && <p className="text-[#d93025] text-sm font-semibold">{pbError}</p>}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-[0.7rem] font-black text-slate-500 uppercase tracking-wider block mb-1">MITRE Tactic</label>
-                <select value={pbForm.tactic} onChange={e => setPBForm({...pbForm, tactic: e.target.value})} className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]">
+                <label className="text-[0.7rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">MITRE Tactic</label>
+                <select value={pbForm.tactic} onChange={e => setPBForm({...pbForm, tactic: e.target.value})} className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
                   {TACTIC_OPTIONS.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
                 </select>
               </div>
               <div>
-                <label className="text-[0.7rem] font-black text-slate-500 uppercase tracking-wider block mb-1">Title</label>
-                <input required value={pbForm.title} onChange={e => setPBForm({...pbForm, title: e.target.value})} placeholder="e.g. Brute Force Response" className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99]" />
+                <label className="text-[0.7rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">Title</label>
+                <input required value={pbForm.title} onChange={e => setPBForm({...pbForm, title: e.target.value})} placeholder="e.g. Brute Force Response" className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
               </div>
             </div>
             <div>
-              <label className="text-[0.7rem] font-black text-slate-500 uppercase tracking-wider block mb-1">Steps (one per line or numbered)</label>
-              <textarea required value={pbForm.steps} onChange={e => setPBForm({...pbForm, steps: e.target.value})} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account..." className="w-full border border-[#d1d9e6] rounded px-3 py-2 text-sm outline-none focus:border-[#004a99] resize-none font-mono" />
+              <label className="text-[0.7rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">Steps (one per line or numbered)</label>
+              <textarea required value={pbForm.steps} onChange={e => setPBForm({...pbForm, steps: e.target.value})} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account..." className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] resize-none font-mono" />
             </div>
             <div className="flex gap-2">
-              <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[#003a7a]">Create</button>
-              <button type="button" onClick={() => setShowPBForm(false)} className="border border-slate-200 text-slate-600 px-4 py-1.5 rounded text-sm font-semibold hover:bg-slate-50">Cancel</button>
+              <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+              <button type="button" onClick={() => setShowPBForm(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
             </div>
           </form>
         )}
 
         <div className="divide-y divide-slate-100">
           {playbooks.length === 0 ? (
-            <div className="p-6 text-center text-slate-400 text-sm">No playbooks yet. Add one above.</div>
+            <div className="p-6 text-center text-[var(--t3)] text-sm">No playbooks yet. Add one above.</div>
           ) : playbooks.map(pb => (
-            <div key={pb.id} className="px-5 py-3 flex items-start justify-between gap-4 hover:bg-slate-50">
+            <div key={pb.id} className="px-5 py-3 flex items-start justify-between gap-4 hover:bg-[var(--s1)]">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[0.6rem] font-black uppercase tracking-wide">{pb.tactic?.replace(/_/g, ' ')}</span>
-                  <p className="text-[0.82rem] font-bold text-slate-800 truncate">{pb.title}</p>
+                  <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{pb.title}</p>
                 </div>
-                <p className="text-[0.72rem] text-slate-500 line-clamp-2 whitespace-pre-line">{pb.steps}</p>
+                <p className="text-[0.72rem] text-[var(--t4)] line-clamp-2 whitespace-pre-line">{pb.steps}</p>
               </div>
               {isAdmin && (
-                <button onClick={() => handleDeletePlaybook(pb.id)} className="shrink-0 p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors">
+                <button onClick={() => handleDeletePlaybook(pb.id)} className="shrink-0 p-1 rounded hover:bg-red-50 text-[var(--t3)] hover:text-red-600 transition-colors">
                   <Trash2 size={14} />
                 </button>
               )}
@@ -4419,14 +4466,14 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#f4f7fa] flex items-center justify-center p-6">
+    <div className="min-h-screen bg-[var(--s3)] flex items-center justify-center p-6">
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md bg-white rounded-lg shadow-xl border border-[#d1d9e6] overflow-hidden"
+        className="w-full max-w-md bg-[var(--s0)] rounded-lg shadow-xl border border-[var(--b1)] overflow-hidden"
       >
         <div className="bg-[#004a99] p-8 text-white text-center">
-          <div className="w-20 h-20 rounded-full bg-white flex items-center justify-center mx-auto mb-4 shadow-md overflow-hidden">
+          <div className="w-20 h-20 rounded-full bg-[var(--s0)] flex items-center justify-center mx-auto mb-4 shadow-md overflow-hidden">
             <img src="/logo-BBS.png" className="h-14 w-14 object-contain" alt="Black Box Solutions" />
           </div>
           <h1 className="text-[1.4rem] font-bold tracking-tight">BBS AISOC</h1>
@@ -4441,28 +4488,28 @@ const LoginPage = () => {
           )}
           
           <div className="space-y-1.5">
-            <label className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">Operator ID</label>
+            <label className="text-[0.7rem] font-bold text-[var(--t2)] uppercase tracking-wider">Operator ID</label>
             <div className="relative">
-              <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5f6368]" />
+              <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--t2)]" />
               <input 
                 type="text" 
                 value={username}
                 onChange={e => setUsername(e.target.value)}
-                className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-[#d1d9e6] rounded outline-none focus:border-[#004a99] transition-colors text-[0.9rem]"
+                className="w-full pl-11 pr-4 py-3 bg-[var(--s1)] border border-[var(--b1)] rounded outline-none focus:border-[var(--p1)] transition-colors text-[0.9rem]"
                 placeholder="Enter username"
               />
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-[0.7rem] font-bold text-[#5f6368] uppercase tracking-wider">Access Key</label>
+            <label className="text-[0.7rem] font-bold text-[var(--t2)] uppercase tracking-wider">Access Key</label>
             <div className="relative">
-              <Terminal className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5f6368]" />
+              <Terminal className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--t2)]" />
               <input 
                 type="password" 
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-[#d1d9e6] rounded outline-none focus:border-[#004a99] transition-colors text-[0.9rem]"
+                className="w-full pl-11 pr-4 py-3 bg-[var(--s1)] border border-[var(--b1)] rounded outline-none focus:border-[var(--p1)] transition-colors text-[0.9rem]"
                 placeholder="Enter password"
               />
             </div>
@@ -4470,16 +4517,16 @@ const LoginPage = () => {
 
           <button 
             disabled={loading}
-            className="w-full bg-[#004a99] text-white font-bold py-4 rounded hover:bg-[#003366] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
+            className="w-full bg-[#004a99] text-white font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
           >
             {loading ? 'Verifying Credentials...' : 'Initialize Session'}
           </button>
           
           <div className="text-center space-y-2">
-            <p className="text-[0.7rem] text-[#5f6368] font-semibold">
+            <p className="text-[0.7rem] text-[var(--t2)] font-semibold">
               SYSTEM ID: SOC-ALPHA-01 • REGION: EU-WEST-2
             </p>
-            <p className="text-[0.65rem] text-[#5f6368] opacity-50">
+            <p className="text-[0.65rem] text-[var(--t2)] opacity-50">
               Unauthorized access is strictly prohibited and monitored.
             </p>
           </div>
@@ -4599,19 +4646,21 @@ export default function App() {
   };
 
   return (
-    <ToastContext.Provider value={showToast}>
-      <AuthProvider>
-        <AuthConsumer
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          alerts={alerts}
-          selectedAlert={selectedAlert}
-          setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
-          onAlertAction={handleAlertAction}
-        />
-      </AuthProvider>
-      <ToastContainer toasts={toasts} />
-    </ToastContext.Provider>
+    <DarkModeProvider>
+      <ToastContext.Provider value={showToast}>
+        <AuthProvider>
+          <AuthConsumer
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            alerts={alerts}
+            selectedAlert={selectedAlert}
+            setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
+            onAlertAction={handleAlertAction}
+          />
+        </AuthProvider>
+        <ToastContainer toasts={toasts} />
+      </ToastContext.Provider>
+    </DarkModeProvider>
   );
 }
 
@@ -4675,34 +4724,34 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
       {/* Header */}
-      <div className="flex items-end justify-between pb-3 border-b border-slate-200">
+      <div className="flex items-end justify-between pb-3 border-b border-[var(--b2)]">
         <div>
-          <h2 className="text-2xl font-bold text-[#004a99]">Incident Reports</h2>
-          <p className="text-sm text-slate-500 mt-0.5">Agent-generated reports · {new Date().toLocaleDateString()}</p>
+          <h2 className="text-2xl font-bold text-[var(--p1)]">Incident Reports</h2>
+          <p className="text-sm text-[var(--t4)] mt-0.5">Agent-generated reports · {new Date().toLocaleDateString()}</p>
         </div>
-        <p className="text-xs font-mono text-slate-400">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>
+        <p className="text-xs font-mono text-[var(--t3)]">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>
       </div>
 
       {/* Top stats row — 3 cards */}
       <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white p-5 border border-[#d1d9e6] rounded-xl shadow-sm space-y-3">
-          <p className="text-[0.72rem] font-black text-slate-400 uppercase tracking-widest">Alert Throughput</p>
+        <div className="bg-[var(--s0)] p-5 border border-[var(--b1)] rounded-xl shadow-sm space-y-3">
+          <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-widest">Alert Throughput</p>
           <div className="flex items-end gap-2">
-            <span className="text-4xl font-black text-[#004a99]">{alerts.length}</span>
+            <span className="text-4xl font-black text-[var(--p1)]">{alerts.length}</span>
             <span className="text-sm text-[#1e8e3e] font-bold mb-1">{triaged + falsePos} resolved</span>
           </div>
           {[{ label: 'Triaged', val: triaged, color: 'bg-[#004a99]' }, { label: 'False Pos.', val: falsePos, color: 'bg-slate-400' }].map(s => (
             <div key={s.label}>
               <div className="flex justify-between text-[0.72rem] mb-0.5"><span>{s.label}</span><span className="font-bold">{s.val}</span></div>
-              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-1.5 bg-[var(--s1)] rounded-full overflow-hidden">
                 <div className={`h-full ${s.color}`} style={{ width: `${alerts.length ? (s.val / alerts.length) * 100 : 0}%` }} />
               </div>
             </div>
           ))}
         </div>
 
-        <div className="bg-white p-5 border border-[#d1d9e6] rounded-xl shadow-sm space-y-3">
-          <p className="text-[0.72rem] font-black text-slate-400 uppercase tracking-widest">Severity Distribution</p>
+        <div className="bg-[var(--s0)] p-5 border border-[var(--b1)] rounded-xl shadow-sm space-y-3">
+          <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-widest">Severity Distribution</p>
           {[
             { label: 'Critical', count: critCount,       color: '#d93025' },
             { label: 'High',     count: highCount,       color: '#f29900' },
@@ -4710,25 +4759,25 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
           ].map(s => (
             <div key={s.label} className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full shrink-0" style={{ background: s.color }} />
-              <span className="flex-1 text-[0.78rem] text-slate-600">{s.label}</span>
+              <span className="flex-1 text-[0.78rem] text-[var(--t5)]">{s.label}</span>
               <span className="font-black text-[0.82rem]">{s.count}</span>
             </div>
           ))}
         </div>
 
-        <div className="bg-white p-5 border border-[#d1d9e6] rounded-xl shadow-sm space-y-2">
-          <p className="text-[0.72rem] font-black text-slate-400 uppercase tracking-widest">Top MITRE Techniques</p>
+        <div className="bg-[var(--s0)] p-5 border border-[var(--b1)] rounded-xl shadow-sm space-y-2">
+          <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-widest">Top MITRE Techniques</p>
           {topMitre.length > 0 ? topMitre.map(([tech, count]) => (
             <div key={tech} className="space-y-0.5">
               <div className="flex justify-between text-[0.68rem] font-bold">
                 <span className="font-mono truncate max-w-[130px]">{tech}</span>
-                <span className="text-slate-400">{count}×</span>
+                <span className="text-[var(--t3)]">{count}×</span>
               </div>
-              <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-1 bg-[var(--s1)] rounded-full overflow-hidden">
                 <div className="h-full bg-[#004a99]" style={{ width: `${(count / alerts.length) * 100}%` }} />
               </div>
             </div>
-          )) : <p className="text-[0.72rem] text-slate-400 italic">Run agents to generate MITRE data.</p>}
+          )) : <p className="text-[0.72rem] text-[var(--t3)] italic">Run agents to generate MITRE data.</p>}
         </div>
       </div>
 
@@ -4736,9 +4785,9 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
       {summary && (
         <div className="grid grid-cols-4 gap-3">
           {[
-            { label: 'Total Reports Generated', value: summary.total,                  color: 'text-[#004a99]' },
-            { label: 'Last 7 Days',              value: summary.last_7_days,            color: 'text-[#004a99]' },
-            { label: 'Email Notified',           value: `${summary.email_sent_pct}%`,   color: summary.email_sent_pct > 0 ? 'text-[#1e8e3e]' : 'text-slate-400' },
+            { label: 'Total Reports Generated', value: summary.total,                  color: 'text-[var(--p1)]' },
+            { label: 'Last 7 Days',              value: summary.last_7_days,            color: 'text-[var(--p1)]' },
+            { label: 'Email Notified',           value: `${summary.email_sent_pct}%`,   color: summary.email_sent_pct > 0 ? 'text-[#1e8e3e]' : 'text-[var(--t3)]' },
             { label: '7-Day Volume',             value: (
                 <div className="flex items-end gap-0.5 h-8">
                   {summary.daily_volume?.map((d: any, i: number) => {
@@ -4750,8 +4799,8 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
                 </div>
               ), color: '' },
           ].map((s, i) => (
-            <div key={i} className="bg-white border border-[#d1d9e6] rounded-xl p-4 shadow-sm">
-              <p className="text-[0.62rem] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+            <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm">
+              <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">{s.label}</p>
               {typeof s.value === 'number' || typeof s.value === 'string'
                 ? <p className={`text-[1.6rem] font-black ${s.color}`}>{s.value}</p>
                 : s.value}
@@ -4761,16 +4810,16 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
       )}
 
       {/* Reports table */}
-      <div className="bg-white border border-[#d1d9e6] rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between gap-4">
-          <p className="text-[0.82rem] font-black text-[#004a99] uppercase tracking-wide shrink-0">
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between gap-4">
+          <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide shrink-0">
             Agent Reports ({totalReps})
           </p>
           <div className="flex items-center gap-2">
             <select
               value={priority}
               onChange={e => { setPriority(e.target.value); setPage(1); }}
-              className="text-[0.72rem] border border-slate-200 rounded px-2 py-1 outline-none focus:border-[#004a99]"
+              className="text-[0.72rem] border border-[var(--b2)] rounded px-2 py-1 outline-none focus:border-[var(--p1)]"
             >
               <option value="">All priorities</option>
               {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
@@ -4779,14 +4828,14 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
         </div>
 
         {reports.length === 0 ? (
-          <div className="p-10 text-center text-slate-400 text-sm">
+          <div className="p-10 text-center text-[var(--t3)] text-sm">
             {totalReps === 0
               ? 'No reports generated yet. Open an alert and click Run Agents.'
               : 'No reports match the current filter.'}
           </div>
         ) : (
           <table className="w-full text-left text-[0.78rem]">
-            <thead className="bg-slate-50/50 border-b border-slate-100 text-[0.62rem] text-slate-400 font-black uppercase tracking-wider">
+            <thead className="bg-[var(--s1)]/50 border-b border-[var(--b3)] text-[0.62rem] text-[var(--t3)] font-black uppercase tracking-wider">
               <tr>
                 <th className="px-4 py-2">Time</th>
                 <th className="px-4 py-2">Alert</th>
@@ -4800,34 +4849,34 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {reports.map((rep: ReportRow) => (
-                <tr key={rep.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-2.5 text-slate-500 font-mono text-[0.68rem] whitespace-nowrap">
+                <tr key={rep.id} className="hover:bg-[var(--s1)] transition-colors">
+                  <td className="px-4 py-2.5 text-[var(--t4)] font-mono text-[0.68rem] whitespace-nowrap">
                     {new Date(rep.run_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </td>
-                  <td className="px-4 py-2.5 font-mono text-[#004a99] text-[0.68rem]">{rep.alert_id?.substring(0, 8).toUpperCase()}</td>
+                  <td className="px-4 py-2.5 font-mono text-[var(--p1)] text-[0.68rem]">{rep.alert_id?.substring(0, 8).toUpperCase()}</td>
                   <td className="px-4 py-2.5 max-w-[220px]">
-                    <p className="font-semibold text-slate-800 truncate">{rep.title || rep.description?.slice(0, 55) || '—'}</p>
+                    <p className="font-semibold text-[var(--t7)] truncate">{rep.title || rep.description?.slice(0, 55) || '—'}</p>
                   </td>
                   <td className="px-4 py-2.5">
                     {rep.priority
-                      ? <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black ${priColor[rep.priority] || 'bg-slate-100 text-slate-600'}`}>{rep.priority}</span>
-                      : <span className="text-slate-300">—</span>}
+                      ? <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black ${priColor[rep.priority] || 'bg-[var(--s1)] text-[var(--t5)]'}`}>{rep.priority}</span>
+                      : <span className="text-[var(--t2)]">—</span>}
                   </td>
                   <td className="px-4 py-2.5">
                     <span className={`px-1.5 py-0.5 rounded text-[0.6rem] font-black ${sevColor(rep.severity)}`}>{sevLabel(rep.severity)}</span>
                   </td>
-                  <td className="px-4 py-2.5 text-slate-600">
+                  <td className="px-4 py-2.5 text-[var(--t5)]">
                     {rep.confidence != null ? `${rep.confidence}%` : '—'}
                   </td>
                   <td className="px-4 py-2.5">
                     {rep.actions_dispatched && rep.actions_dispatched.length > 0
                       ? <span className="flex gap-1">{rep.actions_dispatched.map(a => <span key={a} title={a}>{intgIcon[a] || '•'}</span>)}</span>
-                      : <span className="text-slate-300 text-[0.68rem]">—</span>}
+                      : <span className="text-[var(--t2)] text-[0.68rem]">—</span>}
                   </td>
                   <td className="px-4 py-2.5">
                     <button
                       onClick={() => handleViewReport(rep)}
-                      className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[0.65rem] font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+                      className="flex items-center gap-1 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t5)] hover:bg-[var(--s1)] transition-colors"
                     >
                       <Eye size={11} /> View
                     </button>
@@ -4840,19 +4889,19 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="px-5 py-3 border-t bg-slate-50 flex items-center justify-between text-[0.72rem]">
+          <div className="px-5 py-3 border-t bg-[var(--s1)] flex items-center justify-between text-[0.72rem]">
             <button
               onClick={() => setPage(p => Math.max(1, p - 1))}
               disabled={page === 1}
-              className="px-3 py-1 rounded border border-slate-200 text-slate-600 font-semibold disabled:opacity-40 hover:bg-white transition-colors"
+              className="px-3 py-1 rounded border border-[var(--b2)] text-[var(--t5)] font-semibold disabled:opacity-40 hover:bg-[var(--s0)] transition-colors"
             >
               ← Previous
             </button>
-            <span className="text-slate-500 font-semibold">Page {page} of {totalPages}</span>
+            <span className="text-[var(--t4)] font-semibold">Page {page} of {totalPages}</span>
             <button
               onClick={() => setPage(p => Math.min(totalPages, p + 1))}
               disabled={page === totalPages}
-              className="px-3 py-1 rounded border border-slate-200 text-slate-600 font-semibold disabled:opacity-40 hover:bg-white transition-colors"
+              className="px-3 py-1 rounded border border-[var(--b2)] text-[var(--t5)] font-semibold disabled:opacity-40 hover:bg-[var(--s0)] transition-colors"
             >
               Next →
             </button>
@@ -4883,7 +4932,7 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
       <Header />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
-        <main className="flex-1 overflow-hidden bg-[#f4f7fa]">
+        <main className="flex-1 overflow-hidden bg-[var(--s3)]">
           {activeTab === 'research'     && <ResearchOverview alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} setActiveTab={setActiveTab} />}
           {activeTab === 'dashboard'    && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
           {activeTab === 'alerts'       && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
