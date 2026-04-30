@@ -1019,7 +1019,7 @@ async function startServer() {
 
   // ── Agent statistics ───────────────────────────────────────────────────────
   app.get('/api/ai/agent-stats', authenticate, (_req, res) => {
-    const phases = ['analysis','intel','knowledge','correlation','ticketing','response','validation'];
+    const phases = ['analysis','intel','knowledge','correlation','recall','ioc_check','ticketing','response','validation'];
 
     // Pull last 500 agent runs with AI data
     const runs = db.prepare("SELECT ai_analysis FROM agent_runs WHERE ai_analysis IS NOT NULL ORDER BY run_at DESC LIMIT 500").all() as any[];
@@ -1128,7 +1128,7 @@ async function startServer() {
     }
   });
 
-  // ── AI: run full 7-agent swarm — rate limited to 10/15 min per IP ─────────
+  // ── AI: run full swarm — rate limited to 10/15 min per IP ──────────────────
   const orchestrateLimit = rateLimit({
     windowMs:       15 * 60_000,
     max:            10,

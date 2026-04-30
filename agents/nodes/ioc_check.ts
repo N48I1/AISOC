@@ -11,7 +11,7 @@ export async function iocCheckNode(state: any) {
 
   if (values.length === 0) {
     logs.push(`[IOC-Check] No IOCs to look up.`);
-    return { ioc_check: { hits: [], lookups: 0 }, agentLogs: logs };
+    return { ioc_check: { hits: [], lookups: 0, confidence: 0 }, agentLogs: logs };
   }
 
   const hits = lookupIocs(values);
@@ -25,8 +25,12 @@ export async function iocCheckNode(state: any) {
     }
   }
 
+  const confidence = hits.length > 0
+    ? Math.min(0.95, 0.7 + Math.min(hits.length, 4) * 0.06)
+    : 0.75;
+
   return {
-    ioc_check: { hits, lookups: values.length },
+    ioc_check: { hits, lookups: values.length, confidence },
     agentLogs: logs,
   };
 }

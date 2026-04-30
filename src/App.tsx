@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
+import PageHeader from './components/ui/PageHeader';
+import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from './features/alerts/alertUtils';
 
 // --- Dark Mode ---
 const DarkModeContext = createContext<{ dark: boolean; toggle: () => void }>({ dark: false, toggle: () => {} });
@@ -42,7 +44,7 @@ const ToastContainer = ({ toasts }: { toasts: ToastItem[] }) => (
           className={`px-4 py-3 rounded-lg shadow-lg text-[0.82rem] font-semibold text-white max-w-[320px] pointer-events-auto ${
             t.type === 'success' ? 'bg-[#1e8e3e]' :
             t.type === 'error'   ? 'bg-[#d93025]' :
-            'bg-[#004a99]'
+            'bg-[var(--p1)]'
           }`}
         >
           {t.type === 'success' ? '✓ ' : t.type === 'error' ? '✕ ' : 'ℹ '}{t.message}
@@ -148,59 +150,57 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   ];
 
   return (
-    <aside className={`bg-[var(--s0)] border-r border-[var(--b1)] h-full flex flex-col transition-[width] duration-250 ease-in-out overflow-hidden shrink-0 ${expanded ? 'w-[200px]' : 'w-14'}`}>
-      {/* Toggle — always pinned to the top-right of the sidebar */}
-      <div className="flex items-center justify-end px-2 py-2 shrink-0">
+    <aside className={`bg-[var(--s0)] border-r border-[var(--b1)] h-full flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden shrink-0 ${expanded ? 'w-[220px]' : 'w-16'}`}>
+      <div className="flex items-center justify-between px-4 py-4 shrink-0">
+        <div className={`overflow-hidden transition-opacity duration-300 ${expanded ? 'opacity-100' : 'opacity-0'}`}>
+          <span className="text-[0.65rem] font-black uppercase tracking-[0.2em] text-[var(--p1)]">Aegis</span>
+        </div>
         <button
           onClick={() => setExpanded(e => !e)}
-          title={expanded ? 'Collapse sidebar' : 'Expand sidebar'}
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--t2)] hover:text-[var(--p1)] hover:bg-[var(--sa)] transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--t3)] hover:text-[var(--p1)] hover:bg-[var(--sa)] transition-all"
         >
           {expanded ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
         </button>
       </div>
 
-      <nav className="flex-1 flex flex-col gap-1">
+      <nav className="flex-1 flex flex-col gap-1 px-2">
         {menuItems.map((item) => (
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}
-            title={!expanded ? item.label : undefined}
-            className={`flex items-center gap-3 py-3 transition-[padding] duration-250 ${expanded ? 'px-5' : 'px-[13px]'} ${
+            className={`flex items-center gap-3 py-2.5 rounded-xl transition-all ${
               activeTab === item.id
-                ? 'text-[var(--p1)] bg-[var(--sa)] border-r-2 border-[var(--p1)] font-semibold'
+                ? 'text-white bg-gradient-to-r from-[var(--p1)] to-[var(--pd)] shadow-lg shadow-blue-500/20 font-semibold'
                 : 'text-[var(--t2)] hover:bg-[var(--sa)] hover:text-[var(--p1)]'
-            }`}
+            } ${expanded ? 'px-4' : 'px-3 justify-center'}`}
           >
             <item.icon className="w-[18px] h-[18px] shrink-0" />
-            <span className={`whitespace-nowrap text-[0.85rem] transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>
+            <span className={`whitespace-nowrap text-[0.85rem] transition-all duration-300 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0'}`}>
               {item.label}
             </span>
           </button>
         ))}
       </nav>
 
-      <div className={`pt-4 border-t border-[var(--b1)] space-y-1 transition-[padding] duration-250 ${expanded ? 'px-4' : 'px-[9px]'}`}>
+      <div className="p-3 border-t border-[var(--b1)] space-y-2">
         <button
           onClick={() => setActiveTab('settings')}
-          title={!expanded ? user?.username : undefined}
-          className="w-full flex items-center gap-3 p-1.5 rounded-lg hover:bg-[var(--sa)] transition-colors text-left"
+          className={`w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[var(--sa)] transition-all text-left ${!expanded && 'justify-center'}`}
         >
-          <div className="w-8 h-8 rounded-full bg-[var(--pd)] flex items-center justify-center text-white text-xs font-bold border border-white/30 shrink-0">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--p1)] to-[var(--pd)] flex items-center justify-center text-white text-[0.7rem] font-black shadow-sm shrink-0">
             {user?.username?.substring(0, 2).toUpperCase()}
           </div>
-          <div className={`overflow-hidden transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>
-            <p className="text-xs font-semibold text-[var(--t1)] truncate">{user?.username}</p>
-            <p className="text-[10px] text-[var(--t2)] uppercase">{user?.role}</p>
+          <div className={`overflow-hidden transition-all duration-300 ${expanded ? 'opacity-100 w-auto' : 'opacity-0 w-0'}`}>
+            <p className="text-[0.75rem] font-bold text-[var(--t1)] truncate">{user?.username}</p>
+            <p className="text-[0.6rem] font-black text-[var(--p1)] uppercase tracking-wider">{user?.role}</p>
           </div>
         </button>
         <button
           onClick={logout}
-          title={!expanded ? 'Sign Out' : undefined}
-          className="w-full flex items-center gap-3 px-1.5 py-1.5 text-[0.8rem] font-semibold text-[var(--t2)] hover:text-[#d93025] transition-colors"
+          className={`w-full flex items-center gap-3 p-2 rounded-xl text-[var(--t4)] hover:text-red-500 hover:bg-red-50 transition-all ${!expanded && 'justify-center'}`}
         >
           <LogOut className="w-[18px] h-[18px] shrink-0" />
-          <span className={`whitespace-nowrap transition-opacity duration-200 ${expanded ? 'opacity-100' : 'opacity-0'}`}>Sign Out</span>
+          <span className={`whitespace-nowrap text-[0.8rem] font-bold transition-all duration-300 ${expanded ? 'opacity-100 w-auto' : 'opacity-0 w-0'}`}>Sign Out</span>
         </button>
       </div>
     </aside>
@@ -211,109 +211,71 @@ const Header = () => {
   const { user, logout } = useAuth();
   const { dark, toggle } = useDarkMode();
   return (
-    <header className="h-[48px] bg-[#004a99] text-white flex items-center justify-between px-5 shadow-md z-[100]">
-      <div className="flex items-center gap-2.5 font-bold text-[1.05rem] tracking-tight">
-        <div className="w-7 h-7 rounded-full bg-[var(--s0)] flex items-center justify-center overflow-hidden shadow-sm shrink-0">
-          <img src="/logo-BBS.png" className="h-5 w-5 object-contain" alt="BBS Logo" />
+    <header className="h-[60px] bg-[var(--s0)] border-b border-[var(--b1)] text-[var(--t1)] flex items-center justify-between px-6 z-[100] sticky top-0 transition-all">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[var(--p1)] to-[var(--pd)] flex items-center justify-center shadow-lg shadow-blue-500/20 shrink-0">
+          <img src="/logo-BBS.png" className="h-5 w-5 object-contain brightness-0 invert" alt="BBS Logo" />
         </div>
-        BBS AISOC
+        <div className="flex flex-col -space-y-1">
+          <span className="text-[0.6rem] font-black uppercase tracking-[0.3em] text-[var(--t4)]">Security Operations</span>
+          <div className="flex items-center">
+            <span className="font-black text-xl text-[var(--t1)] tracking-tighter">BBS</span>
+            <span className="font-black text-xl text-[var(--p1)] tracking-tighter ml-1">AISOC</span>
+          </div>
+        </div>
       </div>
 
-      <div className="flex items-center gap-4 text-[0.8rem] opacity-90">
-        <span className="flex items-center gap-2">
-          <div className="w-2 h-2 bg-[#1e8e3e] rounded-full" />
-          Wazuh Cluster: Healthy
-        </span>
-        <span className="opacity-40">|</span>
+      <div className="flex items-center gap-4">
+        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--s1)] border border-[var(--b2)]">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
+          <span className="text-[0.7rem] font-black uppercase tracking-wider text-green-700">Wazuh: Healthy</span>
+        </div>
+        
+        <div className="h-6 w-px bg-[var(--b2)]" />
+        
         <button
           onClick={toggle}
-          title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
-          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--s0)]/15 transition-colors text-white"
+          className="w-10 h-10 flex items-center justify-center rounded-xl text-[var(--t3)] hover:text-[var(--p1)] hover:bg-[var(--sa)] border border-transparent hover:border-[var(--b2)] transition-all"
         >
           {dark ? '☀' : '🌙'}
         </button>
-        <span className="opacity-40">|</span>
-        <span className="opacity-80">{user?.username} <span className="opacity-60">({user?.role})</span></span>
-        <button
-          onClick={logout}
-          title="Sign out"
-          className="flex items-center gap-1.5 ml-1 px-2.5 py-1 rounded hover:bg-[var(--s0)]/15 hover:text-red-300 transition-colors text-[0.78rem] font-semibold"
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          Sign Out
-        </button>
+
+        <div className="flex items-center gap-3 pl-2">
+          <div className="flex flex-col items-end hidden sm:block">
+            <p className="text-[0.8rem] font-bold text-[var(--t1)]">{user?.username}</p>
+            <p className="text-[0.6rem] font-black text-[var(--p1)] uppercase tracking-widest">{user?.role}</p>
+          </div>
+          <div className="w-9 h-9 rounded-xl bg-[var(--s1)] border border-[var(--b2)] flex items-center justify-center text-[var(--p1)] text-[0.75rem] font-black shadow-sm">
+            {user?.username?.substring(0, 2).toUpperCase()}
+          </div>
+        </div>
       </div>
     </header>
   );
 };
 
 const StatCard = ({ label, value, icon: Icon, trend, color }: any) => (
-  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-5 flex flex-col gap-2 shadow-sm">
+  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-2xl p-6 flex flex-col gap-3 shadow-sm card-hover">
     <div className="flex justify-between items-start">
-      <div className="text-[0.75rem] font-bold text-[var(--t2)] uppercase tracking-wider">{label}</div>
-      <Icon className="w-5 h-5 opacity-20" style={{ color }} />
-    </div>
-    <div className="text-[1.8rem] font-bold text-[var(--t1)] leading-none">{value}</div>
-    {trend && (
-      <div className={`text-[0.7rem] font-bold flex items-center gap-1 ${trend > 0 ? 'text-[#d93025]' : 'text-[#1e8e3e]'}`}>
-        {trend > 0 ? '+' : ''}{trend}% from last 24h
+      <div className="w-10 h-10 rounded-xl bg-[var(--s1)] flex items-center justify-center border border-[var(--b2)]">
+        <Icon className="w-5 h-5" style={{ color: color || 'var(--p1)' }} />
       </div>
-    )}
+      {trend && (
+        <div className={`px-2 py-1 rounded-lg text-[0.65rem] font-black flex items-center gap-1 ${trend > 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+          {trend > 0 ? '+' : ''}{trend}%
+        </div>
+      )}
+    </div>
+    <div>
+      <div className="text-[1.8rem] font-black text-[var(--t1)] tracking-tight">{value}</div>
+      <div className="text-[0.7rem] font-black text-[var(--t3)] uppercase tracking-[0.1em] mt-1">{label}</div>
+    </div>
   </div>
 );
-
-const AGENT_PHASES_UI: Array<{ phase: AgentPhase; label: string; short: string }> = [
-  { phase: 'analysis',    label: 'Alert Triage',     short: 'Triage' },
-  { phase: 'intel',       label: 'Threat Intel',     short: 'Intel' },
-  { phase: 'knowledge',   label: 'RAG Knowledge',    short: 'RAG' },
-  { phase: 'correlation', label: 'Correlation',      short: 'Correlate' },
-  { phase: 'recall',      label: 'Memory Recall',    short: 'Recall' },
-  { phase: 'ioc_check',   label: 'IOC History',      short: 'IOC' },
-  { phase: 'ticketing',   label: 'Ticketing',        short: 'Ticket' },
-  { phase: 'response',    label: 'Response',         short: 'Respond' },
-  { phase: 'validation',  label: 'SLA Validation',   short: 'Validate' },
-];
 
 const MANDATORY_PHASES    = ['analysis'];
 const INVESTIGATOR_PHASES = ['intel', 'knowledge', 'correlation', 'recall', 'ioc_check'];
 const COMPOSER_PHASES     = ['ticketing', 'response', 'validation'];
-
-const parseAlertAi = (alert?: Alert | null): any | null => {
-  if (!alert?.ai_analysis) return null;
-  try { return JSON.parse(alert.ai_analysis); } catch { return null; }
-};
-
-const parseMitreTags = (alert?: Alert | null): string[] => {
-  if (!alert?.mitre_attack) return [];
-  try {
-    const parsed = Array.isArray(alert.mitre_attack) ? alert.mitre_attack : JSON.parse(alert.mitre_attack as any);
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-};
-
-const getPhaseData = (aiData: any, phase: AgentPhase) => {
-  if (!aiData?.phaseData) return null;
-  return phase === 'ticketing' ? (aiData.phaseData.ticketing || aiData.phaseData.ticket) : aiData.phaseData[phase];
-};
-
-const getAlertRiskScore = (alert: Alert): number | null => {
-  const aiData = parseAlertAi(alert);
-  const analysisRisk = aiData?.phaseData?.analysis?.risk_score;
-  if (typeof analysisRisk === 'number') return analysisRisk;
-  const intelRisk = aiData?.phaseData?.intel?.risk_score;
-  if (typeof intelRisk === 'number') return intelRisk <= 10 ? intelRisk * 10 : intelRisk;
-  return null;
-};
-
-const getConfidenceValues = (aiData: any): number[] =>
-  AGENT_PHASES_UI
-    .map(a => getPhaseData(aiData, a.phase)?.confidence)
-    .filter((v): v is number => typeof v === 'number')
-    .map(v => v <= 1 ? Math.round(v * 100) : Math.round(v));
-
-const percent = (value: number, total: number) => total > 0 ? Math.round((value / total) * 100) : 0;
 
 const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () => void, isSelected?: boolean, key?: any }) => {
   let aiData: any = null;
@@ -323,13 +285,8 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
   const isFP = aiData?.phaseData?.analysis?.is_false_positive;
   const summary = aiData?.summary || alert.description;
   const pd = aiData?.phaseData || {};
-  const agents = ['analysis', 'intel', 'knowledge', 'correlation', 'ticketing', 'response', 'validation'];
-
-  const getSeverityColor = (level: number) => {
-    if (level >= 12) return '#d93025';
-    if (level >= 7) return '#f29900';
-    return '#1a73e8';
-  };
+  const agents = ['analysis', 'intel', 'knowledge', 'correlation', 'recall', 'ioc_check', 'ticketing', 'response', 'validation'];
+  const phaseDone = (phase: string) => phase === 'ticketing' ? !!pd.ticket : !!pd[phase];
 
   const riskColor = riskScore == null ? '#cbd5e1' : riskScore >= 80 ? '#ef4444' : riskScore >= 60 ? '#f97316' : riskScore >= 40 ? '#f59e0b' : '#10b981';
 
@@ -339,39 +296,37 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       onClick={onClick}
-      className={`alert-item p-[12px_15px] border-b border-[#f0f0f0] cursor-pointer transition-colors ${isSelected ? 'bg-[var(--sa)]' : 'hover:bg-[var(--s1)]'}`}
+      className={`alert-item p-4 border-b border-[var(--b3)] cursor-pointer transition-all ${isSelected ? 'bg-[var(--sa)] border-l-4 border-l-[var(--p1)]' : 'hover:bg-[var(--s1)] border-l-4 border-l-transparent'}`}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-4">
         <div className="flex flex-col items-center gap-1 mt-0.5 shrink-0">
-          <div className="w-7 h-7 rounded-full flex items-center justify-center border-2" style={{ borderColor: riskColor, backgroundColor: `${riskColor}15` }}>
-            <span className="text-[0.6rem] font-black" style={{ color: riskColor }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center border-2 shadow-sm" style={{ borderColor: riskColor, backgroundColor: `${riskColor}10` }}>
+            <span className="text-[0.85rem] font-black" style={{ color: riskColor }}>
               {riskScore != null ? riskScore : alert.severity}
             </span>
           </div>
-          <span className="text-[0.5rem] font-bold text-[var(--t3)] uppercase tracking-wider">{riskScore != null ? 'Risk' : 'Lvl'}</span>
+          <span className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">{riskScore != null ? 'Risk' : 'Lvl'}</span>
         </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            {isFP && <span className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)] text-[0.55rem] font-black uppercase tracking-wider shrink-0">FP</span>}
-            <h4 className="text-[0.78rem] font-bold text-[var(--t1)] truncate" title={summary}>{summary}</h4>
+        <div className="flex-1 min-w-0 py-0.5">
+          <div className="flex items-center gap-2 mb-1">
+            {isFP && <span className="px-1.5 py-0.5 rounded-lg bg-[var(--s2)] text-[var(--t4)] border border-[var(--b2)] text-[0.55rem] font-black uppercase tracking-wider shrink-0">False Positive</span>}
+            <h4 className="text-[0.85rem] font-bold text-[var(--t1)] truncate leading-tight" title={summary}>{summary}</h4>
           </div>
           
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <span className="font-mono text-[0.6rem] text-[var(--t3)] bg-[var(--s1)] rounded px-1 py-0.5 shrink-0 select-all">#{alert.id.toUpperCase()}</span>
+          <div className="flex items-center gap-3 text-[0.7rem] text-[var(--t4)] font-medium mb-2">
+            <span className="font-mono text-[0.6rem] bg-[var(--s1)] text-[var(--p1)] rounded-md px-1.5 py-0.5 border border-[var(--b2)] select-all">#{alert.id.substring(0,8).toUpperCase()}</span>
+            <span className="truncate flex items-center gap-1"><Activity size={10} /> {alert.source_ip || alert.agent_name}</span>
+            <span className="shrink-0 flex items-center gap-1 ml-auto"><Clock size={10} /> {new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           </div>
 
-          <div className="flex justify-between items-center text-[0.7rem] text-[var(--t2)] mt-0.5">
-            <span className="truncate">{alert.source_ip || alert.agent_name}</span>
-            <span className="shrink-0">{new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          </div>
-
-          <div className="flex items-center gap-1 mt-2">
+          <div className="flex items-center gap-1.5">
             {agents.map(a => {
-              const isDone = !!pd[a];
-              const isRunning = alert.status === 'ANALYZING' && !isDone && (a === 'analysis' || pd[agents[agents.indexOf(a)-1]]);
+              const isDone = phaseDone(a);
+              const prev = agents[agents.indexOf(a) - 1];
+              const isRunning = alert.status === 'ANALYZING' && !isDone && (a === 'analysis' || phaseDone(prev));
               return (
-                <div key={a} title={a} className={`w-1.5 h-1.5 rounded-full ${isDone ? 'bg-[#004a99]' : isRunning ? 'bg-blue-400 animate-pulse' : 'bg-[var(--s2)]'}`} />
+                <div key={a} title={a} className={`h-1 flex-1 rounded-full transition-all duration-500 ${isDone ? 'bg-[var(--p1)] shadow-[0_0_4px_var(--pa)]' : isRunning ? 'bg-blue-400 animate-pulse' : 'bg-[var(--s2)]'}`} />
               );
             })}
           </div>
@@ -380,6 +335,7 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
     </motion.div>
   );
 };
+
 
 const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, aiData: any, mitreTags: string[], onClose: () => void }) => {
   const [exportFormat, setExportFormat] = useState<'txt' | 'xml' | 'pdf' | 'md'>('pdf');
@@ -704,12 +660,13 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
             </select>
             <button
               onClick={handleDownload}
+              aria-label="Download report"
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--s0)]/10 hover:bg-[var(--s0)]/20 text-white text-[0.75rem] font-bold transition-colors border border-white/20"
             >
               <ChevronRight size={13} className="rotate-90" />
               Download
             </button>
-            <button onClick={onClose} className="p-2 hover:bg-[var(--s0)]/10 rounded-lg transition-colors">
+            <button onClick={onClose} aria-label="Close report modal" className="p-2 hover:bg-[var(--s0)]/10 rounded-lg transition-colors">
               <XCircle size={20} />
             </button>
           </div>
@@ -1140,6 +1097,43 @@ const MiniBar = ({ value, color }: { value: number, color: string }) => (
   </div>
 );
 
+const ConfidenceDonut = ({ value, size = 34 }: { value: number | null; size?: number }) => {
+  const stroke = 4;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const pct = typeof value === 'number' ? Math.max(0, Math.min(100, Math.round(value * 100))) : null;
+  const progress = pct == null ? 0 : pct;
+  const dashOffset = circumference - (progress / 100) * circumference;
+  const color =
+    pct == null ? '#94a3b8' :
+    pct >= 80 ? '#16a34a' :
+    pct >= 60 ? '#f59e0b' :
+    '#ef4444';
+
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#e2e8f0" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={stroke}
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          className="transition-all duration-500"
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center text-[0.54rem] font-black tabular-nums" style={{ color }}>
+        {pct == null ? '—' : `${pct}`}
+      </div>
+    </div>
+  );
+};
+
 type HeroProps = {
   alert: Alert;
   aiData: any;
@@ -1189,10 +1183,10 @@ const AlertHeroStrip = ({ alert, aiData, severity, sevStyle, agentDefs, agentCon
           <RiskGauge value={risk} size={110} />
         </div>
 
-        {/* Agent pipeline */}
+        {/* Agent confidence */}
         <div className="col-span-6 md:col-span-3 p-4">
           <button type="button" onClick={scrollToAgents} className="w-full text-left group">
-            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Agent Pipeline</p>
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Agents Confidence</p>
             <div className="space-y-1">
               {agentDefs.map((a) => {
                 const c = agentConfidence(a.id);
@@ -1225,7 +1219,9 @@ const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[]
   const approvalRequired = pd.response?.approval_required ?? aiData?.response?.approval_required;
   const sla = pd.validation?.sla_status || aiData?.validation;
   const slaTone = sla ? (String(sla).toLowerCase().includes('breach') ? 'text-red-700 bg-red-50 border-red-200' : String(sla).toLowerCase().includes('risk') ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-green-700 bg-green-50 border-green-200') : 'text-[var(--t4)] bg-[var(--s1)] border-[var(--b2)]';
-  const confidences = ['analysis','intel','knowledge','correlation','ticket','response','validation'].map(k => pd[k]?.confidence).filter((v): v is number => typeof v === 'number');
+  const confidences = ['analysis', 'intel', 'knowledge', 'correlation', 'recall', 'ioc_check', 'ticket', 'response', 'validation']
+    .map(k => pd[k]?.confidence)
+    .filter((v): v is number => typeof v === 'number');
   const avgConf = confidences.length ? Math.round(confidences.reduce((a,b) => a+b, 0) / confidences.length * 100) : null;
   const mispLevelCls: Record<string,string> = { High: 'text-red-700 bg-red-50 border-red-200', Medium: 'text-orange-700 bg-orange-50 border-orange-200', Low: 'text-amber-700 bg-amber-50 border-amber-200', Undefined: 'text-[var(--t5)] bg-[var(--s1)] border-[var(--b2)]' };
 
@@ -1251,7 +1247,7 @@ const EvidenceStrip = ({ aiData, mitreTags }: { aiData: any, mitreTags: string[]
       <Chip title="MISP"         value={misp?.available ? `${misp.hits || 0} hits` : 'n/a'} sub={misp?.highest_threat_level || (misp?.available ? 'no matches' : 'unavailable')} tone={misp?.available && misp.hits > 0 ? mispLevelCls[misp.highest_threat_level] : 'text-[var(--t5)] bg-[var(--s1)] border-[var(--b2)]'} />
       <Chip title="IOCs"         value={iocCount} sub={`${iocTypes} type${iocTypes===1?'':'s'}`} />
       <Chip title="Actions"      value={actions.length} sub={approvalRequired ? 'approval required' : 'auto-executable'} tone={approvalRequired ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-[var(--t6)] bg-[var(--s0)] border-[var(--b2)]'} />
-      <Chip title="Avg Confidence" value={avgConf == null ? '—' : `${avgConf}%`} sub={avgConf == null ? 'no runs' : `${confidences.length}/7 agents`} tone={avgConf == null ? 'text-[var(--t4)] bg-[var(--s1)] border-[var(--b2)]' : avgConf >= 80 ? 'text-green-700 bg-green-50 border-green-200' : avgConf >= 60 ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-red-700 bg-red-50 border-red-200'} />
+      <Chip title="Avg Confidence" value={avgConf == null ? '—' : `${avgConf}%`} sub={avgConf == null ? 'no runs' : `${confidences.length}/${AGENT_PHASES_UI.length} agents`} tone={avgConf == null ? 'text-[var(--t4)] bg-[var(--s1)] border-[var(--b2)]' : avgConf >= 80 ? 'text-green-700 bg-green-50 border-green-200' : avgConf >= 60 ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-red-700 bg-red-50 border-red-200'} />
     </div>
   );
 };
@@ -1968,6 +1964,9 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
   };
 
   const completedCount = agentDefs.filter(a => (agentRunHistory[a.id]?.length || 0) > 0).length;
+  const totalPhases = agentDefs.length;
+  const progressPct = Math.round((completedCount / totalPhases) * 100);
+  const runningPhaseLabel = runningPhase ? (agentDefs.find(a => a.id === runningPhase)?.label || runningPhase) : null;
 
   return (
     <div className="flex flex-col h-full bg-[var(--s2)] overflow-hidden">
@@ -1984,14 +1983,19 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
         <div className="w-px h-4 bg-[var(--s2)] shrink-0" />
         <p className="text-[0.82rem] font-semibold text-[var(--t7)] truncate flex-1">{alert.description}</p>
         <div className="flex items-center gap-2 shrink-0">
+          {runningPhaseLabel && (
+            <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[0.62rem] font-black uppercase tracking-wide">
+              Running: {runningPhaseLabel}
+            </span>
+          )}
           <span className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Pipeline</span>
           <div className="w-28 h-1.5 bg-[var(--s1)] rounded-full overflow-hidden">
             <div
-              className="h-full bg-[#004a99] rounded-full transition-all duration-700"
-              style={{ width: `${(completedCount / agentDefs.length) * 100}%` }}
+              className="h-full bg-[var(--p1)] rounded-full transition-all duration-700"
+              style={{ width: `${progressPct}%` }}
             />
           </div>
-          <span className="text-[0.65rem] font-bold text-[var(--t4)]">{completedCount}/{agentDefs.length}</span>
+          <span className="text-[0.65rem] font-bold text-[var(--t4)]">{completedCount}/{totalPhases} · {progressPct}%</span>
         </div>
       </div>
 
@@ -2041,7 +2045,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                   getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
                 }
               }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[#004a99] text-white border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
             >
               {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={13} />}
               History {runs.length > 0 ? `(${runs.length})` : ''}
@@ -2061,7 +2065,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               type="button"
               onClick={handleRerunFresh}
               disabled={isAnalyzing}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#004a99] hover:bg-[var(--pd)] text-white text-[0.72rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[var(--p1)] hover:bg-[var(--pd)] text-white text-[0.72rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
             >
               {isRerunning ? (
                 <><div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Running...</>
@@ -2080,8 +2084,9 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
 
         {(() => {
           const fallbackPhases: string[] = Array.isArray(aiData?.fallback_phases) ? aiData.fallback_phases : [];
+          const agentFallbacks = fallbackPhases.filter(p => AGENT_PHASES_UI.some(a => a.phase === p));
           const quotaExhausted = aiData?.quota_exhausted === true;
-          const allFallback = aiData && fallbackPhases.length >= 7;
+          const allFallback = aiData && agentFallbacks.length >= AGENT_PHASES_UI.length;
           if (!quotaExhausted && !allFallback) return null;
           return (
             <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3">
@@ -2093,7 +2098,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 <p>
                   {quotaExhausted
                     ? 'Real analysis could not run — OpenRouter\'s free-tier daily limit (50 req/day) is used up on both API keys. '
-                    : `${fallbackPhases.length}/7 agents failed — the data shown below is placeholder fallback, not a real assessment. `}
+                    : `${agentFallbacks.length}/${AGENT_PHASES_UI.length} agents failed — the data shown below is placeholder fallback, not a real assessment. `}
                   Add credits at <span className="font-mono font-bold">openrouter.ai</span> or wait until midnight UTC for the quota to reset. Then click <span className="font-bold">Run Agents</span> again.
                 </p>
               </div>
@@ -2108,7 +2113,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               <p className="text-[0.65rem] font-black text-[var(--t3)] uppercase tracking-widest">
                 Run History — {runs.length} saved run{runs.length !== 1 ? 's' : ''}
               </p>
-              <button type="button" onClick={() => setShowHistory(false)} className="text-[var(--t3)] hover:text-[var(--t5)]">
+              <button type="button" onClick={() => setShowHistory(false)} aria-label="Close run history" className="text-[var(--t3)] hover:text-[var(--t5)]">
                 <X size={14} />
               </button>
             </div>
@@ -2123,7 +2128,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                 try { runAiData = run.ai_analysis ? JSON.parse(run.ai_analysis) : null; } catch (e) {}
                 try { runMitre = run.mitre_attack ? JSON.parse(run.mitre_attack) : []; } catch (e) {}
                 const runPhaseData = runAiData?.phaseData || {};
-                const agentScores = ['analysis','intel','knowledge','correlation','ticketing','response','validation'].map(p => {
+                const allPhases: Array<'analysis'|'intel'|'knowledge'|'correlation'|'recall'|'ioc_check'|'ticketing'|'response'|'validation'> = ['analysis','intel','knowledge','correlation','recall','ioc_check','ticketing','response','validation'];
+                const agentScores = allPhases.map(p => {
                   const raw = p === 'ticketing' ? runPhaseData?.ticket?.confidence : runPhaseData?.[p]?.confidence;
                   return typeof raw === 'number' ? raw : null;
                 }).filter((v): v is number => v !== null);
@@ -2158,7 +2164,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                             Avg Conf: {avgConf}%
                           </span>
                         )}
-                        <span className="text-[0.65rem] text-[var(--t3)]">{completedAgents}/7 agents</span>
+                        <span className="text-[0.65rem] text-[var(--t3)]">{completedAgents}/{AGENT_PHASES_UI.length} agents</span>
                       </div>
                       <ChevronRight size={14} className={`text-[var(--t3)] transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                     </button>
@@ -2185,8 +2191,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                         )}
                         <div>
                           <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Agent Confidence</p>
-                          <div className="grid grid-cols-7 gap-1">
-                            {['analysis','intel','knowledge','correlation','ticketing','response','validation'].map((p) => {
+                          <div className="grid grid-cols-9 gap-1">
+                            {['analysis','intel','knowledge','correlation','recall','ioc_check','ticketing','response','validation'].map((p) => {
                               const raw = p === 'ticketing' ? runPhaseData?.ticket?.confidence : runPhaseData?.[p]?.confidence;
                               const pct = typeof raw === 'number' ? Math.round(raw * 100) : null;
                               return (
@@ -2198,7 +2204,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                                     />
                                   </div>
                                   <span className="text-[0.55rem] text-[var(--t4)] text-center leading-none">{pct !== null ? `${pct}%` : '—'}</span>
-                                  <span className="text-[0.5rem] text-[var(--t3)] text-center leading-none capitalize">{p.slice(0,4)}</span>
+                                  <span className="text-[0.5rem] text-[var(--t3)] text-center leading-none capitalize">{p === 'ioc_check' ? 'ioc' : p.slice(0,4)}</span>
                                 </div>
                               );
                             })}
@@ -2233,12 +2239,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
         />
 
         <div ref={agentsRef} className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] shadow-sm overflow-hidden">
-          {/* ── Pipeline header ── */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--b3)] bg-[var(--s1)]">
-            <div className="flex items-center gap-2">
-              <p className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--p1)]">Swarm Pipeline</p>
-              <span className="text-[0.55rem] font-bold px-1.5 py-0.5 rounded-full bg-[var(--p1)]/10 text-[var(--p1)] border border-[var(--p1)]/20 uppercase tracking-wide">hub-and-swarm</span>
-            </div>
+            <p className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--p1)]">Swarm Pipeline</p>
             <div className="flex items-center gap-3">
               {isRerunning && elapsedMs !== null ? (
                 <div className="flex items-center gap-1.5">
@@ -2252,9 +2254,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
             </div>
           </div>
 
-          {/* ── Planner Decision Panel ── */}
           {(() => {
-            // Show skeleton while orchestration is running
             if (isRerunning) {
               return (
                 <div className="px-4 py-3 border-b border-[var(--b3)] bg-[var(--p1)]/5">
@@ -2314,11 +2314,35 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
             );
           })()}
 
-          {/* ── Phase tiers ── */}
           {(() => {
             const isFP = alert.status === 'FALSE_POSITIVE';
-            // Stagger delay per card position so the shimmer wave cascades left-to-right
             const phaseOrder = agentDefs.map(a => a.id);
+            const phaseStates = agentDefs.map(agent => {
+              const hist = agentRunHistory[agent.id] || [];
+              const runCount = hist.length;
+              const isDone = runCount > 0;
+              const isRunning = runningPhase === agent.id;
+              const isFallback = Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
+              const isSkipped = !isFP && aiData?.phaseData && (agent.id in aiData.phaseData) && aiData.phaseData[agent.id] === null;
+              return { isDone, isRunning, isFallback, isSkipped };
+            });
+            const doneCount = phaseStates.filter(p => p.isDone).length;
+            const runningCount = phaseStates.filter(p => p.isRunning).length;
+            const pendingCount = phaseStates.filter(p => !p.isDone && !p.isRunning && !p.isSkipped).length;
+            const fallbackCount = phaseStates.filter(p => p.isFallback).length;
+
+            const getSnippet = (agent: typeof agentDefs[0], result: any) => {
+              if (!result) return 'No output yet.';
+              const raw = agent.getContent?.(result);
+              const text =
+                Array.isArray(raw) ? raw.join(', ') :
+                typeof raw === 'string' ? raw :
+                raw == null ? '' :
+                String(raw);
+              const compact = text.replace(/\s+/g, ' ').trim();
+              if (!compact) return agent.desc;
+              return compact.length > 110 ? `${compact.slice(0, 110)}…` : compact;
+            };
 
             const renderPhaseCard = (agent: typeof agentDefs[0]) => {
               const isRunningThis = runningPhase === agent.id;
@@ -2326,167 +2350,160 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               const runCount = hist.length;
               const isDone = runCount > 0;
               const currentIdx = isDone ? (agentRunIndex[agent.id] ?? runCount - 1) : 0;
+              const displayResult = isDone ? hist[Math.min(currentIdx, runCount - 1)] : null;
               const confidence = getAgentConfidence(agent.id);
-              const pct = confidence == null ? null : Math.round(confidence * 100);
+              const confidenceState = getConfidenceStatus(confidence);
               const isViewingLatest = currentIdx === runCount - 1;
               const isExpanded = expandedAgent === agent.id;
-              const bar = pct == null ? 'bg-[var(--s2)]' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
               const isFallback = Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
               const isSkipped = !isFP && aiData?.phaseData && (agent.id in aiData.phaseData) && aiData.phaseData[agent.id] === null;
               const memHits = (agent.id === 'recall' || agent.id === 'ioc_check')
-                ? (aiData?.phaseData?.[agent.id]?.hits?.length ?? null)
+                ? (displayResult?.hits?.length ?? aiData?.phaseData?.[agent.id]?.hits?.length ?? null)
                 : null;
               const isSkeleton = isRerunning && !isDone && !isRunningThis;
-              // Stagger: each card gets a cascading delay based on its position
               const staggerDelay = `${phaseOrder.indexOf(agent.id) * 120}ms`;
+              const statusText = isFP || isSkipped ? 'Skipped' : isRunningThis ? 'Running' : isDone ? 'Complete' : 'Pending';
 
               return (
-                <button
+                <div
                   key={agent.id}
-                  type="button"
-                  onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
-                  className={`p-3 text-left transition-colors relative flex-1 min-w-0 ${
-                    isExpanded ? 'bg-[var(--p1)]/8' : 'hover:bg-[var(--s1)]'
-                  } ${isRunningThis ? 'bg-[var(--p1)]/10' : ''} ${(isFP || isSkipped) ? 'opacity-40' : ''}`}
+                  className={`rounded-lg border border-[var(--b2)] bg-[var(--s0)] overflow-hidden ${
+                    isExpanded ? 'ring-1 ring-[var(--p1)]/30 border-[var(--p1)]/30' : ''
+                  } ${(isFP || isSkipped) ? 'opacity-45' : ''}`}
                 >
-                  <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
+                    className={`w-full px-3 py-2.5 text-left transition-colors ${isExpanded ? 'bg-[var(--p1)]/6' : 'hover:bg-[var(--s1)]'} ${isRunningThis ? 'bg-[var(--p1)]/10' : ''}`}
+                  >
                     {isSkeleton ? (
-                      <div className="skeleton w-6 h-6 rounded-md shrink-0" style={{ animationDelay: staggerDelay }} />
+                      <div className="flex items-center gap-3">
+                        <div className="skeleton w-7 h-7 rounded-md shrink-0" style={{ animationDelay: staggerDelay }} />
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <div className="skeleton h-2.5 w-40" style={{ animationDelay: staggerDelay }} />
+                          <div className="skeleton h-2.5 w-2/3" style={{ animationDelay: staggerDelay }} />
+                        </div>
+                        <div className="skeleton w-8 h-8 rounded-full shrink-0" style={{ animationDelay: staggerDelay }} />
+                      </div>
                     ) : (
-                      <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
-                        isRunningThis ? 'bg-[var(--p1)]' : isDone ? 'bg-green-600' : 'bg-[var(--s2)]'
-                      }`}>
-                        {isRunningThis
-                          ? <div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                          : <agent.icon size={12} className={isDone ? 'text-white' : 'text-[var(--t4)]'} />
-                        }
+                      <div className="flex items-center gap-3">
+                        <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${
+                          isRunningThis ? 'bg-[var(--p1)]' : isDone ? 'bg-green-600' : 'bg-[var(--s2)]'
+                        }`}>
+                          {isRunningThis
+                            ? <div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                            : <agent.icon size={13} className={isDone ? 'text-white' : 'text-[var(--t4)]'} />
+                          }
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                            <p className="text-[0.72rem] font-bold text-[var(--t7)]">{agent.label}</p>
+                            <span className="text-[0.52rem] font-bold px-1.5 py-0.5 rounded border border-[var(--b2)] bg-[var(--s1)] text-[var(--t4)] uppercase tracking-wide">{statusText}</span>
+                            {isFallback && !isFP && !isSkipped && (
+                              <span className="text-[0.52rem] font-bold px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-700 uppercase tracking-wide">Fallback</span>
+                            )}
+                            {memHits !== null && (
+                              <span className="text-[0.52rem] font-bold px-1.5 py-0.5 rounded border border-[var(--p1)]/20 bg-[var(--p1)]/10 text-[var(--p1)]">{memHits} hit{memHits !== 1 ? 's' : ''}</span>
+                            )}
+                          </div>
+                          <p className="text-[0.66rem] text-[var(--t5)] leading-relaxed truncate">{getSnippet(agent, displayResult)}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <ConfidenceDonut value={confidence} />
+                          <div className={`text-[0.5rem] font-black px-1.5 py-0.5 rounded border ${confidenceState.cls}`}>
+                            {confidenceState.label}
+                          </div>
+                          <ChevronDown size={14} className={`text-[var(--t3)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                        </div>
                       </div>
                     )}
-                    {isSkeleton
-                      ? <div className="skeleton h-2.5 flex-1" style={{ animationDelay: staggerDelay }} />
-                      : <p className="text-[0.7rem] font-bold text-[var(--t7)] truncate flex-1">{agent.label}</p>
-                    }
-                  </div>
-                  <div className="space-y-1">
-                    {isSkeleton ? (
-                      <>
-                        <div className="skeleton h-1 w-full rounded-full" style={{ animationDelay: staggerDelay }} />
-                        <div className="skeleton h-2.5 w-10" style={{ animationDelay: staggerDelay }} />
-                      </>
-                    ) : (
-                      <>
-                        <MiniBar value={pct ?? 0} color={bar} />
-                        <div className="flex items-center justify-between text-[0.6rem] font-mono gap-1 flex-wrap">
-                          {isFP || isSkipped ? (
-                            <span className="text-[0.55rem] text-[var(--t3)] bg-[var(--s1)] border border-[var(--b2)] rounded px-1 py-0.5 font-bold uppercase tracking-wide">Skipped</span>
-                          ) : isRunningThis ? (
-                            <span className="text-[var(--p1)] font-bold animate-pulse">Running…</span>
-                          ) : (
-                            <span className={pct == null ? 'text-[var(--t3)]' : 'text-[var(--t5)] font-bold'}>{pct == null ? '— pending' : `${pct}%`}</span>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="border-t border-[var(--b2)] bg-[var(--s1)]/60 px-3 py-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[0.58rem] font-bold px-1.5 py-0.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[var(--t4)]">
+                            confidence {confidence == null ? '—' : `${Math.round(confidence * 100)}%`}
+                          </span>
+                          {runCount > 0 && (
+                            <div className="flex items-center gap-0.5 bg-[var(--s0)] border border-[var(--b2)] rounded-full px-1.5 py-0.5">
+                              <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t6)] disabled:opacity-25">‹</button>
+                              <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>{currentIdx + 1}/{runCount}</span>
+                              <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t6)] disabled:opacity-25">›</button>
+                            </div>
                           )}
-                          {runCount > 0 && <span className={`${isViewingLatest ? 'text-green-600' : 'text-amber-600'} font-black`}>{currentIdx + 1}/{runCount}</span>}
                         </div>
-                        {isFallback && !isFP && !isSkipped && (
-                          <span className="text-[0.55rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5 font-bold uppercase tracking-wide">⚠ Unavailable</span>
-                        )}
-                        {memHits !== null && memHits > 0 && (
-                          <span className="text-[0.55rem] text-[var(--p1)] bg-[var(--p1)]/10 border border-[var(--p1)]/20 rounded px-1 py-0.5 font-bold">✦ {memHits} hit{memHits !== 1 ? 's' : ''}</span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, true); }}
+                            disabled={feedbackLoading[`${agent.id}-true`] || !!feedbackSubmitted[agent.id]}
+                            className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'up' ? 'text-green-600 bg-green-100' : 'hover:bg-green-100 text-[var(--t3)] hover:text-green-600'}`}
+                            title="Mark as accurate"
+                          >
+                            <ThumbsUp size={14} className={feedbackLoading[`${agent.id}-true`] ? 'animate-pulse' : ''} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, false); }}
+                            disabled={feedbackLoading[`${agent.id}-false`] || !!feedbackSubmitted[agent.id]}
+                            className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'down' ? 'text-red-600 bg-red-100' : 'hover:bg-red-100 text-[var(--t3)] hover:text-red-600'}`}
+                            title="Mark as inaccurate"
+                          >
+                            <ThumbsDown size={14} className={feedbackLoading[`${agent.id}-false`] ? 'animate-pulse' : ''} />
+                          </button>
+                        </div>
+                      </div>
+                      {displayResult ? (
+                        <pre className="bg-slate-950 text-emerald-300 rounded p-3 text-[0.65rem] leading-relaxed font-mono overflow-x-auto max-h-64 overflow-y-auto">{JSON.stringify(displayResult, null, 2)}</pre>
+                      ) : (
+                        <p className="text-[0.68rem] text-[var(--t4)] italic">No result yet for this agent.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             };
 
             return (
               <div className="divide-y divide-[var(--b3)]">
-                {/* Tier 1: Mandatory */}
+                <div className="px-3 py-2 bg-[var(--s1)]/60 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[0.55rem] font-bold px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">Complete {doneCount}</span>
+                    <span className="text-[0.55rem] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">Running {runningCount}</span>
+                    <span className="text-[0.55rem] font-bold px-1.5 py-0.5 rounded bg-[var(--s0)] text-[var(--t5)] border border-[var(--b2)]">Pending {pendingCount}</span>
+                    <span className="text-[0.55rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">Fallback {fallbackCount}</span>
+                  </div>
+                  <span className="text-[0.58rem] text-[var(--t4)]">Confidence = model certainty</span>
+                </div>
+
                 <div className="px-3 pt-3 pb-2">
                   <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-2">Mandatory</p>
-                  <div className="flex gap-1">
+                  <div className="grid gap-2">
                     {agentDefs.filter(a => MANDATORY_PHASES.includes(a.id)).map(renderPhaseCard)}
                   </div>
                 </div>
 
-                {/* Tier 2: Investigators (parallel) */}
                 <div className="px-3 pt-3 pb-2">
                   <div className="flex items-center gap-2 mb-2">
                     <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Investigators</p>
                     <span className="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-[var(--p1)]/10 text-[var(--p1)] border border-[var(--p1)]/20 uppercase tracking-wide">⚡ parallel</span>
                   </div>
-                  <div className="flex gap-1 flex-wrap">
+                  <div className="grid gap-2">
                     {agentDefs.filter(a => INVESTIGATOR_PHASES.includes(a.id)).map(renderPhaseCard)}
                   </div>
                 </div>
 
-                {/* Tier 3: Composers (sequential) */}
                 <div className="px-3 pt-3 pb-2">
                   <div className="flex items-center gap-2 mb-2">
                     <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Composers</p>
                     <span className="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-[var(--t4)] border border-[var(--b2)] uppercase tracking-wide dark:bg-[var(--s2)] dark:text-[var(--t3)]">→ sequential</span>
                   </div>
-                  <div className="flex items-center gap-1 flex-wrap">
-                    {agentDefs.filter(a => COMPOSER_PHASES.includes(a.id)).map((agent, idx, arr) => (
-                      <React.Fragment key={agent.id}>
-                        {renderPhaseCard(agent)}
-                        {idx < arr.length - 1 && <span className="text-[var(--t3)] text-xs font-bold shrink-0">→</span>}
-                      </React.Fragment>
-                    ))}
+                  <div className="grid gap-2">
+                    {agentDefs.filter(a => COMPOSER_PHASES.includes(a.id)).map(renderPhaseCard)}
                   </div>
                 </div>
-              </div>
-            );
-          })()}
-
-          {/* ── Expanded phase detail panel ── */}
-          {expandedAgent && (() => {
-            const agent = agentDefs.find(a => a.id === expandedAgent)!;
-            const hist = agentRunHistory[agent.id] || [];
-            const runCount = hist.length;
-            const currentIdx = runCount > 0 ? (agentRunIndex[agent.id] ?? runCount - 1) : 0;
-            const displayResult = runCount > 0 ? hist[Math.min(currentIdx, runCount - 1)] : null;
-            const isViewingLatest = currentIdx === runCount - 1;
-            if (!displayResult) {
-              return <div className="p-4 border-t border-[var(--b3)] text-[0.75rem] text-[var(--t3)] italic">No results yet for <span className="font-bold">{agent.label}</span>. Run a fresh orchestration to populate this phase.</div>;
-            }
-            return (
-              <div className="border-t border-[var(--b3)] p-4 bg-[var(--s1)]/60 space-y-2">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <agent.icon size={14} className="text-[var(--p1)]" />
-                    <p className="text-[0.75rem] font-black uppercase tracking-wider text-[var(--t6)]">{agent.label}</p>
-                    <span className="text-[0.62rem] text-[var(--t4)]">{agent.desc}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1 border-r border-[var(--b2)] pr-3 mr-1">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, true); }}
-                        disabled={feedbackLoading[`${agent.id}-true`] || !!feedbackSubmitted[agent.id]}
-                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'up' ? 'text-green-600 bg-green-100' : 'hover:bg-green-100 text-[var(--t3)] hover:text-green-600'}`}
-                        title="Mark as accurate"
-                      >
-                        <ThumbsUp size={14} className={feedbackLoading[`${agent.id}-true`] ? 'animate-pulse' : ''} />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleFeedback(agent.id, false); }}
-                        disabled={feedbackLoading[`${agent.id}-false`] || !!feedbackSubmitted[agent.id]}
-                        className={`p-1 rounded transition-colors disabled:opacity-50 ${feedbackSubmitted[agent.id] === 'down' ? 'text-red-600 bg-red-100' : 'hover:bg-red-100 text-[var(--t3)] hover:text-red-600'}`}
-                        title="Mark as inaccurate"
-                      >
-                        <ThumbsDown size={14} className={feedbackLoading[`${agent.id}-false`] ? 'animate-pulse' : ''} />
-                      </button>
-                    </div>
-                    {runCount > 0 && (
-                      <div className="flex items-center gap-0.5 bg-[var(--s0)] border border-[var(--b2)] rounded-full px-1.5 py-0.5">
-                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, -1); }} disabled={currentIdx <= 0} className="w-4 h-4 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t6)] disabled:opacity-25">‹</button>
-                        <span className={`text-[0.62rem] font-black font-mono px-0.5 ${isViewingLatest ? 'text-green-600' : 'text-amber-600'}`}>{currentIdx + 1}/{runCount}</span>
-                        <button type="button" onClick={(e) => { e.stopPropagation(); navigateAgentRun(agent.id, 1); }} disabled={currentIdx >= runCount - 1} className="w-4 h-4 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t6)] disabled:opacity-25">›</button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <pre className="bg-slate-950 text-emerald-300 rounded p-3 text-[0.65rem] leading-relaxed font-mono overflow-x-auto max-h-64 overflow-y-auto">{JSON.stringify(displayResult, null, 2)}</pre>
               </div>
             );
           })()}
@@ -2561,7 +2578,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           </button>
           <button
             type="button"
-            onClick={() => setConfirmAction({ status: 'ESCALATED', label: 'Escalate', message: 'Escalate this alert to the incident queue for immediate analyst attention?', cls: 'bg-[#004a99] hover:bg-[var(--pd)]' })}
+            onClick={() => setConfirmAction({ status: 'ESCALATED', label: 'Escalate', message: 'Escalate this alert to the incident queue for immediate analyst attention?', cls: 'bg-[var(--p1)] hover:bg-[var(--pd)]' })}
             className="px-4 py-2 rounded-lg border border-[var(--p1)] text-[var(--p1)] font-semibold text-[0.8rem] bg-[var(--s0)] hover:bg-blue-50 transition-colors"
           >
             Escalate
@@ -2569,7 +2586,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           <button
             type="button"
             onClick={() => setConfirmAction({ status: 'CLOSED', label: 'Close Incident', message: 'Close this incident? This marks the alert as resolved.', cls: 'bg-[#1e8e3e] hover:bg-green-700' })}
-            className="px-4 py-2 rounded-lg bg-[#004a99] text-white font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
+            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
           >
             Close Incident
           </button>
@@ -2644,17 +2661,17 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      <div className="flex items-end justify-between border-b border-[var(--b2)] pb-4">
-        <div>
-          <p className="text-[0.65rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1">Academic Prototype</p>
-          <h2 className="text-2xl font-bold text-[var(--p1)]">Multi-Agent SOC Research Overview</h2>
-          <p className="text-sm text-[var(--t4)] mt-1">Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface.</p>
-        </div>
-        <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
-          <AlertTriangle size={14} />
-          Open Investigation
-        </button>
-      </div>
+      <PageHeader
+        eyebrow="Academic Prototype"
+        title="Multi-Agent SOC Research Overview"
+        description="Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface."
+        right={(
+          <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
+            <AlertTriangle size={14} />
+            Open Investigation
+          </button>
+        )}
+      />
 
       <div className="grid grid-cols-5 gap-4">
         {cards.map(card => (
@@ -2672,10 +2689,10 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
       <div className="grid grid-cols-3 gap-5">
         <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
           <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
-            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">7-Agent LangGraph Pipeline</p>
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">{AGENT_PHASES_UI.length}-Agent LangGraph Pipeline</p>
             <span className="text-[0.65rem] text-[var(--t3)] font-mono">linear execution · START to END</span>
           </div>
-          <div className="p-5 grid grid-cols-7 gap-2">
+          <div className="p-5 grid gap-2" style={{ gridTemplateColumns: `repeat(${AGENT_PHASES_UI.length}, minmax(0, 1fr))` }}>
             {AGENT_PHASES_UI.map((agent, i) => {
               const stat = agentStats.find(s => s.phase === agent.phase);
               const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
@@ -2684,7 +2701,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
                 <button key={agent.phase} onClick={() => setActiveTab('agents')} className="text-left group">
                   <div className={`min-h-[146px] border rounded-lg p-3 transition-colors ${fallbackPct > 20 ? 'border-amber-200 bg-amber-50/50' : 'border-[var(--b2)] bg-[var(--s0)] group-hover:bg-[var(--sa)]'}`}>
                     <div className="flex items-center justify-between mb-3">
-                      <span className="w-6 h-6 rounded bg-[#004a99] text-white flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
+                      <span className="w-6 h-6 rounded bg-[var(--p1)] text-white flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
                       <span className="text-[0.58rem] text-[var(--t3)] font-mono">{stat?.total_runs || 0} runs</span>
                     </div>
                     <p className="text-[0.72rem] font-black text-[var(--t7)] leading-tight">{agent.short}</p>
@@ -2715,7 +2732,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
                 {trends.map(t => (
                   <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
                     <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse h-32">
-                      <div className="w-full bg-[#004a99] rounded-sm" style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 4 : 0 }} />
+                      <div className="w-full bg-[var(--p1)] rounded-sm" style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 4 : 0 }} />
                     </div>
                     <span className="text-[0.6rem] text-[var(--t4)] font-mono">{t.count}</span>
                     <span className="text-[0.52rem] text-[var(--t2)]">{t.day.slice(5)}</span>
@@ -2804,6 +2821,8 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
     { name: 'Correlation Agent',   phaseKey: 'correlation' },
     { name: 'Ticketing Agent',     phaseKey: 'ticket' },
     { name: 'Response Agent',      phaseKey: 'response' },
+    { name: 'Memory Recall Agent', phaseKey: 'recall' },
+    { name: 'IOC Memory Agent',    phaseKey: 'ioc_check' },
     { name: 'Validation Agent',    phaseKey: 'validation' },
   ];
 
@@ -2851,7 +2870,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
                 <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
                   <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse" style={{ height: 48 }}>
                     <div
-                      className="w-full bg-[#004a99] rounded-sm transition-all duration-700"
+                      className="w-full bg-[var(--p1)] rounded-sm transition-all duration-700"
                       style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 3 : 0 }}
                     />
                   </div>
@@ -2905,7 +2924,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
                   </div>
                   <div className="h-1.5 w-full bg-[#f0f0f0] rounded-full overflow-hidden">
                     <div
-                      className={`h-full transition-all duration-1000 ${loadNum > 80 ? 'bg-[#d93025]' : 'bg-[#004a99]'}`}
+                      className={`h-full transition-all duration-1000 ${loadNum > 80 ? 'bg-[#d93025]' : 'bg-[var(--p1)]'}`}
                       style={{ width: agentStatus.load }}
                     />
                   </div>
@@ -2936,8 +2955,25 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
   const [filterOpen, setFilterOpen]     = useState(false);
   const [filterSeverity, setFilterSev]  = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [quickFilter, setQuickFilter]   = useState<'ALL' | 'ACTIONABLE' | 'HIGH_RISK' | 'ANALYZING'>('ALL');
   const [searchQuery, setSearchQuery]   = useState('');
   const [filteredAlerts, setFiltered]   = useState<Alert[]>(alerts);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '/' && document.activeElement !== searchInputRef.current) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
+        setSearchQuery('');
+        searchInputRef.current?.blur();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => {
     let result = alerts;
@@ -2951,11 +2987,26 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
     if (filterStatus) {
       result = result.filter(a => a.status === filterStatus);
     }
+    if (quickFilter === 'ACTIONABLE') {
+      result = result.filter(a => ['NEW', 'ANALYZING', 'TRIAGED', 'ESCALATED'].includes(a.status));
+    }
+    if (quickFilter === 'HIGH_RISK') {
+      result = result.filter(a => {
+        const score = getAlertRiskScore(a);
+        return (score != null ? score >= 80 : a.severity >= 12) && a.status !== 'FALSE_POSITIVE' && a.status !== 'CLOSED';
+      });
+    }
+    if (quickFilter === 'ANALYZING') {
+      result = result.filter(a => a.status === 'ANALYZING');
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(a =>
         a.description?.toLowerCase().includes(q) ||
         a.source_ip?.includes(q) ||
+        a.dest_ip?.includes(q) ||
+        a.user?.toLowerCase().includes(q) ||
+        a.hostname?.toLowerCase().includes(q) ||
         a.agent_name?.toLowerCase().includes(q) ||
         a.rule_id?.includes(q) ||
         a.id?.toLowerCase().includes(q)
@@ -2964,10 +3015,10 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
     const ts = (t: string) => new Date(t.replace(' ', 'T')).getTime();
     result = [...result].sort((a, b) => ts(b.timestamp) - ts(a.timestamp));
     setFiltered(result);
-  }, [alerts, filterSeverity, filterStatus, searchQuery]);
+  }, [alerts, filterSeverity, filterStatus, quickFilter, searchQuery]);
 
-  const hasFilters = !!filterSeverity || !!filterStatus;
-  const clearFilters = () => { setFilterSev(''); setFilterStatus(''); };
+  const hasFilters = !!filterSeverity || !!filterStatus || quickFilter !== 'ALL';
+  const clearFilters = () => { setFilterSev(''); setFilterStatus(''); setQuickFilter('ALL'); };
 
   const handleBulkAIClean = () => {
     const fps = alerts.filter(a => {
@@ -2994,6 +3045,14 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
   }).length;
   
   const activeCount = alerts.filter(a => a.status === 'ANALYZING').length;
+  const actionableCount = alerts.filter(a => ['NEW', 'ANALYZING', 'TRIAGED', 'ESCALATED'].includes(a.status)).length;
+
+  const filterButtonClass = (active: boolean, tone: 'green' | 'red' | 'blue' = 'blue') =>
+    `w-full text-left ${active ? (
+      tone === 'green' ? 'ring-2 ring-green-300 bg-green-100' :
+      tone === 'red' ? 'ring-2 ring-red-300 bg-red-100' :
+      'ring-2 ring-blue-300 bg-blue-100'
+    ) : ''} rounded-lg transition-all cursor-pointer`;
 
   return (
     <div className="flex flex-col h-full bg-[var(--s2)]">
@@ -3001,22 +3060,61 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
       <div className="bg-[var(--s0)] border-b border-[var(--b1)] px-6 pt-2 pb-3 shrink-0 shadow-sm z-10 relative">
         <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Queue Intelligence</p>
       <div className="flex gap-6">
+        <div
+          onClick={() => setQuickFilter(quickFilter === 'ACTIONABLE' ? 'ALL' : 'ACTIONABLE')}
+          className={filterButtonClass(quickFilter === 'ACTIONABLE', 'green')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setQuickFilter(quickFilter === 'ACTIONABLE' ? 'ALL' : 'ACTIONABLE');
+            }
+          }}
+        >
         <div className="flex-1 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
           <div>
             <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-widest mb-0.5">Noise Reduction</p>
-            <p className="text-[0.8rem] font-bold text-green-900">AI identified {totalAutoTriagedFP} False Positives</p>
+            <p className="text-[0.8rem] font-bold text-green-900">{actionableCount} actionable alerts · {totalAutoTriagedFP} AI false positives</p>
           </div>
-          <button onClick={handleBulkAIClean} className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-[0.7rem] font-bold transition-colors shadow-sm">
+          <button onClick={(e) => { e.stopPropagation(); handleBulkAIClean(); }} className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-[0.7rem] font-bold transition-colors shadow-sm">
             Clean All ({totalAutoTriagedFP})
           </button>
         </div>
+        </div>
+        <div
+          onClick={() => setQuickFilter(quickFilter === 'HIGH_RISK' ? 'ALL' : 'HIGH_RISK')}
+          className={filterButtonClass(quickFilter === 'HIGH_RISK', 'red')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setQuickFilter(quickFilter === 'HIGH_RISK' ? 'ALL' : 'HIGH_RISK');
+            }
+          }}
+        >
         <div className="flex-1 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
           <p className="text-[0.65rem] font-black text-red-700 uppercase tracking-widest mb-0.5">High-Priority Focus</p>
           <p className="text-[0.8rem] font-bold text-red-900">{highRiskCount} Alerts require immediate containment</p>
         </div>
+        </div>
+        <div
+          onClick={() => setQuickFilter(quickFilter === 'ANALYZING' ? 'ALL' : 'ANALYZING')}
+          className={filterButtonClass(quickFilter === 'ANALYZING')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setQuickFilter(quickFilter === 'ANALYZING' ? 'ALL' : 'ANALYZING');
+            }
+          }}
+        >
         <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
           <p className="text-[0.65rem] font-black text-blue-700 uppercase tracking-widest mb-0.5">Agent Status</p>
           <p className="text-[0.8rem] font-bold text-blue-900">{activeCount > 0 ? `Agents processing ${activeCount} alerts` : 'Agents standing by'}</p>
+        </div>
         </div>
       </div>
       </div>
@@ -3029,7 +3127,7 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
               <button
                 onClick={() => setFilterOpen(!filterOpen)}
                 className={`flex items-center gap-1 text-[0.65rem] font-black uppercase tracking-wider px-2 py-1 rounded transition-colors ${
-                  hasFilters ? 'bg-[#004a99] text-white' : 'text-[var(--p1)] hover:bg-[var(--sa)]'
+                  hasFilters ? 'bg-[var(--p1)] text-white' : 'text-[var(--p1)] hover:bg-[var(--sa)]'
                 }`}
               >
                 <Filter className="w-3 h-3" />
@@ -3079,12 +3177,18 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
               <input
+                ref={searchInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search alerts, IPs, rules..."
+                placeholder="Search ID, IP, user, host, rule… (/ to focus)"
                 className="w-full bg-[var(--s0)] border border-[var(--b2)] rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
               />
+            </div>
+            <div className="flex items-center gap-2 text-[0.58rem] font-bold text-[var(--t3)] uppercase tracking-wide">
+              <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[var(--p1)]" />Completed agent phase</span>
+              <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" />Running</span>
+              <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[var(--s2)]" />Pending</span>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -3183,27 +3287,27 @@ const MitreIntelligence = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertC
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      <div className="flex items-end justify-between border-b border-[var(--b2)] pb-4">
-        <div>
-          <p className="text-[0.65rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1">Evidence Map</p>
-          <h2 className="text-2xl font-bold text-[var(--p1)]">MITRE & Threat Intelligence</h2>
-          <p className="text-sm text-[var(--t4)] mt-1">A research view of techniques, indicators, MISP enrichment, and the alerts that produced them.</p>
-        </div>
-        <div className="grid grid-cols-3 gap-2 text-right">
-          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
-            <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Techniques</p>
-            <p className="text-lg font-black text-[var(--p1)]">{topMitre.length}</p>
+      <PageHeader
+        eyebrow="Evidence Map"
+        title="MITRE & Threat Intelligence"
+        description="A research view of techniques, indicators, MISP enrichment, and the alerts that produced them."
+        right={(
+          <div className="grid grid-cols-3 gap-2 text-right">
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
+              <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Techniques</p>
+              <p className="text-lg font-black text-[var(--p1)]">{topMitre.length}</p>
+            </div>
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
+              <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Unique IOCs</p>
+              <p className="text-lg font-black text-[var(--p1)]">{uniqueIocs.size}</p>
+            </div>
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
+              <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">MISP Hits</p>
+              <p className="text-lg font-black text-[var(--p1)]">{mispRows.reduce((a, b) => a + b.hits, 0)}</p>
+            </div>
           </div>
-          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
-            <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Unique IOCs</p>
-            <p className="text-lg font-black text-[var(--p1)]">{uniqueIocs.size}</p>
-          </div>
-          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
-            <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">MISP Hits</p>
-            <p className="text-lg font-black text-[var(--p1)]">{mispRows.reduce((a, b) => a + b.hits, 0)}</p>
-          </div>
-        </div>
-      </div>
+        )}
+      />
 
       <div className="grid grid-cols-5 gap-5">
         <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
@@ -3216,7 +3320,7 @@ const MitreIntelligence = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertC
                 <div className="flex items-center gap-3">
                   <span className="w-20 font-mono text-[0.78rem] font-black text-[var(--p1)]">{tech}</span>
                   <div className="flex-1 h-2 bg-[var(--s1)] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#004a99] group-hover:bg-[#0066cc]" style={{ width: `${Math.max(8, (data.count / maxMitre) * 100)}%` }} />
+                    <div className="h-full bg-[var(--p1)] group-hover:bg-[#0066cc]" style={{ width: `${Math.max(8, (data.count / maxMitre) * 100)}%` }} />
                   </div>
                   <span className="w-16 text-right text-[0.68rem] font-bold text-[var(--t4)]">{data.count} alerts</span>
                 </div>
@@ -3529,7 +3633,7 @@ const ActionsTab = () => {
                       <button
                         onClick={() => handleSaveConfig(intg.name)}
                         disabled={saving[`cfg_${intg.name}`]}
-                        className="w-full mt-1 py-1.5 rounded bg-[#004a99] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
+                        className="w-full mt-1 py-1.5 rounded bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
                       >
                         {saving[`cfg_${intg.name}`] ? 'Saving…' : 'Save Configuration'}
                       </button>
@@ -3753,7 +3857,7 @@ const FirewallSection = () => {
         {isAdmin && (
           <button
             onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] transition-colors"
           >
             <Plus size={13} />
             Add Firewall
@@ -3794,7 +3898,7 @@ const FirewallSection = () => {
             ))}
           </div>
           <div className="flex gap-2 pt-1">
-            <button type="submit" className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)]">Add Firewall</button>
+            <button type="submit" className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)]">Add Firewall</button>
             <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.78rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
           </div>
         </form>
@@ -3930,17 +4034,17 @@ const FirewallSection = () => {
 
 const ResponseControls = () => (
   <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
-    <div className="flex items-end justify-between border-b border-[var(--b2)] pb-4">
-      <div>
-        <p className="text-[0.65rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1">Containment Layer</p>
-        <h2 className="text-2xl font-bold text-[var(--p1)]">Response Controls</h2>
-        <p className="text-sm text-[var(--t4)] mt-1">Firewall enforcement, manual block/unblock, and auto-block readiness for agent response actions.</p>
-      </div>
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2 text-right">
-        <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Supported</p>
-        <p className="text-[0.78rem] font-black text-[var(--p1)]">FortiGate · pfSense · Sophos</p>
-      </div>
-    </div>
+    <PageHeader
+      eyebrow="Containment Layer"
+      title="Response Controls"
+      description="Firewall enforcement, manual block/unblock, and auto-block readiness for agent response actions."
+      right={(
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2 text-right">
+          <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Supported</p>
+          <p className="text-[0.78rem] font-black text-[var(--p1)]">FortiGate · pfSense · Sophos</p>
+        </div>
+      )}
+    />
     <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-[0.78rem] text-amber-800 font-semibold">
       Auto-blocking is controlled per firewall and should be used only when the response agent emits a high-confidence BLOCK_IP action.
     </div>
@@ -3990,6 +4094,18 @@ const AgentsTab = () => {
       name: 'Correlation Agent',
       desc: 'Detects multi-alert patterns, identifies attack campaigns, escalates risk level.',
       prompt: `You are a Security Correlation Agent. Analyse the current alert against recent alerts to detect multi-stage campaigns. Respond ONLY with valid JSON:\n\n{\n  "campaign_detected": false,\n  "campaign_name": "<descriptive name or 'Isolated Incident'>",\n  "campaign_description": "<what the campaign appears to be>",\n  "related_alert_count": 0,\n  "escalation_needed": false,\n  "kill_chain_stage": "<Reconnaissance|Weaponization|Delivery|Exploitation|Installation|C2|Actions on Objectives>"\n}`,
+    },
+    {
+      phase: 'recall',
+      name: 'Memory Recall Agent',
+      desc: 'Finds similar past incidents from insight memory for contextual guidance.',
+      prompt: `You are a SOC memory recall agent. Find similar prior incidents to the current alert and return ONLY valid JSON:\n\n{\n  "hits": [\n    {\n      "alert_id": "<historical alert id>",\n      "summary": "<short prior incident summary>",\n      "outcome": "<resolved|escalated|false_positive|other>",\n      "similarity": 0.0\n    }\n  ],\n  "confidence": 0.8\n}`,
+    },
+    {
+      phase: 'ioc_check',
+      name: 'IOC History Agent',
+      desc: 'Checks IOC memory history (first seen, last seen, volume, and threat level).',
+      prompt: `You are an IOC history agent. Check extracted indicators against historical IOC memory and return ONLY valid JSON:\n\n{\n  "hits": [\n    {\n      "value": "<ioc value>",\n      "type": "<ip|domain|hash|user|host|process|file>",\n      "first_seen": "<timestamp or null>",\n      "last_seen": "<timestamp or null>",\n      "alert_count": 0,\n      "threat_level": "<low|medium|high|unknown>"\n    }\n  ],\n  "confidence": 0.8\n}`,
     },
     {
       phase: 'ticketing',
@@ -4162,7 +4278,7 @@ const AgentsTab = () => {
             </div>
             {isAdmin && (
               <>
-                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[#004a99] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
+                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
                   {savingLocal ? 'Saving…' : 'Save'}
                 </button>
                 <button onClick={handleTestLocal} disabled={localStatus === 'checking'} className="px-4 py-2 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.75rem] font-bold hover:bg-[var(--sa)] disabled:opacity-50 transition-colors">
@@ -4437,7 +4553,7 @@ const SettingsTab = () => {
           </div>
           <button
             onClick={toggleDark}
-            className={`relative inline-flex h-7 w-13 items-center rounded-full transition-colors duration-200 focus:outline-none ${dark ? 'bg-[#004a99]' : 'bg-slate-300'}`}
+            className={`relative inline-flex h-7 w-13 items-center rounded-full transition-colors duration-200 focus:outline-none ${dark ? 'bg-[var(--p1)]' : 'bg-slate-300'}`}
           >
             <span className={`inline-block h-5 w-5 transform rounded-full bg-[var(--s0)] shadow-md transition-transform duration-200 ${dark ? 'translate-x-7' : 'translate-x-1'}`} />
           </button>
@@ -4484,7 +4600,7 @@ const SettingsTab = () => {
           <button
             type="submit"
             disabled={pwLoading}
-            className="mt-1 px-4 py-2 bg-[#004a99] text-white text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
+            className="mt-1 px-4 py-2 bg-[var(--p1)] text-white text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
           >
             {pwLoading ? 'Updating…' : 'Update Password'}
           </button>
@@ -4497,7 +4613,7 @@ const SettingsTab = () => {
             <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">User Management</h3>
             <button
               onClick={() => setShowCreate(!showCreateForm)}
-              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <UserPlus className="w-3 h-3" />
               Add User
@@ -4525,7 +4641,7 @@ const SettingsTab = () => {
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
                 <button type="button" onClick={() => setShowCreate(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
               </div>
             </form>
@@ -4575,7 +4691,7 @@ const SettingsTab = () => {
           {isAdmin && (
             <button
               onClick={() => setShowPBForm(!showPBForm)}
-              className="flex items-center gap-1.5 bg-[#004a99] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Playbook
@@ -4603,7 +4719,7 @@ const SettingsTab = () => {
               <textarea required value={pbForm.steps} onChange={e => setPBForm({...pbForm, steps: e.target.value})} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account..." className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] resize-none font-mono" />
             </div>
             <div className="flex gap-2">
-              <button type="submit" className="bg-[#004a99] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+              <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
               <button type="button" onClick={() => setShowPBForm(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
             </div>
           </form>
@@ -4668,7 +4784,7 @@ const LoginPage = () => {
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-md bg-[var(--s0)] rounded-lg shadow-xl border border-[var(--b1)] overflow-hidden"
       >
-        <div className="bg-[#004a99] p-8 text-white text-center">
+        <div className="bg-[var(--p1)] p-8 text-white text-center">
           <div className="w-20 h-20 rounded-full bg-[var(--s0)] flex items-center justify-center mx-auto mb-4 shadow-md overflow-hidden">
             <img src="/logo-BBS.png" className="h-14 w-14 object-contain" alt="Black Box Solutions" />
           </div>
@@ -4713,7 +4829,7 @@ const LoginPage = () => {
 
           <button 
             disabled={loading}
-            className="w-full bg-[#004a99] text-white font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
+            className="w-full bg-[var(--p1)] text-white font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
           >
             {loading ? 'Verifying Credentials...' : 'Initialize Session'}
           </button>
@@ -4920,13 +5036,11 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
       {/* Header */}
-      <div className="flex items-end justify-between pb-3 border-b border-[var(--b2)]">
-        <div>
-          <h2 className="text-2xl font-bold text-[var(--p1)]">Incident Reports</h2>
-          <p className="text-sm text-[var(--t4)] mt-0.5">Agent-generated reports · {new Date().toLocaleDateString()}</p>
-        </div>
-        <p className="text-xs font-mono text-[var(--t3)]">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>
-      </div>
+      <PageHeader
+        title="Incident Reports"
+        description={`Agent-generated reports · ${new Date().toLocaleDateString()}`}
+        right={<p className="text-xs font-mono text-[var(--t3)]">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>}
+      />
 
       {/* Top stats row — 3 cards */}
       <div className="grid grid-cols-3 gap-4">
@@ -4936,7 +5050,7 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
             <span className="text-4xl font-black text-[var(--p1)]">{alerts.length}</span>
             <span className="text-sm text-[#1e8e3e] font-bold mb-1">{triaged + falsePos} resolved</span>
           </div>
-          {[{ label: 'Triaged', val: triaged, color: 'bg-[#004a99]' }, { label: 'False Pos.', val: falsePos, color: 'bg-slate-400' }].map(s => (
+          {[{ label: 'Triaged', val: triaged, color: 'bg-[var(--p1)]' }, { label: 'False Pos.', val: falsePos, color: 'bg-slate-400' }].map(s => (
             <div key={s.label}>
               <div className="flex justify-between text-[0.72rem] mb-0.5"><span>{s.label}</span><span className="font-bold">{s.val}</span></div>
               <div className="h-1.5 bg-[var(--s1)] rounded-full overflow-hidden">
@@ -4970,7 +5084,7 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
                 <span className="text-[var(--t3)]">{count}×</span>
               </div>
               <div className="h-1 bg-[var(--s1)] rounded-full overflow-hidden">
-                <div className="h-full bg-[#004a99]" style={{ width: `${(count / alerts.length) * 100}%` }} />
+                <div className="h-full bg-[var(--p1)]" style={{ width: `${(count / alerts.length) * 100}%` }} />
               </div>
             </div>
           )) : <p className="text-[0.72rem] text-[var(--t3)] italic">Run agents to generate MITRE data.</p>}
@@ -4989,7 +5103,7 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
                   {summary.daily_volume?.map((d: any, i: number) => {
                     const max = Math.max(...(summary.daily_volume?.map((x: any) => x.count) || [1]), 1);
                     return (
-                      <div key={i} title={`${d.day}: ${d.count}`} className="flex-1 bg-[#004a99] rounded-sm" style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }} />
+                      <div key={i} title={`${d.day}: ${d.count}`} className="flex-1 bg-[var(--p1)] rounded-sm" style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }} />
                     );
                   })}
                 </div>

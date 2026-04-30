@@ -15,7 +15,7 @@ export async function recallNode(state: any) {
 
   if (!queryText.trim()) {
     logs.push(`[Recall] No query text — skipped.`);
-    return { recall: { available: true, hits: [] }, agentLogs: logs };
+    return { recall: { available: true, hits: [], confidence: 0 }, agentLogs: logs };
   }
 
   const hits = await semanticStore.search(queryText, 5, 0.65);
@@ -29,8 +29,13 @@ export async function recallNode(state: any) {
     }
   }
 
+  const avgSimilarity = hits.length > 0
+    ? hits.slice(0, 3).reduce((acc, h) => acc + (typeof h.similarity === "number" ? h.similarity : 0), 0) / Math.min(3, hits.length)
+    : 0.55;
+  const confidence = Math.max(0, Math.min(1, avgSimilarity));
+
   return {
-    recall: { available: true, hits },
+    recall: { available: true, hits, confidence },
     agentLogs: logs,
   };
 }
