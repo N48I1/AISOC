@@ -11,7 +11,9 @@ export type AgentPhase =
   | "correlation"
   | "ticketing"
   | "response"
-  | "validation";
+  | "validation"
+  | "recall"
+  | "ioc_check";
 
 export interface LocalModel {
   name:        string;
@@ -67,7 +69,7 @@ export async function orchestrateAnalysis(
   alert: any,
   _recentAlerts: any[],
   onUpdate: (data: any) => void
-): Promise<void> {
+): Promise<any> {
   onUpdate({ status: "ANALYZING" });
   try {
     const res = await fetch(`${API}/orchestrate`, {
@@ -79,10 +81,13 @@ export async function orchestrateAnalysis(
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `Orchestration failed (${res.status})`);
     }
-    onUpdate(await res.json());
+    const data = await res.json();
+    onUpdate(data);
+    return data;
   } catch (err: any) {
     console.error("[orchestrateAnalysis]", err?.message);
     onUpdate({ status: "NEW" });
+    return null;
   }
 }
 

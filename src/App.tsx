@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
@@ -267,10 +267,16 @@ const AGENT_PHASES_UI: Array<{ phase: AgentPhase; label: string; short: string }
   { phase: 'intel',       label: 'Threat Intel',     short: 'Intel' },
   { phase: 'knowledge',   label: 'RAG Knowledge',    short: 'RAG' },
   { phase: 'correlation', label: 'Correlation',      short: 'Correlate' },
+  { phase: 'recall',      label: 'Memory Recall',    short: 'Recall' },
+  { phase: 'ioc_check',   label: 'IOC History',      short: 'IOC' },
   { phase: 'ticketing',   label: 'Ticketing',        short: 'Ticket' },
   { phase: 'response',    label: 'Response',         short: 'Respond' },
   { phase: 'validation',  label: 'SLA Validation',   short: 'Validate' },
 ];
+
+const MANDATORY_PHASES    = ['analysis'];
+const INVESTIGATOR_PHASES = ['intel', 'knowledge', 'correlation', 'recall', 'ioc_check'];
+const COMPOSER_PHASES     = ['ticketing', 'response', 'validation'];
 
 const parseAlertAi = (alert?: Alert | null): any | null => {
   if (!alert?.ai_analysis) return null;
@@ -1078,6 +1084,8 @@ const buildInitialHistory = (aiData: any): Record<string, any[]> => {
   if (pd.intel)       h.intel       = [pd.intel];
   if (pd.knowledge)   h.knowledge   = [pd.knowledge];
   if (pd.correlation) h.correlation = [pd.correlation];
+  if (pd.recall)      h.recall      = [pd.recall];
+  if (pd.ioc_check)   h.ioc_check   = [pd.ioc_check];
   if (pd.ticket)      h.ticketing   = [pd.ticket];
   if (pd.response)    h.response    = [pd.response];
   if (pd.validation)  h.validation  = [pd.validation];
@@ -1090,6 +1098,8 @@ const getRawPhaseResult = (phase: string, result: any) => {
     case 'intel':       return result.intel;
     case 'knowledge':   return result.knowledge;
     case 'correlation': return result.correlation;
+    case 'recall':      return result.recall;
+    case 'ioc_check':   return result.ioc_check;
     case 'ticketing':   return result.ticket;
     case 'response':    return result.responsePlan;
     case 'validation':  return result.validation;
@@ -1603,6 +1613,28 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
   const [feedbackLoading, setFeedbackLoading] = useState<Record<string, boolean>>({});
   const [feedbackSubmitted, setFeedbackSubmitted] = useState<Record<string, 'up' | 'down'>>({});
 
+  // ── Run timer ──────────────────────────────────────────────────────────────
+  const runStartRef = useRef<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isRerunning) return;
+    runStartRef.current = Date.now();
+    setElapsedMs(0);
+    const id = setInterval(() => {
+      setElapsedMs(Date.now() - runStartRef.current!);
+    }, 100);
+    return () => clearInterval(id);
+  }, [isRerunning]);
+
+  const formatElapsed = (ms: number) => {
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(1)}s`;
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  };
+
   const { user, token } = useAuth();
 
   const toggleSection = (key: string) =>
@@ -1646,14 +1678,16 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
     getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
   }, [alert.id]);
 
-  // Reset per-agent history when a different alert is opened
+  // Rebuild per-agent history whenever ai_analysis changes (new alert OR fresh orchestration result)
   useEffect(() => {
+    // Skip during an active rerun — handleRerunFresh will rebuild from the direct response
+    if (isRerunning) return;
     let d: any = null;
     try { d = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch (e) {}
     setAgentRunHistory(buildInitialHistory(d));
     setAgentRunIndex({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alert.id]);
+  }, [alert.ai_analysis]);
 
   let aiData: any = null;
   let mitreTags: string[] = [];
@@ -1675,6 +1709,8 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
     { id: 'intel',       label: 'Threat Intel',     icon: Shield,      desc: 'MITRE ATT&CK mapping & reputation',     getContent: (d: any) => d?.intel_summary },
     { id: 'knowledge',   label: 'RAG Playbook',     icon: Clock,       desc: 'Retrieves remediation playbooks',       getContent: (d: any) => d?.remediation_steps },
     { id: 'correlation', label: 'Correlation',      icon: Activity,    desc: 'Detects multi-stage campaigns',         getContent: (d: any) => d?.campaign_name },
+    { id: 'recall',      label: 'Memory Recall',    icon: BookOpen,    desc: 'Finds similar past incidents',          getContent: (d: any) => d?.hits?.length ? `${d.hits.length} past incident(s)` : 'No similar hits' },
+    { id: 'ioc_check',   label: 'IOC History',      icon: Database,    desc: 'Known IOC observation history',         getContent: (d: any) => d?.hits?.length ? `${d.hits.length} known IOC(s)` : 'No prior observations' },
     { id: 'ticketing',   label: 'Incident Report',  icon: FileText,    desc: 'Generates structured ticket & email',  getContent: (d: any) => d?.title },
     { id: 'response',    label: 'Response Plan',    icon: Terminal,    desc: 'Recommends containment actions',        getContent: (d: any) => d?.actions?.map((a: any) => `${a.type} → ${a.target}`).join('\n') },
     { id: 'validation',  label: 'SLA Validation',   icon: CheckCircle, desc: 'Verifies completeness & SLA',          getContent: (d: any) => d?.sla_status },
@@ -1752,6 +1788,12 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
     if (phase === 'validation' && result.validation) {
       updatedAiData.phaseData.validation = result.validation;
       updatedAiData.validation = result.validation.sla_status;
+    }
+    if (phase === 'recall' && result.recall) {
+      updatedAiData.phaseData.recall = result.recall;
+    }
+    if (phase === 'ioc_check' && result.ioc_check) {
+      updatedAiData.phaseData.ioc_check = result.ioc_check;
     }
     return { updatedAiData, extra };
   };
@@ -1885,7 +1927,15 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
     setIsRerunning(true);
     setRunError(null);
     try {
-      await orchestrateAnalysis(alert, [], (update) => onAction(alert.id, update));
+      const result = await orchestrateAnalysis(alert, [], (update) => onAction(alert.id, update));
+      // Rebuild per-phase history from the orchestration result so cards light up immediately
+      if (result?.ai_analysis) {
+        try {
+          const newAiData = JSON.parse(result.ai_analysis);
+          setAgentRunHistory(buildInitialHistory(newAiData));
+          setAgentRunIndex({});
+        } catch (_) {}
+      }
       const updated = await getAlertRuns(alert.id);
       setRuns(updated);
     } catch (err: any) {
@@ -2183,12 +2233,94 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
         />
 
         <div ref={agentsRef} className="bg-[var(--s0)] rounded-xl border border-[var(--b1)] shadow-sm overflow-hidden">
+          {/* ── Pipeline header ── */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--b3)] bg-[var(--s1)]">
-            <p className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--p1)]">Agent Pipeline · click a card to expand</p>
-            <span className="text-[0.6rem] font-semibold text-[var(--t3)]">{completedCount}/{agentDefs.length} completed</span>
+            <div className="flex items-center gap-2">
+              <p className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--p1)]">Swarm Pipeline</p>
+              <span className="text-[0.55rem] font-bold px-1.5 py-0.5 rounded-full bg-[var(--p1)]/10 text-[var(--p1)] border border-[var(--p1)]/20 uppercase tracking-wide">hub-and-swarm</span>
+            </div>
+            <div className="flex items-center gap-3">
+              {isRerunning && elapsedMs !== null ? (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--p1)] animate-ping" />
+                  <span className="text-[0.65rem] font-mono font-bold text-[var(--p1)] tabular-nums">{formatElapsed(elapsedMs)}</span>
+                </div>
+              ) : elapsedMs !== null && elapsedMs > 0 ? (
+                <span className="text-[0.6rem] font-mono text-green-600 font-semibold">✓ {formatElapsed(elapsedMs)}</span>
+              ) : null}
+              <span className="text-[0.6rem] font-semibold text-[var(--t3)]">{completedCount}/{agentDefs.length} completed</span>
+            </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 divide-x divide-slate-100">
-            {agentDefs.map((agent) => {
+
+          {/* ── Planner Decision Panel ── */}
+          {(() => {
+            // Show skeleton while orchestration is running
+            if (isRerunning) {
+              return (
+                <div className="px-4 py-3 border-b border-[var(--b3)] bg-[var(--p1)]/5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 space-y-2">
+                      <div className="skeleton h-2 w-20" style={{ animationDelay: '0ms' }} />
+                      <div className="skeleton h-3 w-2/3" style={{ animationDelay: '80ms' }} />
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <div className="skeleton h-5 w-32 rounded-full" style={{ animationDelay: '160ms' }} />
+                      <div className="skeleton h-5 w-20" style={{ animationDelay: '240ms' }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            if (!aiData) return null;
+            const plannerLog = (aiData.agentLogs || []).find((l: string) => l.includes('] Planner:'));
+            const dispatched = plannerLog ? plannerLog.replace(/.*\] Planner:\s*/, '').trim() : null;
+            const isFP = alert.status === 'FALSE_POSITIVE';
+            const plannerFallback = Array.isArray(aiData.fallback_phases) && aiData.fallback_phases.includes('planner');
+            const traceShort = aiData.trace_id ? aiData.trace_id.slice(0, 8) : null;
+            const investigatorCount = INVESTIGATOR_PHASES.filter(p => aiData.phaseData?.[p] != null).length;
+            return (
+              <div className={`px-4 py-3 border-b border-[var(--b3)] ${isFP ? 'bg-amber-500/10' : 'bg-[var(--p1)]/5'}`}>
+                {isFP ? (
+                  <div className="flex items-center gap-2">
+                    <Zap size={13} className="text-amber-500 shrink-0" />
+                    <p className="text-[0.72rem] font-bold text-amber-700 dark:text-amber-400">Short-circuited — high-confidence false positive. Only triage ran; all investigators and composers were skipped.</p>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-4 flex-wrap">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[0.6rem] font-black uppercase tracking-widest text-[var(--p1)] mb-0.5">Planner Decision</p>
+                      {dispatched ? (
+                        <p className="text-[0.72rem] text-[var(--t6)] font-mono">{dispatched}</p>
+                      ) : (
+                        <p className="text-[0.72rem] text-[var(--t3)] italic">{plannerFallback ? 'Planner fell back to defaults (rate-limited)' : 'Run swarm to see planner output'}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                      {investigatorCount > 0 && (
+                        <span className="text-[0.6rem] font-bold px-2 py-0.5 rounded-full bg-[var(--p1)]/15 text-[var(--p1)] border border-[var(--p1)]/20">
+                          {investigatorCount} investigator{investigatorCount !== 1 ? 's' : ''} dispatched
+                        </span>
+                      )}
+                      {plannerFallback && (
+                        <span className="text-[0.6rem] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">⚠ fallback</span>
+                      )}
+                      {traceShort && (
+                        <span className="text-[0.58rem] font-mono text-[var(--t3)] px-2 py-0.5 rounded bg-[var(--s1)] border border-[var(--b2)]">trace {traceShort}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Phase tiers ── */}
+          {(() => {
+            const isFP = alert.status === 'FALSE_POSITIVE';
+            // Stagger delay per card position so the shimmer wave cascades left-to-right
+            const phaseOrder = agentDefs.map(a => a.id);
+
+            const renderPhaseCard = (agent: typeof agentDefs[0]) => {
               const isRunningThis = runningPhase === agent.id;
               const hist = agentRunHistory[agent.id] || [];
               const runCount = hist.length;
@@ -2198,52 +2330,116 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
               const pct = confidence == null ? null : Math.round(confidence * 100);
               const isViewingLatest = currentIdx === runCount - 1;
               const isExpanded = expandedAgent === agent.id;
-              const bar       = pct == null ? 'bg-[var(--s2)]' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
-              const isFallback= Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
+              const bar = pct == null ? 'bg-[var(--s2)]' : pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-amber-400' : 'bg-red-400';
+              const isFallback = Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
+              const isSkipped = !isFP && aiData?.phaseData && (agent.id in aiData.phaseData) && aiData.phaseData[agent.id] === null;
+              const memHits = (agent.id === 'recall' || agent.id === 'ioc_check')
+                ? (aiData?.phaseData?.[agent.id]?.hits?.length ?? null)
+                : null;
+              const isSkeleton = isRerunning && !isDone && !isRunningThis;
+              // Stagger: each card gets a cascading delay based on its position
+              const staggerDelay = `${phaseOrder.indexOf(agent.id) * 120}ms`;
 
               return (
                 <button
                   key={agent.id}
                   type="button"
                   onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
-                  className={`p-3 text-left transition-colors relative ${
-                    isExpanded ? 'bg-blue-50/50' : 'hover:bg-[var(--s1)]'
-                  } ${isRunningThis ? 'bg-blue-50' : ''}`}
+                  className={`p-3 text-left transition-colors relative flex-1 min-w-0 ${
+                    isExpanded ? 'bg-[var(--p1)]/8' : 'hover:bg-[var(--s1)]'
+                  } ${isRunningThis ? 'bg-[var(--p1)]/10' : ''} ${(isFP || isSkipped) ? 'opacity-40' : ''}`}
                 >
                   <div className="flex items-center gap-2 mb-2">
-                    <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
-                      isRunningThis ? 'bg-[#004a99]' : isDone ? 'bg-green-600' : 'bg-[var(--s2)]'
-                    }`}>
-                      {isRunningThis
-                        ? <div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                        : <agent.icon size={12} className={isDone ? 'text-white' : 'text-[var(--t4)]'} />
-                      }
-                    </div>
-                    <p className="text-[0.7rem] font-bold text-[var(--t7)] truncate flex-1">{agent.label}</p>
+                    {isSkeleton ? (
+                      <div className="skeleton w-6 h-6 rounded-md shrink-0" style={{ animationDelay: staggerDelay }} />
+                    ) : (
+                      <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
+                        isRunningThis ? 'bg-[var(--p1)]' : isDone ? 'bg-green-600' : 'bg-[var(--s2)]'
+                      }`}>
+                        {isRunningThis
+                          ? <div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                          : <agent.icon size={12} className={isDone ? 'text-white' : 'text-[var(--t4)]'} />
+                        }
+                      </div>
+                    )}
+                    {isSkeleton
+                      ? <div className="skeleton h-2.5 flex-1" style={{ animationDelay: staggerDelay }} />
+                      : <p className="text-[0.7rem] font-bold text-[var(--t7)] truncate flex-1">{agent.label}</p>
+                    }
                   </div>
                   <div className="space-y-1">
-                    <MiniBar value={pct ?? 0} color={bar} />
-                    <div className="flex items-center justify-between text-[0.6rem] font-mono">
-                      <span className={pct == null ? 'text-[var(--t3)]' : 'text-[var(--t5)] font-bold'}>{pct == null ? '— waiting' : `${pct}%`}</span>
-                      {runCount > 0 && <span className={`${isViewingLatest ? 'text-green-600' : 'text-amber-600'} font-black`}>{currentIdx + 1}/{runCount}</span>}
-                    </div>
-                    {isFallback && <span className="text-[0.55rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5 font-bold uppercase tracking-wide">⚠ Unavailable</span>}
+                    {isSkeleton ? (
+                      <>
+                        <div className="skeleton h-1 w-full rounded-full" style={{ animationDelay: staggerDelay }} />
+                        <div className="skeleton h-2.5 w-10" style={{ animationDelay: staggerDelay }} />
+                      </>
+                    ) : (
+                      <>
+                        <MiniBar value={pct ?? 0} color={bar} />
+                        <div className="flex items-center justify-between text-[0.6rem] font-mono gap-1 flex-wrap">
+                          {isFP || isSkipped ? (
+                            <span className="text-[0.55rem] text-[var(--t3)] bg-[var(--s1)] border border-[var(--b2)] rounded px-1 py-0.5 font-bold uppercase tracking-wide">Skipped</span>
+                          ) : isRunningThis ? (
+                            <span className="text-[var(--p1)] font-bold animate-pulse">Running…</span>
+                          ) : (
+                            <span className={pct == null ? 'text-[var(--t3)]' : 'text-[var(--t5)] font-bold'}>{pct == null ? '— pending' : `${pct}%`}</span>
+                          )}
+                          {runCount > 0 && <span className={`${isViewingLatest ? 'text-green-600' : 'text-amber-600'} font-black`}>{currentIdx + 1}/{runCount}</span>}
+                        </div>
+                        {isFallback && !isFP && !isSkipped && (
+                          <span className="text-[0.55rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5 font-bold uppercase tracking-wide">⚠ Unavailable</span>
+                        )}
+                        {memHits !== null && memHits > 0 && (
+                          <span className="text-[0.55rem] text-[var(--p1)] bg-[var(--p1)]/10 border border-[var(--p1)]/20 rounded px-1 py-0.5 font-bold">✦ {memHits} hit{memHits !== 1 ? 's' : ''}</span>
+                        )}
+                      </>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); handleAgentRun(agent.id); }}
-                    disabled={isAnalyzing || isRerunning}
-                    className={`mt-2 w-full flex items-center justify-center gap-1 text-[0.58rem] font-black px-2 py-1 rounded transition-colors disabled:opacity-50 uppercase tracking-wider ${
-                      isDone ? 'bg-[var(--s1)] text-[var(--t5)] hover:bg-[var(--s2)]' : 'bg-[#004a99] text-white hover:bg-[var(--pd)]'
-                    }`}
-                  >
-                    {isRunningThis ? 'Running' : isDone ? '↺ Rerun' : 'Run'}
-                  </button>
                 </button>
               );
-            })}
-          </div>
+            };
 
+            return (
+              <div className="divide-y divide-[var(--b3)]">
+                {/* Tier 1: Mandatory */}
+                <div className="px-3 pt-3 pb-2">
+                  <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-2">Mandatory</p>
+                  <div className="flex gap-1">
+                    {agentDefs.filter(a => MANDATORY_PHASES.includes(a.id)).map(renderPhaseCard)}
+                  </div>
+                </div>
+
+                {/* Tier 2: Investigators (parallel) */}
+                <div className="px-3 pt-3 pb-2">
+                  <div className="flex items-center gap-2 mb-2">
+                    <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Investigators</p>
+                    <span className="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-[var(--p1)]/10 text-[var(--p1)] border border-[var(--p1)]/20 uppercase tracking-wide">⚡ parallel</span>
+                  </div>
+                  <div className="flex gap-1 flex-wrap">
+                    {agentDefs.filter(a => INVESTIGATOR_PHASES.includes(a.id)).map(renderPhaseCard)}
+                  </div>
+                </div>
+
+                {/* Tier 3: Composers (sequential) */}
+                <div className="px-3 pt-3 pb-2">
+                  <div className="flex items-center gap-2 mb-2">
+                    <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Composers</p>
+                    <span className="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-[var(--t4)] border border-[var(--b2)] uppercase tracking-wide dark:bg-[var(--s2)] dark:text-[var(--t3)]">→ sequential</span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {agentDefs.filter(a => COMPOSER_PHASES.includes(a.id)).map((agent, idx, arr) => (
+                      <React.Fragment key={agent.id}>
+                        {renderPhaseCard(agent)}
+                        {idx < arr.length - 1 && <span className="text-[var(--t3)] text-xs font-bold shrink-0">→</span>}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ── Expanded phase detail panel ── */}
           {expandedAgent && (() => {
             const agent = agentDefs.find(a => a.id === expandedAgent)!;
             const hist = agentRunHistory[agent.id] || [];
@@ -2252,7 +2448,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
             const displayResult = runCount > 0 ? hist[Math.min(currentIdx, runCount - 1)] : null;
             const isViewingLatest = currentIdx === runCount - 1;
             if (!displayResult) {
-              return <div className="p-4 border-t border-[var(--b3)] text-[0.75rem] text-[var(--t3)] italic">No results yet for <span className="font-bold">{agent.label}</span>. Click Run on the card above.</div>;
+              return <div className="p-4 border-t border-[var(--b3)] text-[0.75rem] text-[var(--t3)] italic">No results yet for <span className="font-bold">{agent.label}</span>. Run a fresh orchestration to populate this phase.</div>;
             }
             return (
               <div className="border-t border-[var(--b3)] p-4 bg-[var(--s1)]/60 space-y-2">

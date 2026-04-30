@@ -62,6 +62,39 @@ body {
   transition: background-color 0.15s, color 0.15s;
 }
 
+/* ── Shimmer skeleton animation ─────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--s2)   0%,
+    var(--b2)  30%,
+    var(--s1)  50%,
+    var(--b2)  70%,
+    var(--s2) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+html.dark .skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--s2)   0%,
+    #3a3b50    30%,
+    #42435a    50%,
+    #3a3b50    70%,
+    var(--s2) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
 /* ── Dark mode element resets ───────────────────────────────────────────── */
 html.dark input,
 html.dark select,
