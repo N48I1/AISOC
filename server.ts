@@ -27,6 +27,8 @@ import {
   isAgentPhase,
   runOrchestration,
   runPhase,
+  runFpScan,
+  runInvestigation,
   type ModelAssignments,
 } from './agents.js';
 
@@ -312,6 +314,17 @@ try {
   safeAlter('ALTER TABLE ioc_memory          ADD COLUMN fp_count     INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE ioc_memory          ADD COLUMN tp_count     INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE incident_insights   ADD COLUMN triggered_by TEXT DEFAULT \'triage\'');
+
+  // ── Pipeline redesign migrations ──────────────────────────────────────────
+  safeAlter("ALTER TABLE alerts ADD COLUMN fp_method       TEXT");           // suppression | memory | triage | null
+  safeAlter("ALTER TABLE alerts ADD COLUMN fp_confidence   REAL DEFAULT 0");
+  safeAlter("ALTER TABLE alerts ADD COLUMN fp_reason       TEXT");
+  safeAlter("ALTER TABLE alerts ADD COLUMN fp_details      TEXT");           // JSON
+  safeAlter("ALTER TABLE alerts ADD COLUMN triage_data     TEXT");           // JSON — cached triage from FP scan
+  safeAlter("ALTER TABLE alerts ADD COLUMN filtered_at     DATETIME");
+  safeAlter("ALTER TABLE alerts ADD COLUMN investigated_at DATETIME");
+  safeAlter("ALTER TABLE alerts ADD COLUMN escalated_at    DATETIME");
+  safeAlter("ALTER TABLE alerts ADD COLUMN closed_at       DATETIME");
 
   // Seed admin user if not exists
   const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
@@ -1420,6 +1433,280 @@ async function startServer() {
     `).run(value.trim(), type || 'ip');
     writeAudit(req.user.id, 'AUTO_LEARN_ACCEPT', `Accepted FP suggestion for ${value}`);
     res.json({ ok: true });
+  });
+
+  // ── FP Scan: lightweight Steps 0-3 only ──────────────────────────────────
+  app.post('/api/ai/fp-scan', authenticate, async (req: any, res) => {
+    const { alertId } = req.body;
+    if (!alertId) return res.status(400).json({ error: 'alertId is required' });
+    try {
+      const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId);
+      if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+      const recentAlerts = db.prepare(
+        `SELECT * FROM alerts WHERE id != ? AND timestamp >= datetime('now', '-3 days') ORDER BY timestamp DESC LIMIT 50`
+      ).all(alertId);
+
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
+
+      const result = await runFpScan(alert, recentAlerts, { modelAssignments: getAgentModelAssignments() });
+
+      // Update alert with FP scan results
+      db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, fp_method=?, fp_confidence=?, fp_reason=?, fp_details=?, triage_data=?, filtered_at=datetime('now') WHERE id=?`)
+        .run(result.status, result.ai_analysis,
+          result.fp_method, result.fp_confidence, result.fp_reason,
+          result.fp_details ? JSON.stringify(result.fp_details) : null,
+          result.triage ? JSON.stringify(result.triage) : null,
+          alertId);
+
+      writeAudit(req.user?.id, 'FP_SCAN', `Alert ${alertId} scanned → ${result.status} (method=${result.fp_method || 'none'})`);
+      io.emit('alert_updated', { id: alertId, status: result.status, fp_method: result.fp_method });
+      res.json({ id: alertId, ...result });
+    } catch (err: any) {
+      console.error('[FP Scan Error]', err?.message);
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'NEW' });
+      res.status(500).json({ error: err?.message || 'FP scan failed' });
+    }
+  });
+
+  // ── FP Scan Batch: scan all NEW alerts ──────────────────────────────────
+  app.post('/api/ai/fp-scan-batch', authenticate, async (req: any, res) => {
+    try {
+      const newAlerts = db.prepare("SELECT * FROM alerts WHERE status = 'NEW' ORDER BY timestamp DESC LIMIT 50").all() as any[];
+      if (newAlerts.length === 0) return res.json({ scanned: 0, results: [] });
+
+      const recentAlerts = db.prepare(
+        `SELECT * FROM alerts WHERE timestamp >= datetime('now', '-3 days') ORDER BY timestamp DESC LIMIT 50`
+      ).all();
+
+      const results: any[] = [];
+      for (const alert of newAlerts) {
+        try {
+          db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alert.id);
+          io.emit('alert_updated', { id: alert.id, status: 'ANALYZING' });
+
+          const result = await runFpScan(alert, recentAlerts.filter((a: any) => a.id !== alert.id), { modelAssignments: getAgentModelAssignments() });
+
+          db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, fp_method=?, fp_confidence=?, fp_reason=?, fp_details=?, triage_data=?, filtered_at=datetime('now') WHERE id=?`)
+            .run(result.status, result.ai_analysis,
+              result.fp_method, result.fp_confidence, result.fp_reason,
+              result.fp_details ? JSON.stringify(result.fp_details) : null,
+              result.triage ? JSON.stringify(result.triage) : null,
+              alert.id);
+
+          io.emit('alert_updated', { id: alert.id, status: result.status });
+          results.push({ id: alert.id, is_fp: result.is_fp, status: result.status, fp_method: result.fp_method, fp_reason: result.fp_reason });
+        } catch (err: any) {
+          db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alert.id);
+          io.emit('alert_updated', { id: alert.id, status: 'NEW' });
+          results.push({ id: alert.id, error: err?.message });
+        }
+      }
+
+      writeAudit(req.user?.id, 'FP_SCAN_BATCH', `Batch scanned ${newAlerts.length} alerts`);
+      res.json({ scanned: newAlerts.length, results });
+    } catch (err: any) {
+      console.error('[FP Scan Batch Error]', err?.message);
+      res.status(500).json({ error: err?.message || 'Batch scan failed' });
+    }
+  });
+
+  // ── Investigation: run Steps 4-7 on a FILTERED alert ─────────────────────
+  app.post('/api/ai/investigate', authenticate, async (req: any, res) => {
+    const { alertId } = req.body;
+    if (!alertId) return res.status(400).json({ error: 'alertId is required' });
+    try {
+      const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId);
+      if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+      // Parse existing triage data from FP scan
+      let triage: any = null;
+      if (alert.triage_data) {
+        try { triage = JSON.parse(alert.triage_data); } catch {}
+      }
+      if (!triage && alert.ai_analysis) {
+        try { triage = JSON.parse(alert.ai_analysis)?.phaseData?.analysis; } catch {}
+      }
+
+      const recentAlerts = db.prepare(
+        `SELECT * FROM alerts WHERE id != ? AND timestamp >= datetime('now', '-3 days') ORDER BY timestamp DESC LIMIT 50`
+      ).all(alertId);
+
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
+
+      let update;
+      if (triage) {
+        // Use the split investigation path (skips triage)
+        update = await runInvestigation(alert, triage, recentAlerts, { modelAssignments: getAgentModelAssignments() });
+      } else {
+        // No triage data — fall back to full orchestration
+        update = await runOrchestration(alert, recentAlerts, { modelAssignments: getAgentModelAssignments() });
+      }
+
+      db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, investigated_at=datetime('now') WHERE id=?`)
+        .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+
+      db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
+        .run(alertId, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.status);
+
+      // Dispatch integrations
+      try {
+        const parsed = JSON.parse(update.ai_analysis || '{}');
+        const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
+        if (ticket) await dispatchActions({ alertId, ticket, db, io });
+      } catch (dispatchErr: any) { console.warn('[Dispatch] Error:', dispatchErr?.message); }
+
+      writeAudit(req.user?.id, 'INVESTIGATION_RUN', `Alert ${alertId} investigated → ${update.status}`);
+      io.emit('alert_updated', { id: alertId, ...update });
+      res.json({ id: alertId, ...update });
+    } catch (err: any) {
+      console.error('[Investigation Error]', err?.message);
+      db.prepare("UPDATE alerts SET status = 'FILTERED' WHERE id = ?").run(alertId);
+      io.emit('alert_updated', { id: alertId, status: 'FILTERED' });
+      res.status(500).json({ error: err?.message || 'Investigation failed' });
+    }
+  });
+
+  // ── FP Archive: paginated FP alerts with enriched data ───────────────────
+  app.get('/api/alerts/fp-archive', authenticate, (req: any, res) => {
+    const page     = Math.max(1, parseInt(String(req.query.page     || '1')));
+    const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || '25'))));
+    const method   = req.query.method as string | undefined;   // suppression | memory | triage
+    const source   = req.query.source as string | undefined;
+    const offset   = (page - 1) * pageSize;
+
+    const where: string[] = ["status IN ('FALSE_POSITIVE', 'FP_CONFIRMED')"];
+    const params: any[] = [];
+    if (method) { where.push('fp_method = ?'); params.push(method); }
+    if (source) { where.push('source_ip = ?'); params.push(source); }
+    const whereClause = where.join(' AND ');
+
+    const total = (db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE ${whereClause}`).get(...params) as any).c;
+    const rows  = db.prepare(
+      `SELECT id, timestamp, description, severity, source_ip, dest_ip, agent_name, rule_id,
+              status, fp_method, fp_confidence, fp_reason, fp_details, filtered_at
+       FROM alerts WHERE ${whereClause}
+       ORDER BY filtered_at DESC, timestamp DESC LIMIT ? OFFSET ?`
+    ).all(...params, pageSize, offset) as any[];
+
+    const enriched = rows.map(r => ({
+      ...r,
+      fp_details: r.fp_details ? (() => { try { return JSON.parse(r.fp_details); } catch { return null; } })() : null,
+    }));
+
+    res.json({ alerts: enriched, total, page, pageSize });
+  });
+
+  // ── Escalate alert: set status + trigger integrations ──────────────────────
+  app.post('/api/alerts/:id/escalate', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(id);
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+    db.prepare("UPDATE alerts SET status = 'ESCALATED', escalated_at = datetime('now') WHERE id = ?").run(id);
+
+    // Trigger integrations with the existing ticket data
+    try {
+      const parsed = JSON.parse(alert.ai_analysis || '{}');
+      const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
+      if (ticket) {
+        ticket.priority = ticket.priority || 'HIGH';
+        await dispatchActions({ alertId: id, ticket, db, io });
+      }
+    } catch (err: any) { console.warn('[Escalate dispatch] Error:', err?.message); }
+
+    writeAudit(req.user?.id, 'ALERT_ESCALATED', `Alert ${id} escalated`);
+    io.emit('alert_updated', { id, status: 'ESCALATED' });
+    res.json({ ok: true, status: 'ESCALATED' });
+  });
+
+  // ── Confirm FP (analyst confirms FP verdict) ──────────────────────────────
+  app.post('/api/alerts/:id/confirm-fp', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    db.prepare("UPDATE alerts SET status = 'FP_CONFIRMED', closed_at = datetime('now') WHERE id = ?").run(id);
+    writeAudit(req.user?.id, 'FP_CONFIRMED', `Alert ${id} FP confirmed by analyst`);
+    io.emit('alert_updated', { id, status: 'FP_CONFIRMED' });
+    res.json({ ok: true, status: 'FP_CONFIRMED' });
+  });
+
+  // ── Override FP (analyst overrides, sends back to investigation) ───────────
+  app.post('/api/alerts/:id/override-fp', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    db.prepare("UPDATE alerts SET status = 'FILTERED', fp_method = NULL, fp_reason = NULL, fp_confidence = 0 WHERE id = ?").run(id);
+    writeAudit(req.user?.id, 'FP_OVERRIDDEN', `Alert ${id} FP overridden — sent to investigation`);
+    io.emit('alert_updated', { id, status: 'FILTERED' });
+    res.json({ ok: true, status: 'FILTERED' });
+  });
+
+  // ── Pipeline Funnel Analytics ─────────────────────────────────────────────
+  app.get('/api/analytics/pipeline-funnel', authenticate, (_req, res) => {
+    const ingested     = (db.prepare("SELECT COUNT(*) as c FROM alerts").get() as any).c;
+    const newAlerts    = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'NEW'").get() as any).c;
+    const fpFiltered   = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status IN ('FALSE_POSITIVE','FP_CONFIRMED')").get() as any).c;
+    const filtered     = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'FILTERED'").get() as any).c;
+    const investigated = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status IN ('TRIAGED','ESCALATED','CLOSED') AND investigated_at IS NOT NULL").get() as any).c;
+    const escalated    = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'ESCALATED'").get() as any).c;
+    const closed       = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'CLOSED'").get() as any).c;
+
+    // Timing metrics
+    const timingRow = db.prepare(`
+      SELECT
+        AVG(CASE WHEN filtered_at IS NOT NULL THEN (strftime('%s', filtered_at) - strftime('%s', timestamp)) END) as avg_filter_sec,
+        AVG(CASE WHEN investigated_at IS NOT NULL THEN (strftime('%s', investigated_at) - strftime('%s', filtered_at)) END) as avg_investigate_sec,
+        AVG(CASE WHEN closed_at IS NOT NULL THEN (strftime('%s', closed_at) - strftime('%s', timestamp)) END) as avg_close_sec
+      FROM alerts
+    `).get() as any;
+
+    res.json({
+      ingested, new: newAlerts, fp_filtered: fpFiltered, awaiting_investigation: filtered,
+      investigated, escalated, closed,
+      avg_time_to_filter_sec:      timingRow?.avg_filter_sec ? Math.round(timingRow.avg_filter_sec) : null,
+      avg_time_to_investigate_sec: timingRow?.avg_investigate_sec ? Math.round(timingRow.avg_investigate_sec) : null,
+      avg_time_to_close_sec:       timingRow?.avg_close_sec ? Math.round(timingRow.avg_close_sec) : null,
+    });
+  });
+
+  // ── Detection Method Effectiveness ────────────────────────────────────────
+  app.get('/api/analytics/detection-effectiveness', authenticate, (_req, res) => {
+    const methods = ['suppression', 'memory', 'triage'];
+    const result: any = {};
+    for (const m of methods) {
+      const total    = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE fp_method = ?").get(m) as any).c;
+      const confirmed = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE fp_method = ? AND status = 'FP_CONFIRMED'").get(m) as any).c;
+      const overridden = (db.prepare("SELECT COUNT(*) as c FROM alerts WHERE fp_method = ? AND status = 'FILTERED'").get(m) as any).c;
+      result[m] = {
+        total_caught: total,
+        analyst_confirmed: confirmed,
+        analyst_overridden: overridden,
+        accuracy: total > 0 ? Number(((total - overridden) / total).toFixed(3)) : 1,
+      };
+    }
+    const totalAll = Object.values(result).reduce((s: number, m: any) => s + (m.total_caught || 0), 0) as number;
+    const overAll  = Object.values(result).reduce((s: number, m: any) => s + (m.analyst_overridden || 0), 0) as number;
+    result.overall = {
+      total_caught: totalAll,
+      analyst_overridden: overAll,
+      accuracy: totalAll > 0 ? Number(((totalAll - overAll) / totalAll).toFixed(3)) : 1,
+    };
+    res.json(result);
+  });
+
+  // ── Source Distribution Analytics ─────────────────────────────────────────
+  app.get('/api/analytics/source-distribution', authenticate, (_req, res) => {
+    const byAgent = db.prepare(`
+      SELECT agent_name as name, COUNT(*) as count
+      FROM alerts WHERE agent_name IS NOT NULL AND agent_name != ''
+      GROUP BY agent_name ORDER BY count DESC LIMIT 15
+    `).all();
+    const byRule = db.prepare(`
+      SELECT rule_id, description, COUNT(*) as count
+      FROM alerts WHERE rule_id IS NOT NULL
+      GROUP BY rule_id ORDER BY count DESC LIMIT 15
+    `).all();
+    res.json({ by_agent: byAgent, by_rule: byRule });
   });
 
   // ── AI: run a single agent phase ──────────────────────────────────────────

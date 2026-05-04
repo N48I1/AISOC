@@ -320,3 +320,76 @@ export async function acceptFpSuggestion(value: string, type: string): Promise<{
   });
   return res.json();
 }
+
+// ─── Pipeline: FP Scan + Investigation ──────────────────────────────────────
+
+export async function fpScan(alertId: string): Promise<any> {
+  const res = await fetch("/api/ai/fp-scan", {
+    method: "POST", headers: authHeaders(), body: JSON.stringify({ alertId }),
+  });
+  return res.json();
+}
+
+export async function fpScanBatch(): Promise<any> {
+  const res = await fetch("/api/ai/fp-scan-batch", {
+    method: "POST", headers: authHeaders(),
+  });
+  return res.json();
+}
+
+export async function investigateAlert(alertId: string): Promise<any> {
+  const res = await fetch("/api/ai/investigate", {
+    method: "POST", headers: authHeaders(), body: JSON.stringify({ alertId }),
+  });
+  return res.json();
+}
+
+export async function escalateAlert(alertId: string): Promise<any> {
+  const res = await fetch(`/api/alerts/${alertId}/escalate`, {
+    method: "POST", headers: authHeaders(),
+  });
+  return res.json();
+}
+
+export async function confirmFp(alertId: string): Promise<any> {
+  const res = await fetch(`/api/alerts/${alertId}/confirm-fp`, {
+    method: "POST", headers: authHeaders(),
+  });
+  return res.json();
+}
+
+export async function overrideFp(alertId: string): Promise<any> {
+  const res = await fetch(`/api/alerts/${alertId}/override-fp`, {
+    method: "POST", headers: authHeaders(),
+  });
+  return res.json();
+}
+
+export async function getFpArchive(opts: { page?: number; pageSize?: number; method?: string; source?: string } = {}): Promise<any> {
+  const params = new URLSearchParams();
+  if (opts.page)     params.set('page', String(opts.page));
+  if (opts.pageSize) params.set('pageSize', String(opts.pageSize));
+  if (opts.method)   params.set('method', opts.method);
+  if (opts.source)   params.set('source', opts.source);
+  const res = await fetch(`/api/alerts/fp-archive?${params}`, { headers: authHeaders() });
+  if (!res.ok) return { alerts: [], total: 0 };
+  return res.json();
+}
+
+export async function getPipelineFunnel(): Promise<any> {
+  const res = await fetch("/api/analytics/pipeline-funnel", { headers: authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function getDetectionEffectiveness(): Promise<any> {
+  const res = await fetch("/api/analytics/detection-effectiveness", { headers: authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function getSourceDistribution(): Promise<any> {
+  const res = await fetch("/api/analytics/source-distribution", { headers: authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}

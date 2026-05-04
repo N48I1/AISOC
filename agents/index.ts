@@ -8,7 +8,7 @@ import { responseNode } from "./nodes/response.js";
 import { validationNode } from "./nodes/validation.js";
 import { recallNode } from "./nodes/recall.js";
 import { iocCheckNode } from "./nodes/ioc_check.js";
-import { runHubAndSwarm, type OrchestrationOutput } from "./orchestrator.js";
+import { runHubAndSwarm, runFpScan, runInvestigation, type OrchestrationOutput, type FpScanResult } from "./orchestrator.js";
 
 interface RunOptions {
   modelAssignments?: ModelAssignments;
@@ -114,4 +114,5 @@ async function runLinearLegacy(
   };
 }
 
+export { runFpScan, runInvestigation, type FpScanResult };
 export * from "./config.js";

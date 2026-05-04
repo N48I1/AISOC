@@ -27,6 +27,19 @@ export interface OrchestrationOutput {
   status:           string;
 }
 
+/** Lightweight FP-scan result (Steps 0-3 only). */
+export interface FpScanResult {
+  is_fp:          boolean;
+  fp_confidence:  number;
+  fp_reason:      string | null;
+  fp_method:      'suppression' | 'memory' | 'triage' | null;   // which layer caught it
+  fp_details:     any;              // structured evidence (rule name, IOC data, similarity hit)
+  triage:         any;              // full triage analysis (reused if investigation follows)
+  ai_analysis:    string;           // JSON string matching OrchestrationOutput shape (partial)
+  status:         string;
+  agentLogs:      string[];
+}
+
 interface RunOpts {
   modelAssignments?: ModelAssignments;
 }
@@ -233,6 +246,265 @@ export async function runHubAndSwarm(
     ctx, fpShortCircuit: false,
   });
 }
+
+// ── FP Scan (Steps 0-3 only) ───────────────────────────────────────────────
+/**
+ * Lightweight FP-only scan.  Runs Steps 0-3 of the pipeline:
+ *   0. Suppression rules (deterministic)
+ *   1. Pre-flight memory recall (deterministic)
+ *   2. Mandatory triage LLM (1 call)
+ *   3. FP short-circuit decision
+ *
+ * Cost: 0 LLM calls if suppression catches it, else 1 LLM call (triage).
+ * The triage result is stored so a subsequent `runInvestigation()` can skip it.
+ */
+export async function runFpScan(
+  alert: any,
+  recentAlerts: any[] = [],
+  opts: RunOpts = {},
+): Promise<FpScanResult> {
+  const ctx = newRunContext();
+  const traceId = ctx.traceId;
+  const log = (m: string) => { ctx.agentLogs.push(`[${traceId.slice(0, 8)}] ${m}`); };
+  log(`FP scan started`);
+
+  const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
+
+  // ── 0. Suppression rules ──────────────────────────────────────────────
+  const suppressionHit = checkSuppressionRules(alert);
+  if (suppressionHit) {
+    log(`Suppression rule matched: "${suppressionHit.rule_name}" — ${suppressionHit.reason}`);
+    upsertIocs({ ips: [alert.source_ip].filter(Boolean) }, alert.id, "Low", "FALSE_POSITIVE");
+    commitAsync({
+      alertId: alert.id, idempotencyKey: traceId,
+      alertDescription: alert.description ?? "",
+      triage: { is_false_positive: true, false_positive_confidence: 0.99, false_positive_reason: suppressionHit.reason },
+      outcome: "FALSE_POSITIVE",
+      triggered_by: 'suppression',
+    });
+    const analysis = {
+      analysis_summary: `Auto-suppressed: ${suppressionHit.reason}`,
+      is_false_positive: true, false_positive_confidence: 0.99,
+      false_positive_reason: suppressionHit.reason,
+      risk_score: 0, attack_category: 'NONE', kill_chain_stage: 'NONE',
+      severity_validation: 'LOW', recommended_action: 'IGNORE', confidence: 0.99,
+      iocs: { ips: [alert.source_ip].filter(Boolean), users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] },
+    };
+    return {
+      is_fp: true, fp_confidence: 0.99,
+      fp_reason: suppressionHit.reason,
+      fp_method: 'suppression',
+      fp_details: { rule_name: suppressionHit.rule_name, rule_id: suppressionHit.rule_id },
+      triage: analysis,
+      ai_analysis: composeOutput({ analysis, intel: null, knowledge: null, correlation: null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: true }).ai_analysis,
+      status: 'FALSE_POSITIVE',
+      agentLogs: ctx.agentLogs,
+    };
+  }
+
+  // ── 1. Pre-flight memory recall ───────────────────────────────────────
+  const queryText = `${alert.description ?? ""}`.slice(0, 1500);
+  const assetValues = extractAssetValuesFromAlert(alert);
+  const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
+    semanticStore.search(queryText, 5, 0.65).catch(() => []),
+    Promise.resolve(extractRawIocValues(alert)),
+    Promise.resolve(lookupAssetContext(assetValues)),
+  ]);
+  const iocPreflight = lookupIocs(iocPreflightValues);
+
+  if (recallHits.length > 0)   log(`Recall: ${recallHits.length} similar past incident(s)`);
+  if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
+  if (assetCtx.length > 0)     log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+
+  const fpSimilar    = recallHits.find((h: any) => h.outcome === 'FALSE_POSITIVE' && h.similarity > 0.85);
+  const fpAsset      = assetCtx.find(a => a.fp_default === 1);
+  const fpIocPattern = iocPreflight.find((i: any) =>
+    (i.fp_ratio ?? 0) >= 0.85 && ((i.fp_count ?? 0) + (i.tp_count ?? 0)) >= 5);
+  const memoryFpHint = (fpSimilar || fpAsset || fpIocPattern) ? {
+    fpSimilar:    fpSimilar    ? { alert_id: fpSimilar.alert_id, summary: fpSimilar.summary, similarity: fpSimilar.similarity } : null,
+    fpAsset:      fpAsset      ? { value: fpAsset.value, role: fpAsset.role, description: fpAsset.description } : null,
+    fpIocPattern: fpIocPattern ? { value: fpIocPattern.value, fp_count: fpIocPattern.fp_count, tp_count: fpIocPattern.tp_count, fp_ratio: fpIocPattern.fp_ratio } : null,
+  } : null;
+  if (memoryFpHint) log(`Memory FP hint active — triage will receive structured pre-flight context.`);
+
+  const memoryDroveFp = !!memoryFpHint;
+
+  // ── 2. Mandatory triage ───────────────────────────────────────────────
+  const triageRes = await alertAnalysisNode({
+    alert, recentAlerts,
+    assetContext: assetCtx,
+    priorFpInsights: recallHits.filter((h: any) => h.outcome === 'FALSE_POSITIVE'),
+    iocMemoryHits: iocPreflight,
+    memoryFpHint,
+  }, modelFor("analysis"), ctx);
+  ctx.agentLogs.push(...(triageRes.agentLogs ?? []));
+  const triage = triageRes.analysis;
+
+  // ── 3. FP decision ────────────────────────────────────────────────────
+  const isFp = !!(triage?.is_false_positive && (triage?.false_positive_confidence ?? 0) > 0.85);
+
+  if (isFp) {
+    const triggeredBy = memoryDroveFp ? 'memoryFP' : 'triage';
+    log(`FP scan verdict: FALSE POSITIVE (confidence=${(triage.false_positive_confidence * 100).toFixed(0)}%, method=${triggeredBy})`);
+    upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
+    commitAsync({
+      alertId: alert.id, idempotencyKey: traceId,
+      alertDescription: alert.description ?? "",
+      triage, outcome: "FALSE_POSITIVE",
+      triggered_by: triggeredBy,
+    });
+
+    // Build fp_details
+    const fpDetails: any = {};
+    if (memoryFpHint?.fpSimilar)    fpDetails.similar_incident = memoryFpHint.fpSimilar;
+    if (memoryFpHint?.fpAsset)      fpDetails.known_asset = memoryFpHint.fpAsset;
+    if (memoryFpHint?.fpIocPattern) fpDetails.ioc_pattern = memoryFpHint.fpIocPattern;
+
+    return {
+      is_fp: true,
+      fp_confidence: triage.false_positive_confidence,
+      fp_reason: triage.false_positive_reason || 'Triage LLM classified as false positive',
+      fp_method: memoryDroveFp ? 'memory' : 'triage',
+      fp_details: fpDetails,
+      triage,
+      ai_analysis: composeOutput({ analysis: triage, intel: null, knowledge: null, correlation: null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: true }).ai_analysis,
+      status: 'FALSE_POSITIVE',
+      agentLogs: ctx.agentLogs,
+    };
+  }
+
+  // Not FP — alert should proceed to investigation
+  log(`FP scan verdict: NOT FALSE POSITIVE (risk=${triage?.risk_score}, category=${triage?.attack_category})`);
+  return {
+    is_fp: false,
+    fp_confidence: triage?.false_positive_confidence ?? 0,
+    fp_reason: null,
+    fp_method: null,
+    fp_details: null,
+    triage,
+    ai_analysis: composeOutput({ analysis: triage, intel: null, knowledge: null, correlation: null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: false }).ai_analysis,
+    status: 'FILTERED',
+    agentLogs: ctx.agentLogs,
+  };
+}
+
+
+// ── Investigation (Steps 4-7 only) ─────────────────────────────────────────
+/**
+ * Runs the investigation phase (planner + investigators + composers + memory commit).
+ * Assumes triage already ran via runFpScan().  The `existingTriage` param is the
+ * triage analysis from the FP scan — we skip re-running Steps 0-3.
+ */
+export async function runInvestigation(
+  alert: any,
+  existingTriage: any,
+  recentAlerts: any[] = [],
+  opts: RunOpts = {},
+): Promise<OrchestrationOutput> {
+  const ctx = newRunContext();
+  const traceId = ctx.traceId;
+  const log = (m: string) => { ctx.agentLogs.push(`[${traceId.slice(0, 8)}] ${m}`); };
+  log(`Investigation started (triage reused from FP scan)`);
+
+  const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
+  const triage = existingTriage;
+
+  // Re-run pre-flight for recall/ioc context needed by planner
+  const queryText = `${alert.description ?? ""}`.slice(0, 1500);
+  const assetValues = extractAssetValuesFromAlert(alert);
+  const [recallHits, iocPreflightValues] = await Promise.all([
+    semanticStore.search(queryText, 5, 0.65).catch(() => []),
+    Promise.resolve(extractRawIocValues(alert)),
+  ]);
+  const iocPreflight = lookupIocs(iocPreflightValues);
+
+  // ── 4. Planner ────────────────────────────────────────────────────────
+  const plan = await planner({
+    alert, triage, recentAlerts,
+    recallHits, iocHits: iocPreflight,
+    ctx,
+  });
+  log(`Planner: ${plan.investigators.map((i: any) => i.worker).join("+") || "none"}`);
+  writeWorkingMemory(alert.id, traceId, 1, plan.reasoning, "plan",
+    JSON.stringify({ workers: plan.investigators.map((i: any) => i.worker), skip: plan.composers_skip }));
+
+  let workerResults = await runInvestigatorsParallel(
+    plan.investigators.map((i: any) => i.worker), plan.cost_budget,
+    { alert, recentAlerts, analysis: triage, recall: { available: true, hits: recallHits } },
+    ctx, modelFor,
+  );
+  let costSpent = plan.investigators.length;
+
+  // ── 5. Optional reflection ────────────────────────────────────────────
+  if (plan.re_evaluate && costSpent < plan.cost_budget && !ctx.quotaExhausted) {
+    log(`Planner round 2 (reflection)`);
+    const plan2 = await planner({
+      alert, triage, recentAlerts,
+      recallHits, iocHits: iocPreflight,
+      priorResults: workerResults, reflection: true,
+      ctx,
+    });
+    const newWorkers = plan2.investigators
+      .map((i: any) => i.worker)
+      .filter((w: string) => !(w in workerResults));
+    if (newWorkers.length > 0) {
+      log(`Reflection dispatched: ${newWorkers.join("+")}`);
+      writeWorkingMemory(alert.id, traceId, 2, plan2.reasoning, "reflect",
+        JSON.stringify({ extra: newWorkers }));
+      const more = await runInvestigatorsParallel(
+        newWorkers, plan.cost_budget - costSpent,
+        { alert, recentAlerts, analysis: triage, ...workerResults },
+        ctx, modelFor,
+      );
+      workerResults = { ...workerResults, ...more };
+    }
+  }
+
+  // ── 6. Composers ──────────────────────────────────────────────────────
+  const composerState = { alert, recentAlerts, analysis: triage, ...workerResults };
+  let ticket: any = null, responsePlan: any = null, validation: any = null;
+
+  if (!plan.composers_skip.includes("ticketing")) {
+    const r = await ticketingNode(composerState, modelFor("ticketing"), ctx);
+    ctx.agentLogs.push(...(r.agentLogs ?? []));
+    ticket = r.ticket;
+  }
+  if (!plan.composers_skip.includes("response")) {
+    const r = await responseNode({ ...composerState, ticket }, modelFor("response"), ctx);
+    ctx.agentLogs.push(...(r.agentLogs ?? []));
+    responsePlan = r.responsePlan;
+  }
+  if (!plan.composers_skip.includes("validation")) {
+    const r = await validationNode({ ...composerState, ticket, responsePlan }, modelFor("validation"), ctx);
+    ctx.agentLogs.push(...(r.agentLogs ?? []));
+    validation = r.validation;
+  }
+
+  // ── 7. Memory commits ─────────────────────────────────────────────────
+  const finalOutcome = triage?.is_false_positive ? "FALSE_POSITIVE"
+                     : ticket?.priority === "CRITICAL" ? "ESCALATED"
+                     : "TRIAGED";
+  upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
+  commitAsync({
+    alertId: alert.id, idempotencyKey: traceId,
+    alertDescription: alert.description ?? "",
+    triage, intel: workerResults.intel, ticket,
+    outcome: finalOutcome,
+    triggered_by: 'composer',
+  });
+
+  return composeOutput({
+    analysis: triage,
+    intel: workerResults.intel ?? null,
+    knowledge: workerResults.knowledge ?? null,
+    correlation: workerResults.correlation ?? null,
+    recall: workerResults.recall ?? { available: true, hits: recallHits },
+    ioc_check: workerResults.ioc_check ?? null,
+    ticket, responsePlan, validation,
+    ctx, fpShortCircuit: false,
+  });
+}
+
 
 // ── Worker dispatch ────────────────────────────────────────────────────────
 

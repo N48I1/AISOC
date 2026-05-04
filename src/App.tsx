@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 import PageHeader from './components/ui/PageHeader';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from './features/alerts/alertUtils';
@@ -146,15 +146,12 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   }, [expanded]);
 
   const menuItems = [
-    { id: 'research',       icon: BarChart3,     label: 'Research Overview' },
-    { id: 'noise-reduction', icon: Filter,       label: 'Noise Reduction' },
-    { id: 'alerts',         icon: AlertTriangle, label: 'Alert Investigation' },
-    { id: 'agents',         icon: Activity,      label: 'Agent Evaluation' },
-    { id: 'intelligence',   icon: BookOpen,      label: 'MITRE & Intel' },
-    { id: 'reports',        icon: FileText,      label: 'Evidence Reports' },
-    { id: 'notifications',  icon: Send,          label: 'Notifications' },
-    { id: 'response',       icon: Shield,        label: 'Response Controls' },
-    { id: 'settings',       icon: Settings,      label: 'System Admin' },
+    { id: 'dashboard',      icon: BarChart3,     label: 'Dashboard' },
+    { id: 'noise-filter',   icon: Filter,        label: 'Noise Filter' },
+    { id: 'fp-archive',     icon: XCircle,       label: 'FP Archive' },
+    { id: 'investigation',  icon: AlertTriangle, label: 'Investigation' },
+    { id: 'integrations',   icon: Send,          label: 'Integrations' },
+    { id: 'settings',       icon: Settings,      label: 'Settings' },
   ];
 
   return (
@@ -5198,10 +5195,869 @@ const LoginPage = () => {
   );
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// NEW TAB COMPONENTS — Pipeline Redesign
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Dashboard Tab ───────────────────────────────────────────────────────────
+const DashboardTab = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[]; onAlertClick: (a: Alert) => void; setActiveTab: (t: string) => void }) => {
+  const { token } = useAuth();
+  const [funnel, setFunnel] = useState<any>(null);
+  const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
+  const [agentStats, setAgentStatsState] = useState<AgentStat[]>([]);
+
+  useEffect(() => {
+    if (!token) return;
+    getPipelineFunnel().then(setFunnel).catch(() => {});
+    fetch('/api/stats/trends', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (Array.isArray(data)) setTrends(data); }).catch(() => {});
+    getAgentStats().then(setAgentStatsState).catch(() => setAgentStatsState([]));
+  }, [token]);
+
+  const analyzed = alerts.filter(a => !!a.ai_analysis || ['TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED','FP_CONFIRMED','FILTERED'].includes(a.status)).length;
+  const topThreats = [...alerts]
+    .filter(a => !['CLOSED','FALSE_POSITIVE','FP_CONFIRMED'].includes(a.status) && a.status !== 'NEW')
+    .sort((a, b) => (getAlertRiskScore(b) ?? b.severity * 6) - (getAlertRiskScore(a) ?? a.severity * 6))
+    .slice(0, 6);
+  const trendMax = trends ? Math.max(...trends.map(t => t.count), 1) : 1;
+  const fallbackAgents = agentStats.filter(s => s.total_runs > 0 && (s.fallback_count / s.total_runs) > 0.2);
+
+  const funnelStages = funnel ? [
+    { label: 'Ingested',    value: funnel.ingested,               color: '#004a99' },
+    { label: 'New',         value: funnel.new,                    color: '#6b7280' },
+    { label: 'FP Filtered', value: funnel.fp_filtered,            color: '#f29900' },
+    { label: 'Awaiting',    value: funnel.awaiting_investigation, color: '#7c3aed' },
+    { label: 'Investigated',value: funnel.investigated,           color: '#1e8e3e' },
+    { label: 'Escalated',   value: funnel.escalated,              color: '#d93025' },
+    { label: 'Closed',      value: funnel.closed,                 color: '#374151' },
+  ] : [];
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
+      <PageHeader eyebrow="Overview" title="Aegis SOC Dashboard" description="Real-time alert pipeline, FP filtering efficiency, and system health." />
+
+      {/* Pipeline Funnel */}
+      {funnel && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-5">
+          <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wider mb-4">Alert Pipeline Funnel</p>
+          <div className="flex items-end gap-3">
+            {funnelStages.map((s, i) => {
+              const maxVal = Math.max(...funnelStages.map(x => x.value), 1);
+              const h = Math.max(8, (s.value / maxVal) * 120);
+              return (
+                <div key={s.label} className="flex-1 flex flex-col items-center gap-2">
+                  <span className="text-[1.1rem] font-black" style={{ color: s.color }}>{s.value}</span>
+                  <div className="w-full rounded-t" style={{ height: h, backgroundColor: s.color, opacity: 0.8 }} />
+                  <span className="text-[0.62rem] font-bold text-[var(--t3)] text-center">{s.label}</span>
+                  {i < funnelStages.length - 1 && <span className="hidden">→</span>}
+                </div>
+              );
+            })}
+          </div>
+          {funnel.avg_time_to_filter_sec != null && (
+            <div className="flex gap-6 mt-4 pt-3 border-t border-[var(--b1)]">
+              <span className="text-[0.65rem] text-[var(--t3)]">Avg filter: <b className="text-[var(--t7)]">{funnel.avg_time_to_filter_sec}s</b></span>
+              {funnel.avg_time_to_investigate_sec != null && <span className="text-[0.65rem] text-[var(--t3)]">Avg investigate: <b className="text-[var(--t7)]">{funnel.avg_time_to_investigate_sec}s</b></span>}
+              {funnel.avg_time_to_close_sec != null && <span className="text-[0.65rem] text-[var(--t3)]">Avg close: <b className="text-[var(--t7)]">{Math.round(funnel.avg_time_to_close_sec / 3600)}h</b></span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-4 gap-4">
+        {[
+          { label: 'Total Alerts', value: alerts.length, sub: `${analyzed} processed`, icon: AlertTriangle, color: '#004a99' },
+          { label: 'FP Filtered', value: funnel?.fp_filtered ?? '—', sub: funnel ? `${((funnel.fp_filtered / Math.max(funnel.ingested, 1)) * 100).toFixed(0)}% FP rate` : '', icon: Filter, color: '#f29900' },
+          { label: 'Awaiting Investigation', value: funnel?.awaiting_investigation ?? '—', sub: 'passed noise filter', icon: Search, color: '#7c3aed' },
+          { label: 'Escalated', value: funnel?.escalated ?? '—', sub: 'active incidents', icon: Shield, color: '#d93025' },
+        ].map(card => (
+          <div key={card.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest">{card.label}</p>
+              <card.icon size={18} style={{ color: card.color }} className="opacity-50" />
+            </div>
+            <p className="text-[1.7rem] font-black text-[var(--t1)] mt-2 leading-none">{card.value}</p>
+            <p className="text-[0.68rem] text-[var(--t4)] mt-2">{card.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-5">
+        {/* Live Alert Stream */}
+        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
+            <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM</h3>
+            <span className="text-[0.65rem] text-[var(--t2)] font-mono">AUTO-REFRESH</span>
+          </div>
+          <div className="max-h-[340px] overflow-y-auto">
+            {alerts.length > 0 ? (
+              [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 12).map(alert => (
+                <AlertRow key={alert.id} alert={alert} onClick={() => onAlertClick(alert)} />
+              ))
+            ) : (
+              <div className="h-32 flex items-center justify-center text-[var(--t3)] text-sm opacity-50">
+                <Activity className="w-8 h-8 animate-pulse mr-2" /> Waiting for alerts...
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 7-Day Trend + Health */}
+        <div className="space-y-5">
+          {trends && (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-4">
+              <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wide mb-3">7-Day Volume</p>
+              <div className="flex items-end gap-1.5 h-16">
+                {trends.map(t => (
+                  <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
+                    <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse" style={{ height: 48 }}>
+                      <div className="w-full bg-[var(--p1)] rounded-sm" style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 3 : 0 }} />
+                    </div>
+                    <span className="text-[0.55rem] text-[var(--t3)] font-mono">{t.count}</span>
+                    <span className="text-[0.5rem] text-[var(--t2)]">{t.day.slice(5)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-4">
+            <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wide mb-3">System Health</p>
+            <div className="space-y-2">
+              <div className="flex justify-between text-[0.7rem]">
+                <span className="text-[var(--t3)]">Agents active</span>
+                <span className="font-bold text-[var(--t7)]">{agentStats.filter(s => s.total_runs > 0).length}/{agentStats.length || 9}</span>
+              </div>
+              {fallbackAgents.length > 0 && (
+                <div className="text-[0.65rem] text-amber-600 font-semibold">{fallbackAgents.length} agent(s) with high fallback rate</div>
+              )}
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => setActiveTab('noise-filter')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Noise Filter</button>
+                <button onClick={() => setActiveTab('investigation')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Investigation</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Top Active Threats */}
+      {topThreats.length > 0 && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Top Active Threats</p>
+            <button onClick={() => setActiveTab('investigation')} className="text-[0.68rem] font-bold text-[var(--p1)] hover:underline">View all</button>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {topThreats.map(alert => {
+              const risk = getAlertRiskScore(alert);
+              return (
+                <button key={alert.id} onClick={() => onAlertClick(alert)} className="w-full px-5 py-3 text-left hover:bg-[var(--s1)] flex items-center gap-4">
+                  <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : 'bg-blue-500'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{alert.description}</p>
+                    <p className="text-[0.62rem] text-[var(--t3)] font-mono mt-0.5">{alert.source_ip} · {alert.agent_name} · {alert.status}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[0.72rem] font-black text-[var(--t6)]">{risk != null ? `${risk}%` : `L${alert.severity}`}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+// ── Noise Filter Tab ────────────────────────────────────────────────────────
+const NoiseFilterTab = ({ alerts, setActiveTab }: { alerts: Alert[]; setActiveTab: (t: string) => void }) => {
+  const toast = useToast();
+  const [scanning, setScanning] = useState(false);
+  const [scanningId, setScanningId] = useState<string | null>(null);
+  const [fpResults, setFpResults] = useState<any[]>([]);
+  const [fpData, setFpData] = useState<any>(null);
+  const [rules, setRules] = useState<any[]>([]);
+  const [assets, setAssetsState] = useState<any[]>([]);
+  const [showAddRule, setShowAddRule] = useState(false);
+  const [showAddAsset, setShowAddAsset] = useState(false);
+  const [newRule, setNewRule] = useState({ name: '', reason: '', source_ip_pattern: '', description_pattern: '', max_severity: 15 });
+  const [newAsset, setNewAsset] = useState({ value: '', type: 'ip', role: 'scanner', description: '', fp_default: true });
+  const [activeSection, setActiveSection] = useState<'filter' | 'rules' | 'assets'>('filter');
+
+  const unscanned = alerts.filter(a => a.status === 'NEW');
+  const recentFp = alerts.filter(a => a.status === 'FALSE_POSITIVE' || a.status === 'FP_CONFIRMED').slice(0, 20);
+
+  const reload = useCallback(() => {
+    getFpReduction().then(d => d && setFpData(d)).catch(() => {});
+    getSuppressionRules().then(setRules).catch(() => {});
+    getAssets().then(setAssetsState).catch(() => {});
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  const handleScanAll = async () => {
+    setScanning(true);
+    try {
+      const result = await fpScanBatch();
+      const fps = (result.results || []).filter((r: any) => r.is_fp);
+      setFpResults(fps);
+      toast(`Scanned ${result.scanned} alerts — ${fps.length} FP detected`, 'success');
+    } catch { toast('Batch scan failed', 'error'); }
+    setScanning(false);
+  };
+
+  const handleScanOne = async (alertId: string) => {
+    setScanningId(alertId);
+    try {
+      const result = await fpScan(alertId);
+      if (result.is_fp) {
+        setFpResults(prev => [...prev, { id: alertId, ...result }]);
+        toast(`FP detected: ${result.fp_reason?.slice(0, 60)}`, 'success');
+      } else {
+        toast('Not FP — moved to investigation queue', 'success');
+      }
+    } catch { toast('Scan failed', 'error'); }
+    setScanningId(null);
+  };
+
+  const handleConfirmFp = async (alertId: string) => {
+    await confirmFp(alertId);
+    setFpResults(prev => prev.filter(r => r.id !== alertId));
+    toast('FP confirmed', 'success');
+  };
+
+  const handleOverrideFp = async (alertId: string) => {
+    await overrideFp(alertId);
+    setFpResults(prev => prev.filter(r => r.id !== alertId));
+    toast('Sent to investigation queue', 'success');
+  };
+
+  const handleCreateRule = async () => {
+    if (!newRule.name || !newRule.reason) return;
+    await createSuppressionRule({ ...newRule, max_severity: newRule.max_severity });
+    setNewRule({ name: '', reason: '', source_ip_pattern: '', description_pattern: '', max_severity: 15 });
+    setShowAddRule(false); toast('Rule created', 'success'); reload();
+  };
+
+  const handleAddAsset = async () => {
+    if (!newAsset.value) return;
+    await upsertAsset(newAsset);
+    setNewAsset({ value: '', type: 'ip', role: 'scanner', description: '', fp_default: true });
+    setShowAddAsset(false); toast('Asset registered', 'success'); reload();
+  };
+
+  const fpMethodBadge = (method: string | null) => {
+    const styles: Record<string, string> = {
+      suppression: 'bg-blue-100 text-blue-800',
+      memory: 'bg-green-100 text-green-800',
+      triage: 'bg-purple-100 text-purple-800',
+    };
+    return method ? <span className={`px-2 py-0.5 rounded-full text-[0.58rem] font-black uppercase ${styles[method] || 'bg-gray-100 text-gray-700'}`}>{method}</span> : null;
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
+      <PageHeader eyebrow="Pipeline Step 1" title="Noise Filter" description="Scan incoming alerts for false positives. Confirmed FPs go to the archive; clean alerts proceed to investigation." />
+
+      {/* Stats */}
+      {fpData && (
+        <div className="grid grid-cols-4 gap-4">
+          {[
+            { label: 'Total FPs', value: fpData.total_fp, color: '#f29900' },
+            { label: 'Suppression', value: fpData.suppression_driven_fp, color: '#1a73e8' },
+            { label: 'Memory-Driven', value: fpData.memory_driven_fp, color: '#1e8e3e' },
+            { label: 'Time Saved', value: `${fpData.time_saved_minutes}m`, color: '#7c3aed' },
+          ].map(c => (
+            <div key={c.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3">
+              <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-widest">{c.label}</p>
+              <p className="text-[1.4rem] font-black mt-1" style={{ color: c.color }}>{c.value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Section Tabs */}
+      <div className="flex gap-2">
+        {[
+          { id: 'filter' as const, label: `Scan & Filter (${unscanned.length} new)` },
+          { id: 'rules' as const, label: `Suppression Rules (${rules.length})` },
+          { id: 'assets' as const, label: `Known Assets (${assets.length})` },
+        ].map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id)}
+            className={`px-4 py-2 rounded-lg text-[0.75rem] font-bold transition-colors ${activeSection === s.id ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s0)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s1)]'}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Filter Section ──────────────────────────────────────────────── */}
+      {activeSection === 'filter' && (
+        <div className="grid grid-cols-2 gap-5">
+          {/* Left: Unscanned */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+              <p className="text-[0.78rem] font-black text-[var(--t7)]">Unscanned Alerts ({unscanned.length})</p>
+              <button onClick={handleScanAll} disabled={scanning || unscanned.length === 0}
+                className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1.5">
+                <Zap size={12} />{scanning ? 'Scanning...' : 'Scan All'}
+              </button>
+            </div>
+            <div className="max-h-[420px] overflow-y-auto divide-y divide-[var(--b1)]">
+              {unscanned.length === 0 ? (
+                <div className="p-8 text-center text-[var(--t3)] text-[0.78rem]">No unscanned alerts. All clear.</div>
+              ) : unscanned.map(a => (
+                <div key={a.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[var(--sa)]">
+                  <span className={`w-1.5 h-8 rounded-full ${a.severity >= 12 ? 'bg-red-500' : a.severity >= 10 ? 'bg-orange-400' : 'bg-blue-400'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.75rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
+                    <p className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name}</p>
+                  </div>
+                  <button onClick={() => handleScanOne(a.id)} disabled={scanningId === a.id}
+                    className="px-2.5 py-1 rounded bg-[var(--sa)] text-[0.62rem] font-bold text-[var(--p1)] hover:bg-[var(--s1)] disabled:opacity-50">
+                    {scanningId === a.id ? '...' : 'Scan'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: FP Verdicts */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b bg-[var(--s1)]">
+              <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Verdicts ({fpResults.length + recentFp.length})</p>
+            </div>
+            <div className="max-h-[420px] overflow-y-auto divide-y divide-[var(--b1)]">
+              {fpResults.length === 0 && recentFp.length === 0 ? (
+                <div className="p-8 text-center text-[var(--t3)] text-[0.78rem]">Run a scan to see FP verdicts here.</div>
+              ) : (
+                <>
+                  {fpResults.map(r => (
+                    <div key={r.id} className="px-4 py-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        {fpMethodBadge(r.fp_method)}
+                        <span className="text-[0.65rem] font-bold text-[var(--t7)]">{r.fp_confidence ? `${(r.fp_confidence * 100).toFixed(0)}% confidence` : ''}</span>
+                      </div>
+                      <p className="text-[0.72rem] text-[var(--t7)]">{r.fp_reason || 'False positive detected'}</p>
+                      {r.fp_details && (
+                        <div className="text-[0.6rem] text-[var(--t3)] bg-[var(--sa)] rounded p-2">
+                          {r.fp_details.rule_name && <span>Rule: {r.fp_details.rule_name}</span>}
+                          {r.fp_details.known_asset && <span>Asset: {r.fp_details.known_asset.value} ({r.fp_details.known_asset.role})</span>}
+                          {r.fp_details.similar_incident && <span>Similar: {(r.fp_details.similar_incident.similarity * 100).toFixed(0)}% match</span>}
+                          {r.fp_details.ioc_pattern && <span>IOC: {r.fp_details.ioc_pattern.value} (fp_ratio={r.fp_details.ioc_pattern.fp_ratio})</span>}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <button onClick={() => handleConfirmFp(r.id)} className="px-3 py-1 rounded bg-green-100 text-green-800 text-[0.62rem] font-bold hover:bg-green-200">Confirm FP</button>
+                        <button onClick={() => handleOverrideFp(r.id)} className="px-3 py-1 rounded bg-amber-100 text-amber-800 text-[0.62rem] font-bold hover:bg-amber-200">Override → Investigate</button>
+                      </div>
+                    </div>
+                  ))}
+                  {recentFp.map(a => (
+                    <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 opacity-70">
+                      <XCircle size={14} className="text-amber-500 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[0.7rem] text-[var(--t6)] truncate">{a.description}</p>
+                        <p className="text-[0.58rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.status}</p>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Suppression Rules ───────────────────────────────────────────── */}
+      {activeSection === 'rules' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <p className="text-[0.78rem] font-black text-[var(--t7)]">Suppression Rules</p>
+            <button onClick={() => setShowAddRule(!showAddRule)} className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] flex items-center gap-1"><Plus size={12} />Add Rule</button>
+          </div>
+          {showAddRule && (
+            <div className="p-4 bg-[var(--sa)] border-b border-[var(--b1)] grid grid-cols-2 gap-3">
+              <input placeholder="Rule name" value={newRule.name} onChange={e => setNewRule(r => ({ ...r, name: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]" />
+              <input placeholder="Reason" value={newRule.reason} onChange={e => setNewRule(r => ({ ...r, reason: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]" />
+              <input placeholder="Source IP / CIDR" value={newRule.source_ip_pattern} onChange={e => setNewRule(r => ({ ...r, source_ip_pattern: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]" />
+              <input placeholder="Description regex" value={newRule.description_pattern} onChange={e => setNewRule(r => ({ ...r, description_pattern: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]" />
+              <button onClick={handleCreateRule} className="col-span-2 px-4 py-2 rounded bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)]">Create Rule</button>
+            </div>
+          )}
+          <div className="divide-y divide-[var(--b1)]">
+            {rules.length === 0 ? (
+              <div className="p-6 text-center text-[var(--t3)] text-[0.78rem]">No suppression rules yet.</div>
+            ) : rules.map((r: any) => (
+              <div key={r.id} className="px-4 py-3 flex items-center gap-4">
+                <button onClick={() => updateSuppressionRule(r.id, { enabled: !r.enabled }).then(reload)}
+                  className={`w-8 h-5 rounded-full transition-colors ${r.enabled ? 'bg-green-500' : 'bg-gray-300'}`}>
+                  <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${r.enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.75rem] font-bold text-[var(--t7)]">{r.name}</p>
+                  <p className="text-[0.6rem] text-[var(--t3)]">{r.reason} {r.source_ip_pattern && `· IP: ${r.source_ip_pattern}`} {r.description_pattern && `· Regex: ${r.description_pattern}`}</p>
+                </div>
+                <span className="text-[0.62rem] font-mono text-[var(--t3)]">{r.hit_count} hits</span>
+                <button onClick={() => deleteSuppressionRule(r.id).then(reload)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Known Assets ────────────────────────────────────────────────── */}
+      {activeSection === 'assets' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <p className="text-[0.78rem] font-black text-[var(--t7)]">Known Assets</p>
+            <button onClick={() => setShowAddAsset(!showAddAsset)} className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] flex items-center gap-1"><Plus size={12} />Add Asset</button>
+          </div>
+          {showAddAsset && (
+            <div className="p-4 bg-[var(--sa)] border-b border-[var(--b1)] grid grid-cols-2 gap-3">
+              <input placeholder="Value (IP, hostname, user)" value={newAsset.value} onChange={e => setNewAsset(a => ({ ...a, value: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]" />
+              <select value={newAsset.type} onChange={e => setNewAsset(a => ({ ...a, type: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]">
+                <option value="ip">IP</option><option value="host">Host</option><option value="user">User</option><option value="domain">Domain</option>
+              </select>
+              <select value={newAsset.role} onChange={e => setNewAsset(a => ({ ...a, role: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]">
+                <option value="scanner">Scanner</option><option value="monitoring">Monitoring</option><option value="backup">Backup</option><option value="admin">Admin</option><option value="production">Production</option>
+              </select>
+              <input placeholder="Description" value={newAsset.description} onChange={e => setNewAsset(a => ({ ...a, description: e.target.value }))} className="px-3 py-2 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.75rem]" />
+              <button onClick={handleAddAsset} className="col-span-2 px-4 py-2 rounded bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)]">Register Asset</button>
+            </div>
+          )}
+          <div className="divide-y divide-[var(--b1)]">
+            {assets.length === 0 ? (
+              <div className="p-6 text-center text-[var(--t3)] text-[0.78rem]">No known assets. Run seed-known-assets.ts to populate.</div>
+            ) : assets.map((a: any) => (
+              <div key={a.value} className="px-4 py-2.5 flex items-center gap-3">
+                <span className={`px-2 py-0.5 rounded text-[0.58rem] font-bold uppercase ${a.fp_default ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>{a.type}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.72rem] font-bold text-[var(--t7)]">{a.value}</p>
+                  <p className="text-[0.58rem] text-[var(--t3)]">{a.role} {a.description && `— ${a.description}`}</p>
+                </div>
+                {a.fp_default ? <span className="text-[0.58rem] font-bold text-amber-600">FP by default</span> : null}
+                <button onClick={() => deleteAsset(a.value).then(reload)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+// ── FP Archive Tab ──────────────────────────────────────────────────────────
+const FpArchiveTab = () => {
+  const toast = useToast();
+  const [data, setData] = useState<{ alerts: any[]; total: number }>({ alerts: [], total: 0 });
+  const [page, setPage] = useState(1);
+  const [methodFilter, setMethodFilter] = useState('');
+  const [effectiveness, setEffectiveness] = useState<any>(null);
+  const [fpTimeline, setFpTimeline] = useState<any[]>([]);
+  const [noisySources, setNoisySources] = useState<any[]>([]);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const reload = useCallback(() => {
+    getFpArchive({ page, pageSize: 25, method: methodFilter || undefined }).then(setData).catch(() => {});
+    getDetectionEffectiveness().then(setEffectiveness).catch(() => {});
+    getFpOverTime().then(setFpTimeline).catch(() => {});
+    getNoisySources().then(setNoisySources).catch(() => {});
+  }, [page, methodFilter]);
+  useEffect(() => { reload(); }, [reload]);
+
+  const handleReinvestigate = async (id: string) => {
+    await overrideFp(id);
+    toast('Alert moved to investigation queue', 'success');
+    reload();
+  };
+
+  const fpTimelineMax = fpTimeline.length ? Math.max(...fpTimeline.map(t => t.total_fp || 0), 1) : 1;
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
+      <PageHeader eyebrow="History" title="False Positive Archive" description="Browse all detected false positives with reasoning, analytics, and audit trail." />
+
+      {/* Stats */}
+      <div className="grid grid-cols-5 gap-4">
+        {[
+          { label: 'Total FPs', value: data.total },
+          { label: 'Suppression', value: effectiveness?.suppression?.total_caught ?? '—' },
+          { label: 'Memory', value: effectiveness?.memory?.total_caught ?? '—' },
+          { label: 'Triage LLM', value: effectiveness?.triage?.total_caught ?? '—' },
+          { label: 'Overall Accuracy', value: effectiveness?.overall?.accuracy != null ? `${(effectiveness.overall.accuracy * 100).toFixed(0)}%` : '—' },
+        ].map(c => (
+          <div key={c.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3">
+            <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-widest">{c.label}</p>
+            <p className="text-[1.3rem] font-black text-[var(--t7)] mt-1">{c.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* FP Trend */}
+      {fpTimeline.length > 0 && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
+          <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wide mb-3">FP Detections (30 days)</p>
+          <div className="flex items-end gap-1 h-14">
+            {fpTimeline.map(t => (
+              <div key={t.day} className="flex-1 flex flex-col items-center">
+                <div className="w-full rounded-t overflow-hidden flex flex-col-reverse" style={{ height: 40 }}>
+                  <div className="w-full bg-amber-400 rounded-t" style={{ height: `${fpTimelineMax > 0 ? (t.total_fp / fpTimelineMax) * 100 : 0}%`, minHeight: t.total_fp > 0 ? 2 : 0 }} />
+                </div>
+                <span className="text-[0.45rem] text-[var(--t2)] mt-1">{t.day?.slice(8)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Filter + Table */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between gap-3">
+          <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Alerts ({data.total})</p>
+          <div className="flex gap-2">
+            {['', 'suppression', 'memory', 'triage'].map(m => (
+              <button key={m} onClick={() => { setMethodFilter(m); setPage(1); }}
+                className={`px-3 py-1 rounded text-[0.62rem] font-bold ${methodFilter === m ? 'bg-[var(--p1)] text-white' : 'bg-[var(--sa)] text-[var(--t4)] hover:bg-[var(--s1)]'}`}>
+                {m || 'All'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="divide-y divide-[var(--b1)]">
+          {data.alerts.length === 0 ? (
+            <div className="p-8 text-center text-[var(--t3)] text-[0.78rem]">No false positives in archive yet.</div>
+          ) : data.alerts.map(a => (
+            <div key={a.id}>
+              <button onClick={() => setExpanded(expanded === a.id ? null : a.id)} className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-[var(--sa)]">
+                <ChevronRight size={14} className={`text-[var(--t3)] transition-transform ${expanded === a.id ? 'rotate-90' : ''}`} />
+                <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase ${
+                  a.fp_method === 'suppression' ? 'bg-blue-100 text-blue-700' :
+                  a.fp_method === 'memory' ? 'bg-green-100 text-green-700' :
+                  'bg-purple-100 text-purple-700'
+                }`}>{a.fp_method || '?'}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.72rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
+                  <p className="text-[0.58rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · {a.timestamp?.slice(0, 16)}</p>
+                </div>
+                <span className="text-[0.62rem] font-bold text-amber-600">{a.fp_confidence ? `${(a.fp_confidence * 100).toFixed(0)}%` : ''}</span>
+              </button>
+              {expanded === a.id && (
+                <div className="px-4 pb-3 pl-10 space-y-2">
+                  <div className="bg-[var(--sa)] rounded-lg p-3 text-[0.68rem] text-[var(--t6)]">
+                    <p className="font-bold mb-1">FP Reason:</p>
+                    <p>{a.fp_reason || 'No reason recorded'}</p>
+                  </div>
+                  {a.fp_details && (
+                    <div className="bg-[var(--sa)] rounded-lg p-3 text-[0.62rem] text-[var(--t3)] space-y-1">
+                      {a.fp_details.rule_name && <p>Suppression rule: <b>{a.fp_details.rule_name}</b></p>}
+                      {a.fp_details.known_asset && <p>Known asset: <b>{a.fp_details.known_asset.value}</b> ({a.fp_details.known_asset.role})</p>}
+                      {a.fp_details.similar_incident && <p>Similar incident: <b>{(a.fp_details.similar_incident.similarity * 100).toFixed(0)}%</b> match with {a.fp_details.similar_incident.alert_id}</p>}
+                      {a.fp_details.ioc_pattern && <p>IOC pattern: <b>{a.fp_details.ioc_pattern.value}</b> fp_ratio={a.fp_details.ioc_pattern.fp_ratio}</p>}
+                    </div>
+                  )}
+                  <button onClick={() => handleReinvestigate(a.id)} className="px-3 py-1.5 rounded bg-amber-100 text-amber-800 text-[0.65rem] font-bold hover:bg-amber-200">
+                    Re-investigate
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {data.total > 25 && (
+          <div className="px-4 py-3 border-t border-[var(--b1)] flex items-center justify-between">
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded text-[0.68rem] font-bold bg-[var(--sa)] disabled:opacity-30">Prev</button>
+            <span className="text-[0.65rem] text-[var(--t3)]">Page {page} of {Math.ceil(data.total / 25)}</span>
+            <button onClick={() => setPage(p => p + 1)} disabled={page >= Math.ceil(data.total / 25)} className="px-3 py-1 rounded text-[0.68rem] font-bold bg-[var(--sa)] disabled:opacity-30">Next</button>
+          </div>
+        )}
+      </div>
+
+      {/* Noisy Sources */}
+      {noisySources.length > 0 && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.78rem] font-black text-[var(--t7)]">Top Noisy Sources</p>
+          </div>
+          <div className="divide-y divide-[var(--b1)]">
+            {noisySources.slice(0, 10).map((s: any) => (
+              <div key={s.source} className="px-4 py-2.5 flex items-center gap-3">
+                <span className="text-[0.62rem] font-mono text-[var(--t6)] w-32 truncate">{s.source}</span>
+                <span className="text-[0.58rem] text-[var(--t3)]">{s.source_type}</span>
+                <div className="flex-1" />
+                <span className="text-[0.62rem] font-bold text-amber-600">{s.fp_count} FP / {s.total_alerts} total</span>
+                <span className="text-[0.58rem] text-[var(--t3)]">{(s.fp_rate * 100).toFixed(0)}%</span>
+                {s.is_registered && <span className="text-[0.55rem] text-green-600 font-bold">Registered</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+// ── Investigation Tab (wraps existing AlertsTab with pipeline semantics) ────
+const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, setActiveTab }: {
+  alerts: Alert[];
+  selectedAlert: Alert | null;
+  setSelectedAlert: (a: Alert | null) => void;
+  onAlertAction: (id: string, update: any) => void;
+  setActiveTab: (t: string) => void;
+}) => {
+  const toast = useToast();
+  const [investigating, setInvestigating] = useState<string | null>(null);
+
+  // Only show alerts that passed the noise filter or are already investigated
+  const investigationAlerts = alerts.filter(a =>
+    ['FILTERED', 'TRIAGED', 'ESCALATED', 'CLOSED', 'ANALYZING'].includes(a.status)
+  );
+
+  const handleInvestigate = async (alertId: string) => {
+    setInvestigating(alertId);
+    try {
+      const result = await investigateAlert(alertId);
+      toast(`Investigation complete → ${result.status}`, 'success');
+      onAlertAction(alertId, result);
+    } catch (err: any) { toast(err?.message || 'Investigation failed', 'error'); }
+    setInvestigating(null);
+  };
+
+  const handleEscalate = async (alertId: string) => {
+    try {
+      await escalateAlert(alertId);
+      toast('Alert escalated — GLPI ticket created', 'success');
+    } catch { toast('Escalation failed', 'error'); }
+  };
+
+  const handleMarkFp = async (alertId: string) => {
+    try {
+      await confirmFp(alertId);
+      toast('Marked as false positive', 'success');
+    } catch { toast('Failed', 'error'); }
+  };
+
+  if (selectedAlert) {
+    return (
+      <div className="flex h-full">
+        <div className="w-80 border-r border-[var(--b1)] bg-[var(--s0)] overflow-y-auto shrink-0">
+          <div className="px-4 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.72rem] font-black text-[var(--t7)]">Queue ({investigationAlerts.length})</p>
+          </div>
+          {investigationAlerts.map(a => (
+            <button key={a.id} onClick={() => setSelectedAlert(a)}
+              className={`w-full px-3 py-2.5 text-left border-b border-[var(--b1)] hover:bg-[var(--sa)] ${selectedAlert.id === a.id ? 'bg-[var(--sa)] border-l-2 border-l-[var(--p1)]' : ''}`}>
+              <p className="text-[0.7rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
+              <p className="text-[0.58rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.status}</p>
+            </button>
+          ))}
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          <AlertDetail
+            alert={selectedAlert}
+            onClose={() => setSelectedAlert(null)}
+            onAction={onAlertAction}
+            returnTab="investigation"
+            setActiveTab={setActiveTab}
+          />
+          {/* Action bar */}
+          <div className="sticky bottom-0 bg-[var(--s0)] border-t border-[var(--b1)] px-6 py-3 flex gap-3">
+            {selectedAlert.status === 'FILTERED' && (
+              <button onClick={() => handleInvestigate(selectedAlert.id)} disabled={investigating === selectedAlert.id}
+                className="px-5 py-2.5 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-2">
+                <Zap size={14} />{investigating === selectedAlert.id ? 'Running...' : 'Run Investigation'}
+              </button>
+            )}
+            {['TRIAGED', 'FILTERED'].includes(selectedAlert.status) && (
+              <>
+                <button onClick={() => handleEscalate(selectedAlert.id)}
+                  className="px-4 py-2.5 rounded-lg bg-red-600 text-white text-[0.75rem] font-bold hover:bg-red-700 flex items-center gap-2">
+                  <Shield size={14} />Escalate
+                </button>
+                <button onClick={() => handleMarkFp(selectedAlert.id)}
+                  className="px-4 py-2.5 rounded-lg bg-amber-100 text-amber-800 text-[0.75rem] font-bold hover:bg-amber-200">
+                  Mark as FP
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // No alert selected — show queue
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
+      <PageHeader eyebrow="Pipeline Step 2" title="Investigation" description="Alerts that passed the noise filter. Run the full agent swarm to generate action plans and reports." />
+
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b bg-[var(--s1)]">
+          <p className="text-[0.78rem] font-black text-[var(--t7)]">Investigation Queue ({investigationAlerts.length})</p>
+        </div>
+        <div className="divide-y divide-[var(--b1)]">
+          {investigationAlerts.length === 0 ? (
+            <div className="p-8 text-center text-[var(--t3)]">
+              <p className="text-[0.85rem] font-semibold mb-2">No alerts awaiting investigation</p>
+              <p className="text-[0.72rem]">Run the <button onClick={() => setActiveTab('noise-filter')} className="text-[var(--p1)] font-bold hover:underline">Noise Filter</button> first to process incoming alerts.</p>
+            </div>
+          ) : investigationAlerts.map(a => {
+            const risk = getAlertRiskScore(a);
+            const hasAnalysis = !!a.ai_analysis;
+            return (
+              <button key={a.id} onClick={() => setSelectedAlert(a)} className="w-full px-4 py-3 text-left hover:bg-[var(--sa)] flex items-center gap-4">
+                <span className={`w-2 h-8 rounded-full ${a.severity >= 12 ? 'bg-red-500' : a.severity >= 10 ? 'bg-orange-400' : 'bg-blue-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.78rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
+                  <p className="text-[0.62rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · {a.timestamp?.slice(0, 16)}</p>
+                </div>
+                <span className={`px-2 py-0.5 rounded text-[0.6rem] font-bold uppercase ${
+                  a.status === 'FILTERED' ? 'bg-purple-100 text-purple-700' :
+                  a.status === 'TRIAGED' ? 'bg-green-100 text-green-700' :
+                  a.status === 'ESCALATED' ? 'bg-red-100 text-red-700' :
+                  'bg-gray-100 text-gray-600'
+                }`}>{a.status}</span>
+                {risk != null && <span className="text-[0.68rem] font-black text-[var(--t6)]">{risk}%</span>}
+                {!hasAnalysis && a.status === 'FILTERED' && (
+                  <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[0.58rem] font-bold">Needs investigation</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// ── Integrations Tab (merge Notifications + Response Controls) ──────────────
+const IntegrationsTab = () => {
+  const toast = useToast();
+  const { user } = useAuth();
+  const [activeSection, setActiveSection] = useState<'notifications' | 'firewalls' | 'logs'>('notifications');
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editConfig, setEditConfig] = useState<any>({});
+
+  const reload = useCallback(() => {
+    getIntegrations().then(setIntegrations).catch(() => {});
+    getActionLogs().then(setActionLogs).catch(() => {});
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  const handleToggle = async (name: string, enabled: boolean) => {
+    await updateIntegration(name, { enabled: !enabled });
+    toast(`${name} ${!enabled ? 'enabled' : 'disabled'}`, 'success');
+    reload();
+  };
+
+  const handleTest = async (name: string) => {
+    const result = await testIntegration(name);
+    toast(result.ok ? `${name} test succeeded` : `${name} test failed: ${result.error}`, result.ok ? 'success' : 'error');
+  };
+
+  const handleSaveConfig = async (name: string) => {
+    await updateIntegration(name, { config: editConfig });
+    setEditing(null);
+    toast(`${name} config saved`, 'success');
+    reload();
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
+      <PageHeader eyebrow="External Systems" title="Integrations" description="GLPI ticketing, Telegram alerts, email notifications, and firewall controls." />
+
+      <div className="flex gap-2">
+        {[
+          { id: 'notifications' as const, label: 'Notifications' },
+          { id: 'firewalls' as const, label: 'Firewalls' },
+          { id: 'logs' as const, label: 'Activity Log' },
+        ].map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id)}
+            className={`px-4 py-2 rounded-lg text-[0.75rem] font-bold transition-colors ${activeSection === s.id ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s0)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s1)]'}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Notifications */}
+      {activeSection === 'notifications' && (
+        <div className="space-y-4">
+          {integrations.map(intg => (
+            <div key={intg.name} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
+              <div className="flex items-center gap-4 mb-3">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${intg.enabled ? 'bg-green-100' : 'bg-gray-100'}`}>
+                  {intg.name === 'email' ? <Mail size={18} className="text-blue-600" /> :
+                   intg.name === 'telegram' ? <Send size={18} className="text-blue-500" /> :
+                   <ExternalLink size={18} className="text-purple-600" />}
+                </div>
+                <div className="flex-1">
+                  <p className="text-[0.85rem] font-black text-[var(--t7)] capitalize">{intg.name}</p>
+                  <p className="text-[0.62rem] text-[var(--t3)]">Threshold: {intg.auto_send_threshold} · 24h: {(intg as any).stats_24h?.success || 0} sent</p>
+                </div>
+                <button onClick={() => handleToggle(intg.name, intg.enabled)}
+                  className={`px-3 py-1.5 rounded-lg text-[0.68rem] font-bold ${intg.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {intg.enabled ? 'Enabled' : 'Disabled'}
+                </button>
+                <button onClick={() => handleTest(intg.name)} className="px-3 py-1.5 rounded-lg bg-[var(--sa)] text-[0.68rem] font-bold text-[var(--p1)] hover:bg-[var(--s1)]">Test</button>
+                <button onClick={() => { setEditing(editing === intg.name ? null : intg.name); setEditConfig(intg.config || {}); }}
+                  className="px-3 py-1.5 rounded-lg bg-[var(--sa)] text-[0.68rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)]">
+                  {editing === intg.name ? 'Cancel' : 'Config'}
+                </button>
+              </div>
+              {editing === intg.name && (
+                <div className="bg-[var(--sa)] rounded-lg p-3 space-y-2 mt-2">
+                  {Object.keys(editConfig).map(k => (
+                    <div key={k} className="flex items-center gap-2">
+                      <label className="text-[0.62rem] font-bold text-[var(--t3)] w-28">{k}</label>
+                      <input value={editConfig[k] || ''} onChange={e => setEditConfig((c: any) => ({ ...c, [k]: e.target.value }))}
+                        type={k.includes('token') || k.includes('password') ? 'password' : 'text'}
+                        className="flex-1 px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem]" />
+                    </div>
+                  ))}
+                  <button onClick={() => handleSaveConfig(intg.name)} className="px-4 py-1.5 rounded bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)]">Save</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Firewalls */}
+      {activeSection === 'firewalls' && <FirewallSection />}
+
+      {/* Activity Log */}
+      {activeSection === 'logs' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.78rem] font-black text-[var(--t7)]">Recent Actions ({actionLogs.length})</p>
+          </div>
+          <div className="divide-y divide-[var(--b1)] max-h-[500px] overflow-y-auto">
+            {actionLogs.length === 0 ? (
+              <div className="p-6 text-center text-[var(--t3)] text-[0.78rem]">No action logs yet.</div>
+            ) : actionLogs.map((l: any) => (
+              <div key={l.id} className="px-4 py-2.5 flex items-center gap-3">
+                <span className={`w-2 h-2 rounded-full ${l.status === 'success' ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-[0.65rem] font-bold text-[var(--t7)] w-20">{l.integration}</span>
+                <span className="text-[0.62rem] text-[var(--t4)] flex-1 truncate">{l.action} — {l.payload}</span>
+                <span className="text-[0.58rem] text-[var(--t3)] font-mono">{l.created_at?.slice(0, 16)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('soc_active_tab');
-    return saved === 'dashboard' || saved === 'actions' ? 'research' : (saved || 'research');
+    const validTabs = ['dashboard', 'noise-filter', 'fp-archive', 'investigation', 'integrations', 'settings'];
+    return (saved && validTabs.includes(saved)) ? saved : 'dashboard';
   });
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => localStorage.getItem('soc_selected_alert_id'));
@@ -5593,17 +6449,12 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[var(--s3)]">
-          {activeTab === 'research'     && <ResearchOverview alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} setActiveTab={setActiveTab} />}
-          {activeTab === 'noise-reduction' && <NoiseReductionDashboard />}
-          {activeTab === 'dashboard'    && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
-          {activeTab === 'alerts'       && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
-          {activeTab === 'agents'       && <AgentsTab />}
-          {activeTab === 'intelligence' && <MitreIntelligence alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
-          {activeTab === 'reports'      && <Reports alerts={alerts} />}
-          {activeTab === 'notifications'&& <ActionsTab />}
-          {activeTab === 'actions'      && <ActionsTab />}
-          {activeTab === 'response'     && <ResponseControls />}
-          {activeTab === 'settings'     && <SettingsTab />}
+          {activeTab === 'dashboard'      && <DashboardTab alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('investigation'); }} setActiveTab={setActiveTab} />}
+          {activeTab === 'noise-filter'   && <NoiseFilterTab alerts={alerts} setActiveTab={setActiveTab} />}
+          {activeTab === 'fp-archive'     && <FpArchiveTab />}
+          {activeTab === 'investigation'  && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
+          {activeTab === 'integrations'   && <IntegrationsTab />}
+          {activeTab === 'settings'       && <SettingsTab />}
         </main>
       </div>
     </div>

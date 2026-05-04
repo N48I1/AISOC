@@ -19,7 +19,7 @@ export interface Alert {
   hostname?: string;
   agent_name: string;
   full_log: string;
-  status: 'NEW' | 'ANALYZING' | 'TRIAGED' | 'FALSE_POSITIVE' | 'ESCALATED' | 'CLOSED' | 'INCIDENT' | 'FAILED';
+  status: 'NEW' | 'ANALYZING' | 'TRIAGED' | 'FALSE_POSITIVE' | 'ESCALATED' | 'CLOSED' | 'INCIDENT' | 'FAILED' | 'FP_CONFIRMED' | 'FILTERED';
   ai_analysis?: string;
   mitre_attack?: string[];
   remediation_steps?: string;
