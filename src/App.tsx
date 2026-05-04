@@ -5282,20 +5282,30 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[];
       </div>
 
       <div className="grid grid-cols-3 gap-5">
-        {/* Live Alert Stream */}
+        {/* Live Alert Stream — Raw Wazuh alerts only */}
         <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
           <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
-            <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM</h3>
-            <span className="text-[0.65rem] text-[var(--t2)] font-mono">AUTO-REFRESH</span>
+            <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM (WAZUH)</h3>
+            <span className="text-[0.65rem] text-[var(--t2)] font-mono">{alerts.length} ALERTS</span>
           </div>
-          <div className="max-h-[340px] overflow-y-auto">
+          <div className="max-h-[400px] overflow-y-auto">
             {alerts.length > 0 ? (
-              [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 12).map(alert => (
-                <AlertRow key={alert.id} alert={alert} onClick={() => onAlertClick(alert)} />
-              ))
+              [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 30).map(alert => {
+                const sevLabel = alert.severity >= 13 ? 'CRIT' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MED' : 'LOW';
+                const sevColor = alert.severity >= 13 ? 'text-red-500 bg-red-50' : alert.severity >= 10 ? 'text-orange-500 bg-orange-50' : alert.severity >= 7 ? 'text-blue-500 bg-blue-50' : 'text-green-500 bg-green-50';
+                return (
+                  <div key={alert.id} onClick={() => onAlertClick(alert)} className="px-4 py-2.5 border-b border-[var(--b1)] cursor-pointer hover:bg-[var(--sa)] flex items-center gap-3">
+                    <span className="text-[0.58rem] text-[var(--t3)] font-mono shrink-0 w-14">{new Date(alert.timestamp.replace(' ', 'T')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black shrink-0 ${sevColor}`}>L{alert.severity} {sevLabel}</span>
+                    <p className="text-[0.72rem] text-[var(--t7)] truncate flex-1">{alert.description}</p>
+                    <span className="text-[0.6rem] text-[var(--t3)] font-mono shrink-0">{alert.source_ip || '—'}</span>
+                    <span className="text-[0.58rem] text-[var(--t2)] shrink-0 w-16 truncate text-right">{alert.agent_name}</span>
+                  </div>
+                );
+              })
             ) : (
               <div className="h-32 flex items-center justify-center text-[var(--t3)] text-sm opacity-50">
-                <Activity className="w-8 h-8 animate-pulse mr-2" /> Waiting for alerts...
+                <Activity className="w-8 h-8 animate-pulse mr-2" /> Waiting for Wazuh alerts...
               </div>
             )}
           </div>
@@ -5370,7 +5380,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[];
 
 
 // ── Noise Filter Tab ────────────────────────────────────────────────────────
-const NoiseFilterTab = ({ alerts, setActiveTab }: { alerts: Alert[]; setActiveTab: (t: string) => void }) => {
+const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { alerts: Alert[]; setActiveTab: (t: string) => void; autoFilter: boolean; setAutoFilter: (v: boolean) => void }) => {
   const toast = useToast();
   const [scanning, setScanning] = useState(false);
   const [scanningId, setScanningId] = useState<string | null>(null);
@@ -5457,6 +5467,27 @@ const NoiseFilterTab = ({ alerts, setActiveTab }: { alerts: Alert[]; setActiveTa
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
       <PageHeader eyebrow="Pipeline Step 1" title="Noise Filter" description="Scan incoming alerts for false positives. Confirmed FPs go to the archive; clean alerts proceed to investigation." />
+
+      {/* Auto-Filter Toggle */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${autoFilter ? 'bg-green-100' : 'bg-gray-100'}`}>
+            <Zap size={20} className={autoFilter ? 'text-green-600' : 'text-gray-400'} />
+          </div>
+          <div>
+            <p className="text-[0.82rem] font-black text-[var(--t7)]">Auto-Filter on Arrival</p>
+            <p className="text-[0.65rem] text-[var(--t3)]">
+              {autoFilter
+                ? 'Enabled — incoming Wazuh alerts are automatically scanned for FPs'
+                : 'Disabled — new alerts stay unscanned until you manually trigger a scan'}
+            </p>
+          </div>
+        </div>
+        <button onClick={() => { setAutoFilter(!autoFilter); toast(autoFilter ? 'Auto-filter disabled' : 'Auto-filter enabled — new alerts will be scanned automatically', 'success'); }}
+          className={`relative w-14 h-7 rounded-full transition-colors ${autoFilter ? 'bg-green-500' : 'bg-gray-300'}`}>
+          <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${autoFilter ? 'translate-x-7' : 'translate-x-0.5'}`} />
+        </button>
+      </div>
 
       {/* Stats */}
       {fpData && (
@@ -6063,6 +6094,9 @@ export default function App() {
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => localStorage.getItem('soc_selected_alert_id'));
   const [socket, setSocket] = useState<Socket | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [autoFilter, setAutoFilter] = useState(() => localStorage.getItem('soc_auto_filter') === 'true');
+  const autoFilterRef = useRef(autoFilter);
+  useEffect(() => { autoFilterRef.current = autoFilter; localStorage.setItem('soc_auto_filter', String(autoFilter)); }, [autoFilter]);
 
   const showToast = useCallback((msg: string, type: ToastItem['type'] = 'success') => {
     const id = Math.random().toString(36).slice(2);
@@ -6104,7 +6138,7 @@ export default function App() {
     setSocket(newSocket);
 
     newSocket.on('new_alert', (data) => {
-      // Fetch the full alert to analyze it
+      // Fetch the full alert list
       fetch('/api/alerts?pageSize=100', {
         headers: { Authorization: `Bearer ${socToken}` }
       }).then(res => res.json())
@@ -6113,22 +6147,16 @@ export default function App() {
           if (!Array.isArray(dataList)) return;
           setAlerts(dataList);
           const newAlert = dataList.find((a: any) => a.id === data.id);
-          if (newAlert && newAlert.status === 'NEW') {
-            const recent = dataList.filter((a: any) => a.id !== newAlert.id).slice(0, 50);
-            orchestrateAnalysis(newAlert, recent, (update) => {
-              // Update local state
-              setAlerts(prev => Array.isArray(prev) ? prev.map(a => a.id === newAlert.id ? { ...a, ...update } : a) : prev);
-              // Sync with server
-              fetch(`/api/alerts/${newAlert.id}`, {
-                method: 'PATCH',
-                headers: { 
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${socToken}`
-                },
-                body: JSON.stringify(update)
-              });
-            });
+          if (newAlert && newAlert.status === 'NEW' && autoFilterRef.current) {
+            // Auto-filter enabled: run FP scan on arrival
+            fpScan(newAlert.id).then(() => {
+              // Re-fetch to get updated status
+              fetch('/api/alerts?pageSize=100', { headers: { Authorization: `Bearer ${socToken}` } })
+                .then(r => r.json())
+                .then(d => { const list = Array.isArray(d) ? d : d?.alerts; if (Array.isArray(list)) setAlerts(list); });
+            }).catch(() => {});
           }
+          // If auto-filter is off, the alert stays as NEW for manual scanning
         });
     });
 
@@ -6450,7 +6478,7 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[var(--s3)]">
           {activeTab === 'dashboard'      && <DashboardTab alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('investigation'); }} setActiveTab={setActiveTab} />}
-          {activeTab === 'noise-filter'   && <NoiseFilterTab alerts={alerts} setActiveTab={setActiveTab} />}
+          {activeTab === 'noise-filter'   && <NoiseFilterTab alerts={alerts} setActiveTab={setActiveTab} autoFilter={autoFilter} setAutoFilter={setAutoFilter} />}
           {activeTab === 'fp-archive'     && <FpArchiveTab />}
           {activeTab === 'investigation'  && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
           {activeTab === 'integrations'   && <IntegrationsTab />}
