@@ -279,6 +279,23 @@ try {
     CREATE INDEX IF NOT EXISTS idx_asset_value ON asset_context(value);
     CREATE INDEX IF NOT EXISTS idx_asset_type  ON asset_context(type);
 
+    -- ── Suppression rules (pattern-based FP auto-dismiss) ──────────────────
+    CREATE TABLE IF NOT EXISTS suppression_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      source_ip_pattern TEXT,
+      agent_name_pattern TEXT,
+      rule_id_pattern TEXT,
+      description_pattern TEXT,
+      min_severity INTEGER DEFAULT 0,
+      max_severity INTEGER DEFAULT 15,
+      reason TEXT NOT NULL,
+      hit_count INTEGER DEFAULT 0,
+      enabled INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_by TEXT DEFAULT 'system'
+    );
+
     -- Performance indexes
     CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
     CREATE INDEX IF NOT EXISTS idx_alerts_status    ON alerts(status);
@@ -1137,6 +1154,272 @@ async function startServer() {
        FROM working_memory WHERE alert_id = ? ORDER BY created_at DESC, step DESC LIMIT 50`
     ).all(req.params.alertId);
     res.json(rows);
+  });
+
+  // ── Asset Context CRUD ─────────────────────────────────────────────────────
+
+  app.get('/api/assets', authenticate, (_req, res) => {
+    const rows = db.prepare(
+      `SELECT value, type, role, description, fp_default, source, created_at, updated_at
+       FROM asset_context ORDER BY updated_at DESC LIMIT 200`
+    ).all();
+    res.json(rows);
+  });
+
+  app.post('/api/assets', authenticate, requireAdmin, (req: any, res) => {
+    const { value, type, role, description, fp_default } = req.body;
+    if (!value || !type || !role) return res.status(400).json({ error: 'value, type, and role are required' });
+    db.prepare(`
+      INSERT INTO asset_context (value, type, role, description, fp_default, source, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'manual', CURRENT_TIMESTAMP)
+      ON CONFLICT(value) DO UPDATE SET
+        type = excluded.type, role = excluded.role, description = excluded.description,
+        fp_default = excluded.fp_default, source = excluded.source, updated_at = CURRENT_TIMESTAMP
+    `).run(value.trim(), type, role, description || null, fp_default ? 1 : 0);
+    writeAudit(req.user.id, 'ASSET_UPSERT', `Asset ${value} (${type}/${role}) fp_default=${fp_default ? 1 : 0}`);
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/assets/:value', authenticate, requireAdmin, (req: any, res) => {
+    const r = db.prepare(`DELETE FROM asset_context WHERE value = ?`).run(req.params.value);
+    if (r.changes > 0) writeAudit(req.user.id, 'ASSET_DELETE', `Asset ${req.params.value} removed`);
+    res.json({ ok: true, deleted: r.changes > 0 });
+  });
+
+  // ── Suppression Rules CRUD ────────────────────────────────────────────────
+
+  app.get('/api/suppression-rules', authenticate, (_req, res) => {
+    const rows = db.prepare(
+      `SELECT * FROM suppression_rules ORDER BY hit_count DESC, created_at DESC`
+    ).all();
+    res.json(rows);
+  });
+
+  app.post('/api/suppression-rules', authenticate, requireAdmin, (req: any, res) => {
+    const { name, source_ip_pattern, agent_name_pattern, rule_id_pattern, description_pattern,
+            min_severity, max_severity, reason, enabled } = req.body;
+    if (!name || !reason) return res.status(400).json({ error: 'name and reason are required' });
+    const result = db.prepare(`
+      INSERT INTO suppression_rules
+        (name, source_ip_pattern, agent_name_pattern, rule_id_pattern, description_pattern,
+         min_severity, max_severity, reason, enabled, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(name, source_ip_pattern || null, agent_name_pattern || null,
+           rule_id_pattern || null, description_pattern || null,
+           min_severity ?? 0, max_severity ?? 15, reason,
+           enabled !== false ? 1 : 0, req.user.username || 'admin');
+    writeAudit(req.user.id, 'SUPPRESSION_CREATE', `Rule "${name}": ${reason}`);
+    res.json({ ok: true, id: result.lastInsertRowid });
+  });
+
+  app.patch('/api/suppression-rules/:id', authenticate, requireAdmin, (req: any, res) => {
+    const rule = db.prepare(`SELECT * FROM suppression_rules WHERE id = ?`).get(Number(req.params.id)) as any;
+    if (!rule) return res.status(404).json({ error: 'Rule not found' });
+    const u = req.body;
+    db.prepare(`
+      UPDATE suppression_rules SET
+        name = ?, source_ip_pattern = ?, agent_name_pattern = ?, rule_id_pattern = ?,
+        description_pattern = ?, min_severity = ?, max_severity = ?, reason = ?, enabled = ?
+      WHERE id = ?
+    `).run(
+      u.name ?? rule.name, u.source_ip_pattern !== undefined ? u.source_ip_pattern : rule.source_ip_pattern,
+      u.agent_name_pattern !== undefined ? u.agent_name_pattern : rule.agent_name_pattern,
+      u.rule_id_pattern !== undefined ? u.rule_id_pattern : rule.rule_id_pattern,
+      u.description_pattern !== undefined ? u.description_pattern : rule.description_pattern,
+      u.min_severity ?? rule.min_severity, u.max_severity ?? rule.max_severity,
+      u.reason ?? rule.reason, u.enabled !== undefined ? (u.enabled ? 1 : 0) : rule.enabled,
+      Number(req.params.id),
+    );
+    writeAudit(req.user.id, 'SUPPRESSION_UPDATE', `Rule #${req.params.id} updated`);
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/suppression-rules/:id', authenticate, requireAdmin, (req: any, res) => {
+    const r = db.prepare(`DELETE FROM suppression_rules WHERE id = ?`).run(Number(req.params.id));
+    if (r.changes > 0) writeAudit(req.user.id, 'SUPPRESSION_DELETE', `Rule #${req.params.id} deleted`);
+    res.json({ ok: true, deleted: r.changes > 0 });
+  });
+
+  // ── Analytics: FP Reduction ───────────────────────────────────────────────
+
+  app.get('/api/analytics/fp-reduction', authenticate, (_req, res) => {
+    const total = (db.prepare(`SELECT COUNT(*) as c FROM alerts`).get() as any).c;
+    const analyzed = (db.prepare(
+      `SELECT COUNT(*) as c FROM alerts WHERE status IN ('TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED')`
+    ).get() as any).c;
+    const totalFp = (db.prepare(
+      `SELECT COUNT(*) as c FROM alerts WHERE status = 'FALSE_POSITIVE'`
+    ).get() as any).c;
+
+    // Break down FPs by triggered_by from incident_insights
+    const fpByTrigger = db.prepare(`
+      SELECT triggered_by, COUNT(*) as c FROM incident_insights
+      WHERE outcome = 'FALSE_POSITIVE' GROUP BY triggered_by
+    `).all() as Array<{ triggered_by: string; c: number }>;
+
+    const triggerMap: Record<string, number> = {};
+    for (const r of fpByTrigger) triggerMap[r.triggered_by || 'triage'] = r.c;
+
+    const memoryFp      = triggerMap['memoryFP'] || 0;
+    const triageFp      = triggerMap['triage'] || 0;
+    const suppressionFp = triggerMap['suppression'] || 0;
+    const composerFp    = triggerMap['composer'] || 0;
+
+    // Avg FP confidence from ai_analysis
+    const fpAlerts = db.prepare(
+      `SELECT ai_analysis FROM alerts WHERE status = 'FALSE_POSITIVE' AND ai_analysis IS NOT NULL`
+    ).all() as Array<{ ai_analysis: string }>;
+    let fpConfSum = 0; let fpConfCount = 0;
+    for (const a of fpAlerts) {
+      try {
+        const ai = JSON.parse(a.ai_analysis);
+        const conf = ai?.phaseData?.analysis?.false_positive_confidence;
+        if (typeof conf === 'number') { fpConfSum += conf; fpConfCount++; }
+      } catch {}
+    }
+
+    // Suppression rule stats
+    const suppressionStats = db.prepare(
+      `SELECT name, hit_count, created_at FROM suppression_rules WHERE enabled = 1 ORDER BY hit_count DESC`
+    ).all();
+
+    res.json({
+      total_alerts: total,
+      analyzed_alerts: analyzed,
+      total_fp: totalFp,
+      fp_rate: analyzed > 0 ? Number((totalFp / analyzed).toFixed(3)) : 0,
+      memory_driven_fp: memoryFp,
+      triage_driven_fp: triageFp,
+      suppression_driven_fp: suppressionFp,
+      composer_driven_fp: composerFp,
+      fp_by_trigger: triggerMap,
+      avg_fp_confidence: fpConfCount > 0 ? Number((fpConfSum / fpConfCount).toFixed(3)) : null,
+      time_saved_minutes: totalFp * 15,  // ~15 min per manual FP triage
+      suppression_rules: suppressionStats,
+    });
+  });
+
+  app.get('/api/analytics/fp-over-time', authenticate, (_req, res) => {
+    // FPs per day for last 30 days, broken down by trigger
+    const rows = db.prepare(`
+      SELECT
+        DATE(created_at) as day,
+        COUNT(*) as total_fp,
+        SUM(CASE WHEN triggered_by = 'memoryFP' THEN 1 ELSE 0 END) as memory_fp,
+        SUM(CASE WHEN triggered_by = 'triage' THEN 1 ELSE 0 END) as triage_fp,
+        SUM(CASE WHEN triggered_by = 'suppression' THEN 1 ELSE 0 END) as suppression_fp,
+        SUM(CASE WHEN triggered_by = 'composer' THEN 1 ELSE 0 END) as composer_fp
+      FROM incident_insights
+      WHERE outcome = 'FALSE_POSITIVE'
+        AND created_at >= DATE('now', '-30 days')
+      GROUP BY DATE(created_at)
+      ORDER BY day ASC
+    `).all();
+
+    // Also get total alerts per day
+    const alertRows = db.prepare(`
+      SELECT DATE(timestamp) as day, COUNT(*) as total
+      FROM alerts
+      WHERE timestamp >= DATE('now', '-30 days')
+      GROUP BY DATE(timestamp)
+      ORDER BY day ASC
+    `).all() as Array<{ day: string; total: number }>;
+    const alertMap: Record<string, number> = {};
+    for (const r of alertRows) alertMap[r.day] = r.total;
+
+    const result = (rows as any[]).map(r => ({
+      ...r,
+      total_alerts: alertMap[r.day] || 0,
+    }));
+    res.json(result);
+  });
+
+  app.get('/api/analytics/noisy-sources', authenticate, (_req, res) => {
+    // Top IPs/agents by FP count
+    const ipRows = db.prepare(`
+      SELECT source_ip as source, 'ip' as source_type,
+             COUNT(*) as total_alerts,
+             SUM(CASE WHEN status = 'FALSE_POSITIVE' THEN 1 ELSE 0 END) as fp_count
+      FROM alerts
+      WHERE source_ip IS NOT NULL AND source_ip != ''
+      GROUP BY source_ip
+      HAVING total_alerts >= 2
+      ORDER BY fp_count DESC
+      LIMIT 20
+    `).all() as Array<{ source: string; source_type: string; total_alerts: number; fp_count: number }>;
+
+    const agentRows = db.prepare(`
+      SELECT agent_name as source, 'agent' as source_type,
+             COUNT(*) as total_alerts,
+             SUM(CASE WHEN status = 'FALSE_POSITIVE' THEN 1 ELSE 0 END) as fp_count
+      FROM alerts
+      WHERE agent_name IS NOT NULL AND agent_name != ''
+      GROUP BY agent_name
+      HAVING total_alerts >= 2
+      ORDER BY fp_count DESC
+      LIMIT 20
+    `).all() as Array<{ source: string; source_type: string; total_alerts: number; fp_count: number }>;
+
+    // Lookup asset_context for role info
+    const enriched = [...ipRows, ...agentRows].map(r => {
+      const asset = db.prepare(
+        `SELECT role, fp_default FROM asset_context WHERE value = ?`
+      ).get(r.source) as any;
+      return {
+        ...r,
+        fp_rate: r.total_alerts > 0 ? Number((r.fp_count / r.total_alerts).toFixed(3)) : 0,
+        role: asset?.role || null,
+        is_registered: !!asset,
+        fp_default: asset?.fp_default === 1,
+      };
+    }).sort((a, b) => b.fp_count - a.fp_count);
+
+    res.json(enriched);
+  });
+
+  // ── Auto-Learning ─────────────────────────────────────────────────────────
+
+  app.get('/api/analytics/fp-suggestions', authenticate, (_req, res) => {
+    // Find IOCs that are overwhelmingly FP
+    const rows = db.prepare(`
+      SELECT value, type,
+             COALESCE(fp_count, 0) as fp_count,
+             COALESCE(tp_count, 0) as tp_count
+      FROM ioc_memory
+      WHERE COALESCE(fp_count, 0) + COALESCE(tp_count, 0) >= 5
+    `).all() as Array<{ value: string; type: string; fp_count: number; tp_count: number }>;
+
+    const suggestions = rows.map(r => {
+      const total = r.fp_count + r.tp_count;
+      const fp_ratio = total > 0 ? r.fp_count / total : 0;
+      if (fp_ratio < 0.85) return null;
+      const existing = db.prepare(`SELECT value FROM asset_context WHERE value = ?`).get(r.value);
+      return {
+        value: r.value,
+        type: r.type,
+        fp_count: r.fp_count,
+        tp_count: r.tp_count,
+        fp_ratio: Number(fp_ratio.toFixed(3)),
+        total,
+        suggestion: fp_ratio >= 0.95 && total >= 10 ? 'auto_register' : 'suggest',
+        already_registered: !!existing,
+      };
+    }).filter(Boolean).sort((a: any, b: any) => b.fp_ratio - a.fp_ratio);
+
+    res.json(suggestions);
+  });
+
+  app.post('/api/analytics/accept-suggestion', authenticate, requireAdmin, (req: any, res) => {
+    const { value, type } = req.body;
+    if (!value) return res.status(400).json({ error: 'value is required' });
+    db.prepare(`
+      INSERT INTO asset_context (value, type, role, description, fp_default, source, updated_at)
+      VALUES (?, ?, 'production', 'Accepted from FP suggestion', 1, 'auto-learned', CURRENT_TIMESTAMP)
+      ON CONFLICT(value) DO UPDATE SET
+        fp_default = 1, source = 'auto-learned', updated_at = CURRENT_TIMESTAMP
+    `).run(value.trim(), type || 'ip');
+    writeAudit(req.user.id, 'AUTO_LEARN_ACCEPT', `Accepted FP suggestion for ${value}`);
+    res.json({ ok: true });
   });
 
   // ── AI: run a single agent phase ──────────────────────────────────────────

@@ -230,3 +230,93 @@ export async function getReportSummary(): Promise<any> {
   if (!res.ok) return null;
   return res.json();
 }
+
+// ─── Asset Context ──────────────────────────────────────────────────────────
+
+export async function getAssets(): Promise<any[]> {
+  const res = await fetch("/api/assets", { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function upsertAsset(asset: {
+  value: string; type: string; role: string; description?: string; fp_default?: boolean;
+}): Promise<{ ok: boolean }> {
+  const res = await fetch("/api/assets", {
+    method: "POST", headers: authHeaders(), body: JSON.stringify(asset),
+  });
+  return res.json();
+}
+
+export async function deleteAsset(value: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/assets/${encodeURIComponent(value)}`, {
+    method: "DELETE", headers: authHeaders(),
+  });
+  return res.json();
+}
+
+// ─── Suppression Rules ──────────────────────────────────────────────────────
+
+export async function getSuppressionRules(): Promise<any[]> {
+  const res = await fetch("/api/suppression-rules", { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function createSuppressionRule(rule: {
+  name: string; reason: string; source_ip_pattern?: string; agent_name_pattern?: string;
+  rule_id_pattern?: string; description_pattern?: string;
+  min_severity?: number; max_severity?: number; enabled?: boolean;
+}): Promise<{ ok: boolean; id?: number }> {
+  const res = await fetch("/api/suppression-rules", {
+    method: "POST", headers: authHeaders(), body: JSON.stringify(rule),
+  });
+  return res.json();
+}
+
+export async function updateSuppressionRule(id: number, updates: any): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/suppression-rules/${id}`, {
+    method: "PATCH", headers: authHeaders(), body: JSON.stringify(updates),
+  });
+  return res.json();
+}
+
+export async function deleteSuppressionRule(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/suppression-rules/${id}`, {
+    method: "DELETE", headers: authHeaders(),
+  });
+  return res.json();
+}
+
+// ─── Analytics ──────────────────────────────────────────────────────────────
+
+export async function getFpReduction(): Promise<any> {
+  const res = await fetch("/api/analytics/fp-reduction", { headers: authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function getFpOverTime(): Promise<any[]> {
+  const res = await fetch("/api/analytics/fp-over-time", { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getNoisySources(): Promise<any[]> {
+  const res = await fetch("/api/analytics/noisy-sources", { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getFpSuggestions(): Promise<any[]> {
+  const res = await fetch("/api/analytics/fp-suggestions", { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function acceptFpSuggestion(value: string, type: string): Promise<{ ok: boolean }> {
+  const res = await fetch("/api/analytics/accept-suggestion", {
+    method: "POST", headers: authHeaders(), body: JSON.stringify({ value, type }),
+  });
+  return res.json();
+}

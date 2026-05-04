@@ -17,6 +17,7 @@ import { upsertIocs, lookupIocs, extractRawIocValues } from "./memory/ioc.js";
 import { commitAsync         } from "./memory/insights.js";
 import { writeWorkingMemory  } from "./memory/working.js";
 import { lookupAssetContext, extractAssetValuesFromAlert } from "./memory/assets.js";
+import { checkSuppressionRules } from "./memory/suppression.js";
 
 export interface OrchestrationOutput {
   ai_analysis:      string;
@@ -55,6 +56,38 @@ export async function runHubAndSwarm(
   log(`Orchestration started (mode=swarm)`);
 
   const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
+
+  // ── 0. Suppression rules (deterministic, instant) ────────────────────────
+  const suppressionHit = checkSuppressionRules(alert);
+  if (suppressionHit) {
+    log(`Suppression rule matched: "${suppressionHit.rule_name}" — ${suppressionHit.reason}`);
+    upsertIocs({ ips: [alert.source_ip].filter(Boolean) }, alert.id, "Low", "FALSE_POSITIVE");
+    commitAsync({
+      alertId: alert.id, idempotencyKey: traceId,
+      alertDescription: alert.description ?? "",
+      triage: { is_false_positive: true, false_positive_confidence: 0.99, false_positive_reason: suppressionHit.reason },
+      outcome: "FALSE_POSITIVE",
+      triggered_by: 'suppression',
+    });
+    return composeOutput({
+      analysis: {
+        analysis_summary: `Auto-suppressed: ${suppressionHit.reason}`,
+        is_false_positive: true,
+        false_positive_confidence: 0.99,
+        false_positive_reason: suppressionHit.reason,
+        risk_score: 0,
+        attack_category: 'NONE',
+        kill_chain_stage: 'NONE',
+        severity_validation: 'LOW',
+        recommended_action: 'IGNORE',
+        confidence: 0.99,
+        iocs: { ips: [alert.source_ip].filter(Boolean), users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] },
+      },
+      intel: null, knowledge: null, correlation: null,
+      ticket: null, responsePlan: null, validation: null,
+      ctx, fpShortCircuit: true,
+    });
+  }
 
   // ── 1. Pre-flight memory recall (deterministic, parallel) ────────────────
   const queryText = `${alert.description ?? ""}`.slice(0, 1500);

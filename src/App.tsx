@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 import PageHeader from './components/ui/PageHeader';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from './features/alerts/alertUtils';
@@ -147,6 +147,7 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 
   const menuItems = [
     { id: 'research',       icon: BarChart3,     label: 'Research Overview' },
+    { id: 'noise-reduction', icon: Filter,       label: 'Noise Reduction' },
     { id: 'alerts',         icon: AlertTriangle, label: 'Alert Investigation' },
     { id: 'agents',         icon: Activity,      label: 'Agent Evaluation' },
     { id: 'intelligence',   icon: BookOpen,      label: 'MITRE & Intel' },
@@ -2622,6 +2623,356 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
 const SkeletonVal = () => (
   <div className="h-8 w-16 bg-[var(--s2)] animate-pulse rounded mt-1" />
 );
+
+// ── Noise Reduction Analytics Dashboard ─────────────────────────────────────
+
+const NoiseReductionDashboard = () => {
+  const toast = useToast();
+  const [fpData, setFpData] = useState<any>(null);
+  const [fpTimeline, setFpTimeline] = useState<any[]>([]);
+  const [noisySources, setNoisySources] = useState<any[]>([]);
+  const [rules, setRules] = useState<any[]>([]);
+  const [assets, setAssetsState] = useState<any[]>([]);
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [showAddRule, setShowAddRule] = useState(false);
+  const [showAddAsset, setShowAddAsset] = useState(false);
+  const [newRule, setNewRule] = useState({ name: '', reason: '', source_ip_pattern: '', description_pattern: '', max_severity: 15 });
+  const [newAsset, setNewAsset] = useState({ value: '', type: 'ip', role: 'scanner', description: '', fp_default: true });
+  const [activeSection, setActiveSection] = useState<'overview'|'rules'|'assets'|'sources'>('overview');
+
+  const reload = useCallback(() => {
+    getFpReduction().then(d => d && setFpData(d)).catch(() => {});
+    getFpOverTime().then(setFpTimeline).catch(() => {});
+    getNoisySources().then(setNoisySources).catch(() => {});
+    getSuppressionRules().then(setRules).catch(() => {});
+    getAssets().then(setAssetsState).catch(() => {});
+    getFpSuggestions().then(setSuggestions).catch(() => {});
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const handleCreateRule = async () => {
+    if (!newRule.name || !newRule.reason) return;
+    await createSuppressionRule({ ...newRule, max_severity: newRule.max_severity });
+    setNewRule({ name: '', reason: '', source_ip_pattern: '', description_pattern: '', max_severity: 15 });
+    setShowAddRule(false);
+    toast('Suppression rule created', 'success');
+    reload();
+  };
+
+  const handleToggleRule = async (id: number, enabled: boolean) => {
+    await updateSuppressionRule(id, { enabled: !enabled });
+    reload();
+  };
+
+  const handleDeleteRule = async (id: number) => {
+    await deleteSuppressionRule(id);
+    toast('Rule deleted', 'success');
+    reload();
+  };
+
+  const handleAddAsset = async () => {
+    if (!newAsset.value) return;
+    await upsertAsset(newAsset);
+    setNewAsset({ value: '', type: 'ip', role: 'scanner', description: '', fp_default: true });
+    setShowAddAsset(false);
+    toast('Asset registered', 'success');
+    reload();
+  };
+
+  const handleDeleteAsset = async (value: string) => {
+    await deleteAsset(value);
+    toast('Asset removed', 'success');
+    reload();
+  };
+
+  const handleAcceptSuggestion = async (value: string, type: string) => {
+    await acceptFpSuggestion(value, type);
+    toast(`${value} added to known infrastructure`, 'success');
+    reload();
+  };
+
+  const fpTimelineMax = fpTimeline.length ? Math.max(...fpTimeline.map(t => t.total_fp || 0), 1) : 1;
+
+  const sections = [
+    { id: 'overview' as const, label: 'FP Overview' },
+    { id: 'rules' as const, label: 'Suppression Rules' },
+    { id: 'assets' as const, label: 'Known Assets' },
+    { id: 'sources' as const, label: 'Noisy Sources' },
+  ];
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
+      <PageHeader
+        eyebrow="Intelligence"
+        title="Noise Reduction Analytics"
+        description="Memory-driven false positive detection, suppression rules, known infrastructure, and analyst time savings."
+      />
+
+      {/* Section tabs */}
+      <div className="flex gap-2">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id)}
+            className={`px-4 py-2 rounded-lg text-[0.78rem] font-bold transition-colors ${activeSection === s.id ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s0)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s1)]'}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Overview ──────────────────────────────────────────────────────── */}
+      {activeSection === 'overview' && fpData && (
+        <>
+          <div className="grid grid-cols-5 gap-4">
+            {[
+              { label: 'Total FPs Detected', value: fpData.total_fp, color: '#f29900' },
+              { label: 'Memory-Driven', value: fpData.memory_driven_fp, color: '#1e8e3e' },
+              { label: 'Triage (LLM)', value: fpData.triage_driven_fp, color: '#1a73e8' },
+              { label: 'Suppression Rules', value: fpData.suppression_driven_fp, color: '#7c3aed' },
+              { label: 'Time Saved', value: `${Math.round(fpData.time_saved_minutes / 60)}h`, color: '#059669' },
+            ].map(c => (
+              <div key={c.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
+                <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest">{c.label}</p>
+                <p className="text-[1.7rem] font-black mt-2 leading-none" style={{ color: c.color }}>{c.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* FP Rate & Confidence */}
+          <div className="grid grid-cols-3 gap-5">
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-5 shadow-sm">
+              <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-wider mb-3">FP Detection Breakdown</p>
+              <div className="space-y-3">
+                {[
+                  { label: 'Memory-Driven (Asset/IOC/Recall)', value: fpData.memory_driven_fp, color: '#1e8e3e', total: fpData.total_fp },
+                  { label: 'LLM Triage', value: fpData.triage_driven_fp, color: '#1a73e8', total: fpData.total_fp },
+                  { label: 'Suppression Rules', value: fpData.suppression_driven_fp, color: '#7c3aed', total: fpData.total_fp },
+                  { label: 'Composer', value: fpData.composer_driven_fp || 0, color: '#f59e0b', total: fpData.total_fp },
+                ].map(b => (
+                  <div key={b.label}>
+                    <div className="flex justify-between text-[0.68rem] mb-1">
+                      <span className="text-[var(--t5)] font-semibold">{b.label}</span>
+                      <span className="font-black" style={{ color: b.color }}>{b.value} ({b.total > 0 ? Math.round(b.value / b.total * 100) : 0}%)</span>
+                    </div>
+                    <div className="h-2 bg-[var(--s2)] rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${b.total > 0 ? (b.value / b.total) * 100 : 0}%`, backgroundColor: b.color }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-5 shadow-sm">
+              <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-wider mb-3">Key Metrics</p>
+              <div className="space-y-4">
+                <div>
+                  <p className="text-[0.65rem] text-[var(--t3)] font-bold">Overall FP Rate</p>
+                  <p className="text-[1.4rem] font-black text-[var(--t1)]">{(fpData.fp_rate * 100).toFixed(1)}%</p>
+                </div>
+                <div>
+                  <p className="text-[0.65rem] text-[var(--t3)] font-bold">Avg FP Confidence</p>
+                  <p className="text-[1.4rem] font-black text-[var(--t1)]">{fpData.avg_fp_confidence ? (fpData.avg_fp_confidence * 100).toFixed(0) + '%' : '--'}</p>
+                </div>
+                <div>
+                  <p className="text-[0.65rem] text-[var(--t3)] font-bold">Analyzed / Total</p>
+                  <p className="text-[1.4rem] font-black text-[var(--t1)]">{fpData.analyzed_alerts} / {fpData.total_alerts}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-5 shadow-sm overflow-hidden">
+              <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-wider mb-3">FP Over Time (30d)</p>
+              {fpTimeline.length > 0 ? (
+                <div className="flex items-end gap-1 h-[160px]">
+                  {fpTimeline.map((t, i) => (
+                    <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
+                      <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse h-28">
+                        <div className="w-full rounded-sm" style={{ height: `${fpTimelineMax > 0 ? (t.total_fp / fpTimelineMax) * 100 : 0}%`, minHeight: t.total_fp > 0 ? 3 : 0, background: `linear-gradient(to top, #1e8e3e ${t.memory_fp && t.total_fp ? (t.memory_fp/t.total_fp)*100 : 0}%, #7c3aed ${t.suppression_fp && t.total_fp ? ((t.memory_fp+t.suppression_fp)/t.total_fp)*100 : 0}%, #1a73e8 100%)` }} />
+                      </div>
+                      <span className="text-[0.5rem] text-[var(--t3)]">{t.day?.slice(5)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="text-[var(--t3)] text-sm">No FP data yet — run agents on alerts to populate.</p>}
+            </div>
+          </div>
+
+          {/* Auto-Learning Suggestions */}
+          {suggestions.length > 0 && (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+              <div className="px-5 py-3 border-b bg-amber-50 dark:bg-amber-900/20">
+                <p className="text-[0.82rem] font-black text-amber-700 dark:text-amber-400 uppercase tracking-wide">Auto-Learning Suggestions</p>
+                <p className="text-[0.68rem] text-amber-600 dark:text-amber-500 mt-0.5">These IOCs are overwhelmingly false positives. Add them to known infrastructure?</p>
+              </div>
+              <div className="divide-y divide-[var(--b3)]">
+                {suggestions.filter((s: any) => !s.already_registered).slice(0, 10).map((s: any) => (
+                  <div key={s.value} className="px-5 py-3 flex items-center gap-4">
+                    <div className="flex-1">
+                      <p className="text-[0.82rem] font-bold text-[var(--t1)] font-mono">{s.value}</p>
+                      <p className="text-[0.68rem] text-[var(--t3)]">{s.type} — {s.fp_count} FP / {s.tp_count} TP ({(s.fp_ratio * 100).toFixed(0)}% FP rate)</p>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded text-[0.6rem] font-black uppercase ${s.suggestion === 'auto_register' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {s.suggestion === 'auto_register' ? 'Recommended' : 'Suggested'}
+                    </span>
+                    <button onClick={() => handleAcceptSuggestion(s.value, s.type)}
+                      className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors">
+                      Accept
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Suppression Rules ─────────────────────────────────────────────── */}
+      {activeSection === 'rules' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <div>
+              <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Suppression Rules</p>
+              <p className="text-[0.65rem] text-[var(--t3)] mt-0.5">Pattern-based rules that auto-dismiss alerts before LLM analysis</p>
+            </div>
+            <button onClick={() => setShowAddRule(!showAddRule)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)]">
+              <Plus size={14} /> Add Rule
+            </button>
+          </div>
+          {showAddRule && (
+            <div className="px-5 py-4 border-b bg-[var(--sa)] space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <input placeholder="Rule name" value={newRule.name} onChange={e => setNewRule({ ...newRule, name: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]" />
+                <input placeholder="Reason (shown in logs)" value={newRule.reason} onChange={e => setNewRule({ ...newRule, reason: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]" />
+                <input placeholder="Source IP pattern (e.g. 172.10.9.0/24)" value={newRule.source_ip_pattern} onChange={e => setNewRule({ ...newRule, source_ip_pattern: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]" />
+                <input placeholder="Description pattern (pipe-delimited, e.g. XSS|SQLi)" value={newRule.description_pattern} onChange={e => setNewRule({ ...newRule, description_pattern: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]" />
+              </div>
+              <div className="flex gap-2">
+                <button onClick={handleCreateRule} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)]">Create</button>
+                <button onClick={() => setShowAddRule(false)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t4)] text-[0.78rem] font-bold">Cancel</button>
+              </div>
+            </div>
+          )}
+          <div className="divide-y divide-[var(--b3)]">
+            {rules.length === 0 && <p className="px-5 py-8 text-center text-[var(--t3)] text-sm">No suppression rules configured yet.</p>}
+            {rules.map((r: any) => (
+              <div key={r.id} className="px-5 py-3 flex items-center gap-4">
+                <button onClick={() => handleToggleRule(r.id, !!r.enabled)}
+                  className={`w-10 h-5 rounded-full transition-colors flex items-center ${r.enabled ? 'bg-green-500 justify-end' : 'bg-[var(--s2)] justify-start'}`}>
+                  <div className="w-4 h-4 rounded-full bg-white shadow mx-0.5" />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.82rem] font-bold text-[var(--t1)]">{r.name}</p>
+                  <p className="text-[0.65rem] text-[var(--t3)] font-mono truncate">
+                    {[r.source_ip_pattern && `ip:${r.source_ip_pattern}`, r.description_pattern && `desc:${r.description_pattern}`, r.agent_name_pattern && `agent:${r.agent_name_pattern}`].filter(Boolean).join(' | ') || 'No patterns'}
+                    {' — '}{r.reason}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-[0.82rem] font-black text-[var(--p1)]">{r.hit_count}</p>
+                  <p className="text-[0.58rem] text-[var(--t3)] uppercase">hits</p>
+                </div>
+                <button onClick={() => handleDeleteRule(r.id)} className="text-[var(--t3)] hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Known Assets ──────────────────────────────────────────────────── */}
+      {activeSection === 'assets' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <div>
+              <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Known Infrastructure</p>
+              <p className="text-[0.65rem] text-[var(--t3)] mt-0.5">Scanners, monitoring, and backup systems — alerts from these are auto-FP'd</p>
+            </div>
+            <button onClick={() => setShowAddAsset(!showAddAsset)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)]">
+              <Plus size={14} /> Add Asset
+            </button>
+          </div>
+          {showAddAsset && (
+            <div className="px-5 py-4 border-b bg-[var(--sa)] space-y-3">
+              <div className="grid grid-cols-4 gap-3">
+                <input placeholder="Value (IP, hostname, user)" value={newAsset.value} onChange={e => setNewAsset({ ...newAsset, value: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]" />
+                <select value={newAsset.type} onChange={e => setNewAsset({ ...newAsset, type: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]">
+                  <option value="ip">IP</option><option value="domain">Domain</option><option value="host">Host</option><option value="user">User</option>
+                </select>
+                <select value={newAsset.role} onChange={e => setNewAsset({ ...newAsset, role: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]">
+                  <option value="scanner">Scanner</option><option value="monitoring">Monitoring</option><option value="backup">Backup</option><option value="admin">Admin</option><option value="production">Production</option>
+                </select>
+                <input placeholder="Description" value={newAsset.description} onChange={e => setNewAsset({ ...newAsset, description: e.target.value })}
+                  className="px-3 py-2 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.78rem] text-[var(--t1)]" />
+              </div>
+              <div className="flex gap-2">
+                <button onClick={handleAddAsset} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)]">Register</button>
+                <button onClick={() => setShowAddAsset(false)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t4)] text-[0.78rem] font-bold">Cancel</button>
+              </div>
+            </div>
+          )}
+          <div className="divide-y divide-[var(--b3)]">
+            {assets.length === 0 && <p className="px-5 py-8 text-center text-[var(--t3)] text-sm">No assets registered. Run seed-known-assets.ts or add manually.</p>}
+            {assets.map((a: any) => (
+              <div key={a.value} className="px-5 py-3 flex items-center gap-4">
+                <div className={`w-2 h-8 rounded-full ${a.role === 'scanner' ? 'bg-purple-500' : a.role === 'monitoring' ? 'bg-blue-500' : a.role === 'backup' ? 'bg-green-500' : 'bg-slate-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.82rem] font-bold text-[var(--t1)] font-mono">{a.value}</p>
+                  <p className="text-[0.65rem] text-[var(--t3)]">{a.type} / {a.role} — {a.description || 'No description'}</p>
+                </div>
+                <span className={`px-2 py-0.5 rounded text-[0.6rem] font-black uppercase ${a.fp_default ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                  {a.fp_default ? 'FP Default' : 'Normal'}
+                </span>
+                <span className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source}</span>
+                <button onClick={() => handleDeleteAsset(a.value)} className="text-[var(--t3)] hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Noisy Sources ─────────────────────────────────────────────────── */}
+      {activeSection === 'sources' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-[var(--s1)]">
+            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Noisiest Alert Sources</p>
+            <p className="text-[0.65rem] text-[var(--t3)] mt-0.5">IPs and agents generating the most false positives — unregistered sources can be added to known infrastructure</p>
+          </div>
+          <div className="divide-y divide-[var(--b3)]">
+            {noisySources.length === 0 && <p className="px-5 py-8 text-center text-[var(--t3)] text-sm">No noisy sources detected yet.</p>}
+            {noisySources.map((s: any) => (
+              <div key={s.source} className="px-5 py-3 flex items-center gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-[0.82rem] font-bold text-[var(--t1)] font-mono">{s.source}</p>
+                    {s.role && <span className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[0.58rem] font-black text-[var(--t3)] uppercase border border-[var(--b2)]">{s.role}</span>}
+                    {s.is_registered && <span className="px-1.5 py-0.5 rounded bg-green-100 text-[0.58rem] font-black text-green-700 uppercase">Registered</span>}
+                  </div>
+                  <p className="text-[0.65rem] text-[var(--t3)]">{s.total_alerts} alerts — {s.fp_count} FP ({(s.fp_rate * 100).toFixed(0)}%)</p>
+                </div>
+                <div className="w-32">
+                  <div className="h-2 bg-[var(--s2)] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-amber-500 transition-all" style={{ width: `${s.fp_rate * 100}%` }} />
+                  </div>
+                </div>
+                {!s.is_registered && s.fp_rate >= 0.5 && (
+                  <button onClick={() => handleAcceptSuggestion(s.source, s.source_type === 'ip' ? 'ip' : 'host')}
+                    className="px-3 py-1.5 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.72rem] font-bold hover:bg-[var(--p1)] hover:text-white transition-colors shrink-0">
+                    Register
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[], onAlertClick: (a: Alert) => void, setActiveTab: (t: string) => void }) => {
   const { token } = useAuth();
@@ -5243,6 +5594,7 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[var(--s3)]">
           {activeTab === 'research'     && <ResearchOverview alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} setActiveTab={setActiveTab} />}
+          {activeTab === 'noise-reduction' && <NoiseReductionDashboard />}
           {activeTab === 'dashboard'    && <Dashboard alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('alerts'); }} />}
           {activeTab === 'alerts'       && <AlertsTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
           {activeTab === 'agents'       && <AgentsTab />}
