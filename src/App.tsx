@@ -4577,14 +4577,7 @@ const AgentsTab = () => {
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
-      <div>
-        <h2 className="text-2xl font-bold text-[var(--p1)]">AI Agents</h2>
-        <p className="text-[0.8rem] text-[var(--t4)] mt-0.5">
-          {isAdmin ? 'Configure model assignments and local LLM server.' : 'Model selection is admin-only.'}
-        </p>
-      </div>
-
+    <div className="space-y-6">
       {error && (
         <div className="bg-red-50 text-[#d93025] p-3 rounded border border-red-100 text-[0.8rem] font-semibold">{error}</div>
       )}
@@ -5093,6 +5086,20 @@ const SettingsTab = () => {
           ))}
         </div>
       </div>
+
+      {/* ── AI Model Configuration ────────────────────────────────────────── */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+        <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center gap-2">
+          <Shield className="w-4 h-4 text-[var(--p1)]" />
+          <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">AI Agent Model Configuration</h3>
+          <span className="text-[0.65rem] text-[var(--t3)]">
+            {isAdmin ? 'Configure model assignments and local LLM server.' : 'Admin-only.'}
+          </span>
+        </div>
+        <div className="p-5">
+          <AgentsTab />
+        </div>
+      </div>
     </div>
   );
 };
@@ -5396,6 +5403,10 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
 
   const unscanned = alerts.filter(a => a.status === 'NEW');
   const recentFp = alerts.filter(a => a.status === 'FALSE_POSITIVE' || a.status === 'FP_CONFIRMED').slice(0, 20);
+  const [unscannedSearch, setUnscannedSearch] = useState('');
+  const [directScanId, setDirectScanId] = useState('');
+  const [directScanResult, setDirectScanResult] = useState<any>(null);
+  const [directScanning, setDirectScanning] = useState(false);
 
   const reload = useCallback(() => {
     getFpReduction().then(d => d && setFpData(d)).catch(() => {});
@@ -5439,6 +5450,24 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
     await overrideFp(alertId);
     setFpResults(prev => prev.filter(r => r.id !== alertId));
     toast('Sent to investigation queue', 'success');
+  };
+
+  const handleDirectScan = async () => {
+    const id = directScanId.trim();
+    if (!id) return;
+    setDirectScanning(true);
+    setDirectScanResult(null);
+    try {
+      const result = await fpScan(id);
+      setDirectScanResult({ id, ...result });
+      toast(result.is_fp
+        ? `FP detected (${result.fp_method}): ${result.fp_reason?.slice(0, 60)}`
+        : 'Not a false positive — clean alert',
+        result.is_fp ? 'success' : 'info');
+    } catch (e: any) {
+      toast(e?.message || 'Scan failed', 'error');
+    }
+    setDirectScanning(false);
   };
 
   const handleCreateRule = async () => {
@@ -5524,30 +5553,103 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
       {activeSection === 'filter' && (
         <div className="grid grid-cols-2 gap-5">
           {/* Left: Unscanned */}
-          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden flex flex-col">
             <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
               <p className="text-[0.78rem] font-black text-[var(--t7)]">Unscanned Alerts ({unscanned.length})</p>
               <button onClick={handleScanAll} disabled={scanning || unscanned.length === 0}
-                className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1.5">
+                className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1.5">
                 <Zap size={12} />{scanning ? 'Scanning...' : 'Scan All'}
               </button>
             </div>
-            <div className="max-h-[420px] overflow-y-auto divide-y divide-[var(--b1)]">
-              {unscanned.length === 0 ? (
-                <div className="p-8 text-center text-[var(--t3)] text-[0.78rem]">No unscanned alerts. All clear.</div>
-              ) : unscanned.map(a => (
-                <div key={a.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[var(--sa)]">
-                  <span className={`w-1.5 h-8 rounded-full ${a.severity >= 12 ? 'bg-red-500' : a.severity >= 10 ? 'bg-orange-400' : 'bg-blue-400'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[0.75rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
-                    <p className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name}</p>
-                  </div>
-                  <button onClick={() => handleScanOne(a.id)} disabled={scanningId === a.id}
-                    className="px-2.5 py-1 rounded bg-[var(--sa)] text-[0.62rem] font-bold text-[var(--p1)] hover:bg-[var(--s1)] disabled:opacity-50">
-                    {scanningId === a.id ? '...' : 'Scan'}
+
+            {/* Search filter */}
+            <div className="px-3 py-2 border-b border-[var(--b1)] bg-[var(--s0)]">
+              <div className="relative">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+                <input
+                  type="text"
+                  placeholder="Filter by description, IP, or agent…"
+                  value={unscannedSearch}
+                  onChange={e => setUnscannedSearch(e.target.value)}
+                  className="w-full pl-7 pr-3 py-1.5 text-[0.72rem] bg-[var(--s1)] border border-[var(--b1)] rounded-lg outline-none focus:border-[var(--p1)] transition-colors"
+                />
+                {unscannedSearch && (
+                  <button onClick={() => setUnscannedSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t6)]">
+                    <X size={11} />
                   </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 max-h-[360px] overflow-y-auto divide-y divide-[var(--b1)]">
+              {(() => {
+                const q = unscannedSearch.toLowerCase();
+                const filtered = unscanned.filter(a =>
+                  !q ||
+                  a.description?.toLowerCase().includes(q) ||
+                  a.source_ip?.toLowerCase().includes(q) ||
+                  a.agent_name?.toLowerCase().includes(q) ||
+                  a.id?.toLowerCase().includes(q)
+                );
+                if (unscanned.length === 0) return (
+                  <div className="p-8 text-center text-[var(--t3)] text-[0.78rem]">No unscanned alerts. All clear.</div>
+                );
+                if (filtered.length === 0) return (
+                  <div className="p-6 text-center text-[var(--t3)] text-[0.78rem]">No alerts match <span className="font-mono text-[var(--p1)]">"{unscannedSearch}"</span></div>
+                );
+                return filtered.map(a => (
+                  <div key={a.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[var(--sa)] group">
+                    <span className={`w-1.5 h-8 rounded-full shrink-0 ${a.severity >= 12 ? 'bg-red-500' : a.severity >= 10 ? 'bg-orange-400' : a.severity >= 7 ? 'bg-yellow-400' : 'bg-blue-400'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[0.75rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
+                      <p className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · sev {a.severity}</p>
+                    </div>
+                    <button onClick={() => handleScanOne(a.id)} disabled={scanningId === a.id}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.62rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 transition-colors">
+                      {scanningId === a.id
+                        ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-current/30 border-t-current animate-spin" />Scanning</>
+                        : <><Zap size={10} />Scan</>}
+                    </button>
+                  </div>
+                ));
+              })()}
+            </div>
+
+            {/* Direct scan by alert ID */}
+            <div className="px-3 py-2.5 border-t border-[var(--b1)] bg-[var(--s1)]">
+              <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Scan any alert by ID</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="alert-id or fp-cand-openvas-001…"
+                  value={directScanId}
+                  onChange={e => { setDirectScanId(e.target.value); setDirectScanResult(null); }}
+                  onKeyDown={e => e.key === 'Enter' && handleDirectScan()}
+                  className="flex-1 px-3 py-1.5 text-[0.72rem] bg-[var(--s0)] border border-[var(--b1)] rounded-lg outline-none focus:border-[var(--p1)] font-mono transition-colors"
+                />
+                <button onClick={handleDirectScan} disabled={directScanning || !directScanId.trim()}
+                  className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 shrink-0">
+                  {directScanning
+                    ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-current/30 border-t-current animate-spin" />Scanning…</>
+                    : <><Search size={11} />Scan</>}
+                </button>
+              </div>
+              {directScanResult && (
+                <div className={`mt-2 px-3 py-2 rounded-lg text-[0.68rem] border flex items-start gap-2 ${
+                  directScanResult.is_fp
+                    ? 'bg-amber-50 border-amber-200 text-amber-800'
+                    : 'bg-green-50 border-green-200 text-green-800'
+                }`}>
+                  <span className="text-[0.9rem] leading-none mt-0.5">{directScanResult.is_fp ? '⚠' : '✓'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold">{directScanResult.is_fp ? `False positive (${directScanResult.fp_method})` : 'Not a false positive'}</p>
+                    {directScanResult.fp_reason && <p className="opacity-80 truncate">{directScanResult.fp_reason}</p>}
+                    {directScanResult.fp_confidence != null && (
+                      <p className="opacity-60 mt-0.5">confidence {Math.round(directScanResult.fp_confidence * 100)}%</p>
+                    )}
+                  </div>
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
@@ -5770,7 +5872,7 @@ const FpArchiveTab = () => {
                   <p className="text-[0.72rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
                   <p className="text-[0.58rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · {a.timestamp?.slice(0, 16)}</p>
                 </div>
-                <span className="text-[0.62rem] font-bold text-amber-600">{a.fp_confidence ? `${(a.fp_confidence * 100).toFixed(0)}%` : ''}</span>
+                <ConfidenceDonut value={a.fp_confidence ?? null} size={34} />
               </button>
               {expanded === a.id && (
                 <div className="px-4 pb-3 pl-10 space-y-2">
@@ -6202,6 +6304,8 @@ export default function App() {
             selectedAlert={selectedAlert}
             setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
             onAlertAction={handleAlertAction}
+            autoFilter={autoFilter}
+            setAutoFilter={setAutoFilter}
           />
         </AuthProvider>
         <ToastContainer toasts={toasts} />
@@ -6466,7 +6570,7 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
   );
 };
 
-const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction }: any) => {
+const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction, autoFilter, setAutoFilter }: any) => {
   const { user } = useAuth();
 
   if (!user) return <LoginPage />;

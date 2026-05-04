@@ -315,6 +315,19 @@ try {
   safeAlter('ALTER TABLE ioc_memory          ADD COLUMN tp_count     INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE incident_insights   ADD COLUMN triggered_by TEXT DEFAULT \'triage\'');
 
+  // ── Seed known-asset entries (idempotent — won't overwrite manual changes) ──
+  const seedAsset = db.prepare(`
+    INSERT OR IGNORE INTO asset_context (value, type, role, description, fp_default, source)
+    VALUES (?, ?, ?, ?, ?, 'system_seed')
+  `);
+  seedAsset.run('172.10.9.10', 'ip',   'scanner',    'OpenVAS vulnerability scanner — authorized daily scans 02:00–04:00', 1);
+  seedAsset.run('10.0.0.50',  'ip',   'scanner',    'Nessus vulnerability scanner — authorized weekly scans', 1);
+  seedAsset.run('10.0.0.30',  'ip',   'monitoring', 'Internal monitoring host — Zabbix/healthcheck probes', 1);
+  seedAsset.run('10.0.0.20',  'ip',   'backup',     'Backup service host — nightly backup jobs run as root', 1);
+  seedAsset.run('10.0.0.99',  'ip',   'monitoring', 'QA test bench — automated smoke tests', 1);
+  seedAsset.run('backup-svc', 'user', 'backup',     'Backup service account — runs tar/rsync under sudo', 1);
+  seedAsset.run('monitoring', 'user', 'monitoring', 'Monitoring service account — healthcheck SSH probes', 1);
+
   // ── Pipeline redesign migrations ──────────────────────────────────────────
   safeAlter("ALTER TABLE alerts ADD COLUMN fp_method       TEXT");           // suppression | memory | triage | null
   safeAlter("ALTER TABLE alerts ADD COLUMN fp_confidence   REAL DEFAULT 0");
@@ -530,6 +543,157 @@ try {
         a.source_ip, a.dest_ip, a.user, a.hostname, a.agent_name, a.full_log);
     }
     console.log('[DB] Seeded 7 demo campaign alerts (Operation Midnight APT)');
+  }
+
+  // ── Seed FP-candidate alerts (always reset to NEW so Noise Filter always has demos) ──
+  {
+    const tsAgo = (h: number) =>
+      new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
+
+    const fpCandidates = [
+      {
+        id: 'fp-cand-openvas-001',
+        hoursAgo: 0.2,
+        rule_id: '31103',
+        description: 'Web attack: XSS attempt detected — <script>alert(1)</script> in POST body',
+        severity: 8,
+        source_ip: '172.10.9.10',
+        dest_ip: '10.0.1.100',
+        agent_name: 'web-app-01',
+        full_log: JSON.stringify({
+          rule: { id: '31103', description: 'Web attack: XSS attempt detected', level: 8 },
+          data: { srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443, url: '/api/login', method: 'POST', program_name: 'nginx', payload: '<script>alert(1)</script>' },
+          agent: { name: 'web-app-01', ip: '10.0.1.100' },
+        }),
+      },
+      {
+        id: 'fp-cand-openvas-002',
+        hoursAgo: 0.4,
+        rule_id: '31106',
+        description: "Web attack: SQL injection attempt — ' OR 1=1-- in user-agent header",
+        severity: 9,
+        source_ip: '172.10.9.10',
+        dest_ip: '10.0.1.100',
+        agent_name: 'web-app-01',
+        full_log: JSON.stringify({
+          rule: { id: '31106', description: 'SQL injection attempt detected', level: 9 },
+          data: { srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443, url: '/admin/users', method: 'GET', program_name: 'nginx', user_agent: "' OR 1=1--" },
+          agent: { name: 'web-app-01', ip: '10.0.1.100' },
+        }),
+      },
+      {
+        id: 'fp-cand-nessus-001',
+        hoursAgo: 0.6,
+        rule_id: '40101',
+        description: 'Port scan detected: sequential TCP SYN scan across 1024 ports from internal host',
+        severity: 7,
+        source_ip: '10.0.0.50',
+        dest_ip: '10.0.1.0',
+        agent_name: 'firewall-01',
+        full_log: JSON.stringify({
+          rule: { id: '40101', description: 'Port scan detected', level: 7 },
+          data: { srcip: '10.0.0.50', dstip: '10.0.1.0', proto: 'TCP', program_name: 'iptables', ports_scanned: 1024, scan_type: 'SYN' },
+          agent: { name: 'firewall-01', ip: '10.0.1.1' },
+        }),
+      },
+      {
+        id: 'fp-cand-backup-001',
+        hoursAgo: 1.0,
+        rule_id: '5402',
+        description: 'Privilege escalation: backup-svc executed tar with sudo root privileges',
+        severity: 8,
+        source_ip: '10.0.0.20',
+        dest_ip: '',
+        agent_name: 'backup-host-01',
+        full_log: JSON.stringify({
+          rule: { id: '5402', description: 'Sudoers rule executed: elevated privilege', level: 8 },
+          data: { srcip: '10.0.0.20', program_name: 'sudo', srcuser: 'backup-svc', command: '/bin/tar czf /backup/$(date +%Y%m%d).tar.gz /var/data', run_as: 'root' },
+          agent: { name: 'backup-host-01', ip: '10.0.0.20' },
+        }),
+      },
+      {
+        id: 'fp-cand-healthcheck-001',
+        hoursAgo: 1.2,
+        rule_id: '5760',
+        description: 'Multiple failed SSH authentication attempts — monitoring user from internal host',
+        severity: 6,
+        source_ip: '10.0.0.30',
+        dest_ip: '10.0.1.50',
+        agent_name: 'monitoring-01',
+        full_log: JSON.stringify({
+          rule: { id: '5760', description: 'Multiple SSH authentication failures', level: 6 },
+          data: { srcip: '10.0.0.30', dstip: '10.0.1.50', dstport: 22, program_name: 'sshd', srcuser: 'monitoring', attempt_count: 12, interval_seconds: 60 },
+          agent: { name: 'monitoring-01', ip: '10.0.0.30' },
+        }),
+      },
+      {
+        id: 'fp-cand-cron-001',
+        hoursAgo: 1.5,
+        rule_id: '2930',
+        description: 'Suspicious cron activity: logrotate modified system log files',
+        severity: 5,
+        source_ip: '10.0.0.10',
+        dest_ip: '',
+        agent_name: 'siem-server-01',
+        full_log: JSON.stringify({
+          rule: { id: '2930', description: 'File modified: system log rotation', level: 5 },
+          data: { srcip: '10.0.0.10', program_name: 'logrotate', file: '/var/log/syslog', user: 'root', triggered_by: 'cron' },
+          agent: { name: 'siem-server-01', ip: '10.0.0.10' },
+        }),
+      },
+      {
+        id: 'fp-cand-healthcheck-002',
+        hoursAgo: 1.8,
+        rule_id: '31101',
+        description: 'Web request: automated healthcheck probe — 200 OK responses to /health endpoint',
+        severity: 3,
+        source_ip: '10.0.0.30',
+        dest_ip: '10.0.1.100',
+        agent_name: 'web-app-01',
+        full_log: JSON.stringify({
+          rule: { id: '31101', description: 'Repeated automated web requests detected', level: 3 },
+          data: { srcip: '10.0.0.30', dstip: '10.0.1.100', dstport: 80, url: '/health', method: 'GET', user_agent: 'healthcheck/1.0', request_count: 120, interval_seconds: 30 },
+          agent: { name: 'web-app-01', ip: '10.0.1.100' },
+        }),
+      },
+      {
+        id: 'fp-cand-test-001',
+        hoursAgo: 2.0,
+        rule_id: '99001',
+        description: 'Test alert: automated smoke test — NMAP-TEST-SUITE triggered rule 99001',
+        severity: 5,
+        source_ip: '10.0.0.99',
+        dest_ip: '10.0.1.100',
+        agent_name: 'test-bench',
+        full_log: JSON.stringify({
+          rule: { id: '99001', description: 'Test rule triggered by automated test suite', level: 5 },
+          data: { srcip: '10.0.0.99', program_name: 'test-runner', test_suite: 'NMAP-TEST-SUITE', test_id: 'smoke-001' },
+          agent: { name: 'test-bench', ip: '10.0.0.99' },
+        }),
+      },
+    ];
+
+    // Always reset these to NEW so Noise Filter always has alerts to demo
+    const upsertFpCandidate = db.prepare(`
+      INSERT INTO alerts (id, timestamp, rule_id, description, severity, source_ip, dest_ip, agent_name, full_log, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW')
+      ON CONFLICT(id) DO UPDATE SET
+        timestamp  = excluded.timestamp,
+        status     = 'NEW',
+        fp_method  = NULL,
+        fp_confidence = NULL,
+        fp_reason  = NULL,
+        fp_details = NULL,
+        triage_data = NULL,
+        filtered_at = NULL,
+        ai_analysis = NULL
+    `);
+
+    for (const a of fpCandidates) {
+      upsertFpCandidate.run(a.id, tsAgo(a.hoursAgo), a.rule_id, a.description,
+        a.severity, a.source_ip, a.dest_ip || null, a.agent_name, a.full_log);
+    }
+    console.log('[DB] Seeded 8 FP-candidate alerts (status=NEW) for Noise Filter demo');
   }
 
   // Seed integration rows if not already present (INSERT OR IGNORE preserves user config)
