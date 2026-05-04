@@ -10,6 +10,7 @@ interface CommitParams {
   intel?:         any;
   ticket?:        any;
   outcome?:       string;    // TRIAGED | FALSE_POSITIVE | ESCALATED | CLOSED
+  triggered_by?:  string;    // 'triage' | 'memoryFP' | 'composer'
 }
 
 /**
@@ -53,6 +54,7 @@ async function doCommit(p: CommitParams) {
     outcome:         p.outcome,
     ttp_tags:        ttpTags,
     embedding:       vec,
+    triggered_by:    p.triggered_by ?? 'triage',
   });
 }
 

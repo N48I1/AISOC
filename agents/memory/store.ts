@@ -9,6 +9,7 @@ export interface InsightRecord {
   threat_actor?:   string;
   outcome?:        string;
   ttp_tags?:       string[];
+  triggered_by?:   string;       // 'triage' | 'memoryFP' | 'composer'
 }
 
 export interface InsightHit {
@@ -33,8 +34,8 @@ class SqliteSemanticStore implements SemanticStore {
     const db = memDb();
     db.prepare(`
       INSERT OR IGNORE INTO incident_insights
-        (alert_id, idempotency_key, summary, attack_pattern, threat_actor, outcome, ttp_tags, embedding)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (alert_id, idempotency_key, summary, attack_pattern, threat_actor, outcome, ttp_tags, embedding, triggered_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.alert_id,
       record.idempotency_key,
@@ -44,6 +45,7 @@ class SqliteSemanticStore implements SemanticStore {
       record.outcome        ?? null,
       JSON.stringify(record.ttp_tags ?? []),
       record.embedding ? float32ToBlob(record.embedding) : null,
+      record.triggered_by   ?? 'triage',
     );
   }
 

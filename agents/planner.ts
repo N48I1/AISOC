@@ -136,11 +136,13 @@ export async function planner(input: PlanInput): Promise<Plan> {
 function buildPrompt(input: PlanInput): string {
   const triage = input.triage || {};
   const recallTeasers = (input.recallHits ?? []).slice(0, 3).map((h: any) =>
-    `  • ${(h.similarity * 100).toFixed(0)}% similar past incident: ${h.summary?.slice(0, 100) || "(no summary)"}`
+    `  • ${(h.similarity * 100).toFixed(0)}% similar [${h.outcome ?? 'unknown'}]: ${h.summary?.slice(0, 100) || "(no summary)"}`
   ).join("\n");
-  const iocTeasers = (input.iocHits ?? []).slice(0, 5).map((h: any) =>
-    `  • ${h.value} (${h.type}) — seen ${h.alert_count}× score=${h.score}`
-  ).join("\n");
+  const iocTeasers = (input.iocHits ?? []).slice(0, 5).map((h: any) => {
+    const total = (h.fp_count ?? 0) + (h.tp_count ?? 0);
+    const fpStr = total > 0 ? ` ${h.fp_count ?? 0}FP/${h.tp_count ?? 0}TP fp_ratio=${(h.fp_ratio ?? 0).toFixed(2)}` : '';
+    return `  • ${h.value} (${h.type}) — seen ${h.alert_count}× score=${h.score}${fpStr}`;
+  }).join("\n");
 
   let priorBlock = "";
   if (input.reflection && input.priorResults) {

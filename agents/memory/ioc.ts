@@ -10,6 +10,9 @@ export interface IocHit {
   alert_count:  number;
   threat_level: string | null;
   notes:        string | null;
+  fp_count:     number;
+  tp_count:     number;
+  fp_ratio:     number;        // fp_count / (fp_count + tp_count); 0 if no data
   /** confidence-decayed score: base = log2(alert_count+1), decay = exp(-age_days/30) */
   score:        number;
 }
@@ -27,15 +30,34 @@ const TYPE_FOR_KEY: Record<keyof IocBundle, IocType> = {
   ips: "ip", domains: "domain", hashes: "hash", files: "file", urls: "url", users: "user",
 };
 
-export function upsertIocs(iocs: IocBundle, _alertId: string, threatLevel?: string): void {
+export type IocOutcome = "FALSE_POSITIVE" | "TRIAGED" | "ESCALATED" | "CLOSED" | undefined;
+
+/**
+ * Upsert IOCs. When `outcome` is supplied, increments fp_count or tp_count so
+ * the system can later compute a per-IOC FP ratio.
+ *  - FALSE_POSITIVE → fp_count++
+ *  - TRIAGED / ESCALATED → tp_count++
+ *  - CLOSED / undefined → no FP/TP increment (still bumps alert_count)
+ */
+export function upsertIocs(
+  iocs: IocBundle,
+  _alertId: string,
+  threatLevel?: string,
+  outcome?: IocOutcome,
+): void {
   const db = memDb();
+  const fpInc = outcome === "FALSE_POSITIVE" ? 1 : 0;
+  const tpInc = (outcome === "TRIAGED" || outcome === "ESCALATED") ? 1 : 0;
+
   const stmt = db.prepare(`
-    INSERT INTO ioc_memory (value, type, threat_level, alert_count)
-    VALUES (?, ?, ?, 1)
+    INSERT INTO ioc_memory (value, type, threat_level, alert_count, fp_count, tp_count)
+    VALUES (?, ?, ?, 1, ?, ?)
     ON CONFLICT(value) DO UPDATE SET
       last_seen     = CURRENT_TIMESTAMP,
       alert_count   = alert_count + 1,
-      threat_level  = COALESCE(excluded.threat_level, ioc_memory.threat_level)
+      threat_level  = COALESCE(excluded.threat_level, ioc_memory.threat_level),
+      fp_count      = ioc_memory.fp_count + ?,
+      tp_count      = ioc_memory.tp_count + ?
   `);
   const tx = db.transaction(() => {
     for (const key of Object.keys(TYPE_FOR_KEY) as (keyof IocBundle)[]) {
@@ -45,7 +67,7 @@ export function upsertIocs(iocs: IocBundle, _alertId: string, threatLevel?: stri
       for (const raw of arr) {
         const value = String(raw).trim();
         if (!value) continue;
-        stmt.run(value, type, threatLevel ?? null);
+        stmt.run(value, type, threatLevel ?? null, fpInc, tpInc, fpInc, tpInc);
       }
     }
   });
@@ -59,9 +81,10 @@ export function lookupIocs(values: string[]): IocHit[] {
   const db    = memDb();
   const ph    = values.map(() => "?").join(",");
   const rows  = db.prepare(
-    `SELECT value, type, first_seen, last_seen, alert_count, threat_level, notes
+    `SELECT value, type, first_seen, last_seen, alert_count, threat_level, notes,
+            COALESCE(fp_count, 0) as fp_count, COALESCE(tp_count, 0) as tp_count
      FROM ioc_memory WHERE value IN (${ph})`
-  ).all(...values) as Array<Omit<IocHit, "score">>;
+  ).all(...values) as Array<Omit<IocHit, "score" | "fp_ratio">>;
 
   const now = Date.now();
   return rows.map((r) => {
@@ -69,7 +92,9 @@ export function lookupIocs(values: string[]): IocHit[] {
     const ageDays  = ageMs / 86_400_000;
     const decay    = Math.exp(-ageDays / 30);
     const base     = Math.log2(r.alert_count + 1);
-    return { ...r, score: Number((base * decay).toFixed(3)) };
+    const total    = (r.fp_count || 0) + (r.tp_count || 0);
+    const fp_ratio = total > 0 ? Number(((r.fp_count || 0) / total).toFixed(3)) : 0;
+    return { ...r, fp_ratio, score: Number((base * decay).toFixed(3)) };
   }).sort((a, b) => b.score - a.score);
 }
 

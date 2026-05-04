@@ -44,6 +44,18 @@ FALSE POSITIVE INDICATORS — set is_false_positive=true and populate false_posi
 - 3+ identical alerts from same src_ip appear in recentAlerts with no escalation
 - known maintenance patterns in data.program_name (cron, logrotate, backup scripts)
 
+MEMORY-DRIVEN FP RULES (THESE ARE AUTHORITATIVE — TREAT AS GROUND TRUTH):
+- If KNOWN ASSET CONTEXT lists any IOC in this alert with fp_default=true, AND the alert
+  does NOT show data exfiltration / lateral movement / credential access patterns,
+  set is_false_positive=true with false_positive_confidence >= 0.9.
+- If PRIOR FALSE-POSITIVE OUTCOMES contains a >85% similar past incident,
+  strongly bias toward false_positive=true (confidence >= 0.85) unless this alert
+  has new IOCs/severity not present in the past one.
+- If IOC HISTORY shows fp_ratio >= 0.85 with at least 5 prior observations,
+  strongly bias toward false_positive=true.
+- The "exfil/lateral/credential" exception above is non-negotiable — even known
+  scanner IPs can be hijacked, so never auto-FP an alert that shows those patterns.
+
 ATTACK CATEGORY: Choose the single MITRE ATT&CK tactic that best matches the alert intent.
 
 KILL CHAIN STAGE: Map to the Lockheed Martin Kill Chain phase:
@@ -120,7 +132,37 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
     logs.push(`[Analysis] Correlating against ${related.length} historical alerts from same source/agent.`);
   }
 
-  const userPrompt = `ALERT TO TRIAGE:
+  // ── Memory context blocks (treated as authoritative by the system prompt) ──
+  const assetCtx: any[]  = Array.isArray(state.assetContext)    ? state.assetContext    : [];
+  const priorFp: any[]   = Array.isArray(state.priorFpInsights) ? state.priorFpInsights : [];
+  const iocHits: any[]   = Array.isArray(state.iocMemoryHits)   ? state.iocMemoryHits   : [];
+
+  const assetBlock = assetCtx.length ? assetCtx.map((a: any) =>
+    `- ${a.value} (${a.type}) → ${a.role}${a.fp_default ? ' [fp_default=TRUE]' : ''}${a.description ? ` — ${a.description}` : ''}`
+  ).join('\n') : '';
+
+  const priorFpBlock = priorFp.length ? priorFp.slice(0, 3).map((h: any) =>
+    `- ${(h.similarity * 100).toFixed(0)}% similar (${h.alert_id}, ${h.created_at?.slice(0, 10) || '?'}): ${(h.summary || '').slice(0, 140)} → FALSE_POSITIVE`
+  ).join('\n') : '';
+
+  const iocHistBlock = iocHits.length ? iocHits.slice(0, 8).map((h: any) => {
+    const total = (h.fp_count ?? 0) + (h.tp_count ?? 0);
+    const seenStr = `seen ${h.alert_count}× — ${h.fp_count ?? 0} FP / ${h.tp_count ?? 0} TP`;
+    const ratioStr = total > 0 ? `, fp_ratio=${(h.fp_ratio ?? 0).toFixed(2)}` : '';
+    return `- ${h.value} (${h.type}): ${seenStr}${ratioStr}`;
+  }).join('\n') : '';
+
+  const memoryBlock = [
+    assetBlock   ? `KNOWN ASSET CONTEXT (analyst-curated, treat as ground truth):\n${assetBlock}`            : '',
+    priorFpBlock ? `PRIOR FALSE-POSITIVE OUTCOMES FOR SIMILAR INCIDENTS (semantic recall):\n${priorFpBlock}` : '',
+    iocHistBlock ? `IOC HISTORY (this alert's IOCs in past memory):\n${iocHistBlock}`                       : '',
+  ].filter(Boolean).join('\n\n');
+
+  if (memoryBlock) {
+    logs.push(`[Analysis] Memory context applied (${assetCtx.length} asset, ${priorFp.length} prior FP, ${iocHits.length} IOC hits).`);
+  }
+
+  const userPrompt = `${memoryBlock ? memoryBlock + '\n\n' : ''}ALERT TO TRIAGE:
 - ID: ${a.id}
 - Timestamp: ${a.timestamp}
 - Agent: ${parsedData?.agent?.name ?? a.agent_name ?? 'unknown'} (${parsedData?.agent?.ip ?? a.source_ip ?? ''})

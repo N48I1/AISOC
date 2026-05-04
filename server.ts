@@ -266,10 +266,35 @@ try {
     );
     CREATE INDEX IF NOT EXISTS idx_insights_created ON incident_insights(created_at);
 
+    CREATE TABLE IF NOT EXISTS asset_context (
+      value         TEXT PRIMARY KEY,
+      type          TEXT NOT NULL,
+      role          TEXT NOT NULL,
+      description   TEXT,
+      fp_default    INTEGER DEFAULT 0,
+      source        TEXT DEFAULT 'manual',
+      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_value ON asset_context(value);
+    CREATE INDEX IF NOT EXISTS idx_asset_type  ON asset_context(type);
+
     -- Performance indexes
     CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
     CREATE INDEX IF NOT EXISTS idx_alerts_status    ON alerts(status);
   `);
+
+  // ── Idempotent migrations for memory FP tracking ──────────────────────────
+  const safeAlter = (sql: string) => {
+    try { db.exec(sql); } catch (err: any) {
+      if (!String(err?.message || '').toLowerCase().includes('duplicate column')) {
+        console.warn('[Migration] failed:', err?.message);
+      }
+    }
+  };
+  safeAlter('ALTER TABLE ioc_memory          ADD COLUMN fp_count     INTEGER DEFAULT 0');
+  safeAlter('ALTER TABLE ioc_memory          ADD COLUMN tp_count     INTEGER DEFAULT 0');
+  safeAlter('ALTER TABLE incident_insights   ADD COLUMN triggered_by TEXT DEFAULT \'triage\'');
 
   // Seed admin user if not exists
   const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');

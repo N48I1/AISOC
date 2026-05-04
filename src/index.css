@@ -1,88 +1,183 @@
 @import "tailwindcss";
 
-/* ── EVERNEX-inspired "Deep Sapphire" design system ─────────────────────── */
+/* ── EVERNEX-inspired "Frosted Tint" design system ─────────────────────── */
 
 :root {
   --s0:  #ffffff;
-  --s1:  #f0f7ff;
-  --s2:  #e6f0ff;
-  --s3:  #f8fbff;
-  --sa:  #e0efff;
-  --b1:  #cce0ff;
-  --b2:  #e0ecff;
-  --b3:  #f0f7ff;
-  --t1:  #0a2540;
-  --t2:  #425466;
-  --t3:  #a3acb9;
-  --t4:  #697386;
-  --t5:  #4f566b;
-  --t6:  #2a2d3e;
-  --t7:  #0a2540;
-  --p1:  #0061ff;      /* Electric Blue */
-  --pd:  #0046b8;
-  --pa:  rgba(0, 97, 255, 0.1);
+  --s1:  #f0f9ff;      /* Sky 50 - Very Light Tint */
+  --s2:  #e0f2fe;      /* Sky 100 - Soft Tint */
+  --s3:  #f8fafc;      /* Slate 50 - Background */
+  --sa:  #bae6fd;      /* Sky 200 - Active Tint */
+  --b1:  #e0f2fe;      /* Sky 100 - Border */
+  --b2:  #f0f9ff;      /* Sky 50 - Lighter Border */
+  --b3:  #f8fafc;
+  --t1:  #0f172a;      /* Slate 900 - Text */
+  --t2:  #334155;      /* Slate 700 */
+  --t3:  #94a3b8;      /* Slate 400 */
+  --t4:  #64748b;      /* Slate 500 */
+  --t5:  #475569;      /* Slate 600 */
+  --t6:  #1e293b;
+  --t7:  #020617;
+  --p1:  #38bdf8;      /* Sky 400 - Clear Tint Blue */
+  --pd:  #0ea5e9;      /* Sky 500 - Deep Tint Blue */
+  --pa:  rgba(56, 189, 248, 0.15);
 }
 
 html.dark {
-  --s0:  #0a192f;      /* Deep Midnight Blue */
-  --s1:  #112240;      /* Slate Navy */
-  --s2:  #020c1b;
-  --s3:  #0a192f;
-  --sa:  #1e3a8a;
-  --b1:  #1e40af;
-  --b2:  #172554;
-  --b3:  #1e3a8a;
-  --t1:  #e6f1ff;
-  --t2:  #8892b0;
-  --t3:  #495670;
-  --t4:  #a8b2d1;
-  --t5:  #8892b0;
-  --t6:  #ccd6f6;
+  --s0:  #020617;      /* Deeper Slate 950 */
+  --s1:  #0f172a;      /* Slate 900 */
+  --s2:  #010413;
+  --s3:  #000000;      /* Pure black for high contrast tints */
+  --sa:  #075985;      /* Sky 800 */
+  --b1:  #0c4a6e;      /* Sky 900 */
+  --b2:  #0f172a;      /* Slate 900 */
+  --b3:  #075985;
+  --t1:  #f0f9ff;      /* Sky 50 */
+  --t2:  #bae6fd;      /* Sky 200 */
+  --t3:  #7dd3fc;      /* Sky 300 */
+  --t4:  #94a3b8;
+  --t5:  #bae6fd;
+  --t6:  #e0f2fe;
   --t7:  #ffffff;
-  --p1:  #64ffda;      /* Cyan highlight for dark mode contrast */
-  --pd:  #0061ff;
-  --pa:  rgba(100, 255, 218, 0.1);
+  --p1:  #7dd3fc;      /* Sky 300 - Bright Tint */
+  --pd:  #38bdf8;      /* Sky 400 */
+  --pa:  rgba(125, 211, 252, 0.2);
 }
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background-color: var(--s3);
   color: var(--t1);
   -webkit-font-smoothing: antialiased;
+  cursor: default;
 }
 
-/* Glassmorphism */
+/* Mouse Hover Hand for everything clickable */
+/* We target base elements and also common tailwind button patterns */
+button, a, select, [role="button"], .alert-item, .clickable, input[type="submit"], input[type="button"] {
+  cursor: pointer !important;
+}
+
+/* Glassmorphism Refined */
 .glass {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+html.dark .glass {
+  background: rgba(2, 6, 23, 0.6);
+  backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 /* Smooth Transitions */
 * {
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.1s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.1s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-/* Animations */
-@keyframes glow {
-  0% { box-shadow: 0 0 5px var(--pa); }
-  50% { box-shadow: 0 0 20px var(--pa); }
-  100% { box-shadow: 0 0 5px var(--pa); }
+/* Hover Animations */
+.hover-lift:hover {
+  transform: translateY(-2px);
 }
 
-.glow {
-  animation: glow 2s infinite;
-}
-
-/* Layout Utilities */
+/* Sidebar Active State */
 .sidebar-active {
   background: linear-gradient(90deg, var(--sa) 0%, transparent 100%);
   border-left: 3px solid var(--p1);
 }
 
-/* Overrides for common tailwind colors to force blue theme */
+/* Overrides to force Sky Blue / Tint palette */
+.bg-blue-600, .bg-blue-500 { background-color: var(--p1) !important; }
+.text-blue-600, .text-blue-700 { color: var(--p1) !important; }
 .bg-blue-50 { background-color: var(--s1) !important; }
-.bg-blue-100 { background-color: var(--s2) !important; }
-.text-blue-600 { color: var(--p1) !important; }
-.text-blue-700 { color: var(--pd) !important; }
 .border-blue-200 { border-color: var(--b1) !important; }
+
+/* ── EVERNEX animations ──────────────────────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1);    }
+}
+.animate-fade-in  { animation: fade-in 0.25s ease-out both; }
+.animate-scale-in { animation: scale-in 0.2s ease-out both; }
+
+/* Lift on hover for cards */
+.hover-lift { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+.hover-lift:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.08); }
+
+/* ── Shimmer skeleton ────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--s2) 0%, var(--b1) 35%, var(--s1) 50%, var(--b1) 65%, var(--s2) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 4px;
+}
+html.dark .skeleton {
+  background: linear-gradient(90deg, #0c1825 0%, #1a3050 35%, #1e3860 50%, #1a3050 65%, #0c1825 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ── Custom scrollbar ────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--s2); }
+::-webkit-scrollbar-thumb { background: var(--b1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--t3); }
+
+/* ── Dark mode form resets ───────────────────────────────────────────────── */
+html.dark input, html.dark select, html.dark textarea {
+  background-color: var(--s1);
+  color: var(--t1);
+  border-color: var(--b1);
+  color-scheme: dark;
+}
+html.dark input::placeholder, html.dark textarea::placeholder { color: var(--t3); }
+
+/* ── Dark: status colour overrides ──────────────────────────────────────── */
+html.dark .bg-red-50   { background-color: #1a0808 !important; }
+html.dark .bg-red-100  { background-color: #220c0c !important; }
+html.dark .text-red-700, html.dark .text-red-800 { color: #fca5a5 !important; }
+html.dark .text-red-600, html.dark .text-red-500 { color: #f87171 !important; }
+html.dark .text-red-300 { color: #fda4af !important; }
+html.dark .border-red-100, html.dark .border-red-200, html.dark .border-red-300 { border-color: #3f1010 !important; }
+
+html.dark .bg-amber-50  { background-color: #1a1000 !important; }
+html.dark .bg-yellow-50 { background-color: #1a1000 !important; }
+html.dark .text-amber-700, html.dark .text-amber-800 { color: #fcd34d !important; }
+html.dark .border-amber-200, html.dark .border-amber-300 { border-color: #4a2800 !important; }
+
+html.dark .bg-green-50  { background-color: #001a08 !important; }
+html.dark .bg-emerald-50 { background-color: #001a08 !important; }
+html.dark .text-green-700, html.dark .text-green-800, html.dark .text-green-600 { color: #86efac !important; }
+html.dark .text-emerald-700, html.dark .text-emerald-800 { color: #6ee7b7 !important; }
+html.dark .text-emerald-500, html.dark .text-emerald-300 { color: #34d399 !important; }
+html.dark .border-green-100, html.dark .border-green-200, html.dark .border-green-300 { border-color: #052812 !important; }
+
+html.dark .bg-orange-50 { background-color: #150800 !important; }
+html.dark .text-orange-700, html.dark .text-orange-800 { color: #fdba74 !important; }
+html.dark .border-orange-200, html.dark .border-orange-300 { border-color: #5c1a00 !important; }
+
+html.dark .bg-purple-50  { background-color: #0e0820 !important; }
+html.dark .bg-indigo-50  { background-color: #0a0818 !important; }
+html.dark .text-purple-700, html.dark .text-purple-800 { color: #d8b4fe !important; }
+html.dark .text-indigo-700, html.dark .text-indigo-800 { color: #a5b4fc !important; }
+html.dark .border-purple-200 { border-color: #3b0f70 !important; }
+html.dark .border-indigo-200 { border-color: #28206c !important; }
+
+html.dark .bg-slate-950 { background-color: #000510 !important; }
+html.dark .bg-slate-900 { background-color: #060b18 !important; }
+html.dark .border-slate-800 { border-color: #0c1a2e !important; }
+
+/* ── Hardcoded hex overrides ─────────────────────────────────────────────── */
+html.dark .text-\[#d93025\] { color: #fca5a5 !important; }
+html.dark .text-\[#1e8e3e\] { color: #86efac !important; }
+html.dark .bg-\[#1e8e3e\]   { background-color: #16a34a !important; }
+html.dark .bg-\[#d93025\]   { background-color: #b91c1c !important; }

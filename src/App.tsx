@@ -136,7 +136,14 @@ const useAuth = () => {
 
 const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const { logout, user } = useAuth();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState<boolean>(() => {
+    const stored = localStorage.getItem('soc_sidebar_expanded');
+    return stored === null ? true : stored === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('soc_sidebar_expanded', String(expanded));
+  }, [expanded]);
 
   const menuItems = [
     { id: 'research',       icon: BarChart3,     label: 'Research Overview' },
@@ -209,7 +216,6 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 
 const Header = () => {
   const { user, logout } = useAuth();
-  const { dark, toggle } = useDarkMode();
   return (
     <header className="h-[60px] bg-[var(--s0)] border-b border-[var(--b1)] text-[var(--t1)] flex items-center justify-between px-6 z-[100] sticky top-0 transition-all">
       <div className="flex items-center gap-3">
@@ -233,13 +239,6 @@ const Header = () => {
         
         <div className="h-6 w-px bg-[var(--b2)]" />
         
-        <button
-          onClick={toggle}
-          className="w-10 h-10 flex items-center justify-center rounded-xl text-[var(--t3)] hover:text-[var(--p1)] hover:bg-[var(--sa)] border border-transparent hover:border-[var(--b2)] transition-all"
-        >
-          {dark ? '☀' : '🌙'}
-        </button>
-
         <div className="flex items-center gap-3 pl-2">
           <div className="flex flex-col items-end hidden sm:block">
             <p className="text-[0.8rem] font-bold text-[var(--t1)]">{user?.username}</p>
@@ -2045,7 +2044,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
                   getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
                 }
               }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[var(--p1)] text-[var(--t7)] border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
             >
               {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={13} />}
               History {runs.length > 0 ? `(${runs.length})` : ''}
@@ -2586,7 +2585,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           <button
             type="button"
             onClick={() => setConfirmAction({ status: 'CLOSED', label: 'Close Incident', message: 'Close this incident? This marks the alert as resolved.', cls: 'bg-[#1e8e3e] hover:bg-green-700' })}
-            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
+            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
           >
             Close Incident
           </button>
@@ -2666,7 +2665,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
         title="Multi-Agent SOC Research Overview"
         description="Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface."
         right={(
-          <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
+          <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
             <AlertTriangle size={14} />
             Open Investigation
           </button>
@@ -2701,7 +2700,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
                 <button key={agent.phase} onClick={() => setActiveTab('agents')} className="text-left group">
                   <div className={`min-h-[146px] border rounded-lg p-3 transition-colors ${fallbackPct > 20 ? 'border-amber-200 bg-amber-50/50' : 'border-[var(--b2)] bg-[var(--s0)] group-hover:bg-[var(--sa)]'}`}>
                     <div className="flex items-center justify-between mb-3">
-                      <span className="w-6 h-6 rounded bg-[var(--p1)] text-white flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
+                      <span className="w-6 h-6 rounded bg-[var(--p1)] text-[var(--t7)] flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
                       <span className="text-[0.58rem] text-[var(--t3)] font-mono">{stat?.total_runs || 0} runs</span>
                     </div>
                     <p className="text-[0.72rem] font-black text-[var(--t7)] leading-tight">{agent.short}</p>
@@ -3127,7 +3126,7 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
               <button
                 onClick={() => setFilterOpen(!filterOpen)}
                 className={`flex items-center gap-1 text-[0.65rem] font-black uppercase tracking-wider px-2 py-1 rounded transition-colors ${
-                  hasFilters ? 'bg-[var(--p1)] text-white' : 'text-[var(--p1)] hover:bg-[var(--sa)]'
+                  hasFilters ? 'bg-[var(--p1)] text-[var(--t7)]' : 'text-[var(--p1)] hover:bg-[var(--sa)]'
                 }`}
               >
                 <Filter className="w-3 h-3" />
@@ -3633,7 +3632,7 @@ const ActionsTab = () => {
                       <button
                         onClick={() => handleSaveConfig(intg.name)}
                         disabled={saving[`cfg_${intg.name}`]}
-                        className="w-full mt-1 py-1.5 rounded bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
+                        className="w-full mt-1 py-1.5 rounded bg-[var(--p1)] text-[var(--t7)] text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
                       >
                         {saving[`cfg_${intg.name}`] ? 'Saving…' : 'Save Configuration'}
                       </button>
@@ -3857,7 +3856,7 @@ const FirewallSection = () => {
         {isAdmin && (
           <button
             onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.75rem] font-bold hover:bg-[var(--pd)] transition-colors"
           >
             <Plus size={13} />
             Add Firewall
@@ -3898,7 +3897,7 @@ const FirewallSection = () => {
             ))}
           </div>
           <div className="flex gap-2 pt-1">
-            <button type="submit" className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)]">Add Firewall</button>
+            <button type="submit" className="px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)]">Add Firewall</button>
             <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.78rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
           </div>
         </form>
@@ -4278,7 +4277,7 @@ const AgentsTab = () => {
             </div>
             {isAdmin && (
               <>
-                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
+                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
                   {savingLocal ? 'Saving…' : 'Save'}
                 </button>
                 <button onClick={handleTestLocal} disabled={localStatus === 'checking'} className="px-4 py-2 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.75rem] font-bold hover:bg-[var(--sa)] disabled:opacity-50 transition-colors">
@@ -4600,7 +4599,7 @@ const SettingsTab = () => {
           <button
             type="submit"
             disabled={pwLoading}
-            className="mt-1 px-4 py-2 bg-[var(--p1)] text-white text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
+            className="mt-1 px-4 py-2 bg-[var(--p1)] text-[var(--t7)] text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
           >
             {pwLoading ? 'Updating…' : 'Update Password'}
           </button>
@@ -4613,7 +4612,7 @@ const SettingsTab = () => {
             <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">User Management</h3>
             <button
               onClick={() => setShowCreate(!showCreateForm)}
-              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--p1)] text-[var(--t7)] px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <UserPlus className="w-3 h-3" />
               Add User
@@ -4641,7 +4640,7 @@ const SettingsTab = () => {
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+                <button type="submit" className="bg-[var(--p1)] text-[var(--t7)] px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
                 <button type="button" onClick={() => setShowCreate(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
               </div>
             </form>
@@ -4691,7 +4690,7 @@ const SettingsTab = () => {
           {isAdmin && (
             <button
               onClick={() => setShowPBForm(!showPBForm)}
-              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--p1)] text-[var(--t7)] px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Playbook
@@ -4719,7 +4718,7 @@ const SettingsTab = () => {
               <textarea required value={pbForm.steps} onChange={e => setPBForm({...pbForm, steps: e.target.value})} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account..." className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] resize-none font-mono" />
             </div>
             <div className="flex gap-2">
-              <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+              <button type="submit" className="bg-[var(--p1)] text-[var(--t7)] px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
               <button type="button" onClick={() => setShowPBForm(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
             </div>
           </form>
@@ -4829,7 +4828,7 @@ const LoginPage = () => {
 
           <button 
             disabled={loading}
-            className="w-full bg-[var(--p1)] text-white font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
+            className="w-full bg-[var(--p1)] text-[var(--t7)] font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
           >
             {loading ? 'Verifying Credentials...' : 'Initialize Session'}
           </button>

@@ -16,6 +16,7 @@ import { semanticStore       } from "./memory/store.js";
 import { upsertIocs, lookupIocs, extractRawIocValues } from "./memory/ioc.js";
 import { commitAsync         } from "./memory/insights.js";
 import { writeWorkingMemory  } from "./memory/working.js";
+import { lookupAssetContext, extractAssetValuesFromAlert } from "./memory/assets.js";
 
 export interface OrchestrationOutput {
   ai_analysis:      string;
@@ -57,28 +58,54 @@ export async function runHubAndSwarm(
 
   // ── 1. Pre-flight memory recall (deterministic, parallel) ────────────────
   const queryText = `${alert.description ?? ""}`.slice(0, 1500);
-  const [recallHits, iocPreflightValues] = await Promise.all([
+  const assetValues = extractAssetValuesFromAlert(alert);
+  const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
+    Promise.resolve(lookupAssetContext(assetValues)),
   ]);
   const iocPreflight = lookupIocs(iocPreflightValues);
 
-  if (recallHits.length > 0) log(`Recall: ${recallHits.length} similar past incident(s)`);
+  if (recallHits.length > 0)  log(`Recall: ${recallHits.length} similar past incident(s)`);
   if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
+  if (assetCtx.length > 0)    log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+
+  // Detect memory-driven FP signals (deterministic, no LLM yet)
+  const fpSimilar    = recallHits.find((h: any) => h.outcome === 'FALSE_POSITIVE' && h.similarity > 0.85);
+  const fpAsset      = assetCtx.find(a => a.fp_default === 1);
+  const fpIocPattern = iocPreflight.find((i: any) =>
+    (i.fp_ratio ?? 0) >= 0.85 && ((i.fp_count ?? 0) + (i.tp_count ?? 0)) >= 5);
+  const memoryFpHint = (fpSimilar || fpAsset || fpIocPattern) ? {
+    fpSimilar:    fpSimilar    ? { alert_id: fpSimilar.alert_id, summary: fpSimilar.summary, similarity: fpSimilar.similarity } : null,
+    fpAsset:      fpAsset      ? { value: fpAsset.value, role: fpAsset.role, description: fpAsset.description } : null,
+    fpIocPattern: fpIocPattern ? { value: fpIocPattern.value, fp_count: fpIocPattern.fp_count, tp_count: fpIocPattern.tp_count, fp_ratio: fpIocPattern.fp_ratio } : null,
+  } : null;
+  if (memoryFpHint) log(`Memory FP hint active — triage will receive structured pre-flight context.`);
+
+  // Track if memory drove the FP decision (for analytics)
+  const memoryDroveFp = !!memoryFpHint;
 
   // ── 2. Mandatory triage ──────────────────────────────────────────────────
-  const triageRes = await alertAnalysisNode({ alert, recentAlerts }, modelFor("analysis"), ctx);
+  const triageRes = await alertAnalysisNode({
+    alert, recentAlerts,
+    assetContext:    assetCtx,
+    priorFpInsights: recallHits.filter((h: any) => h.outcome === 'FALSE_POSITIVE'),
+    iocMemoryHits:   iocPreflight,
+    memoryFpHint,
+  }, modelFor("analysis"), ctx);
   ctx.agentLogs.push(...(triageRes.agentLogs ?? []));
   const triage = triageRes.analysis;
 
   // ── 3. FP short-circuit ──────────────────────────────────────────────────
   if (triage?.is_false_positive && (triage?.false_positive_confidence ?? 0) > 0.85) {
-    log(`Confirmed false positive — short-circuiting orchestration.`);
-    upsertIocs(triage.iocs ?? {}, alert.id, "Low");
+    const triggeredBy = memoryDroveFp ? 'memoryFP' : 'triage';
+    log(`Confirmed false positive — short-circuiting orchestration. (triggered_by=${triggeredBy})`);
+    upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
     commitAsync({
       alertId: alert.id, idempotencyKey: traceId,
       alertDescription: alert.description ?? "",
       triage, outcome: "FALSE_POSITIVE",
+      triggered_by: triggeredBy,
     });
     return composeOutput({
       analysis: triage, intel: null, knowledge: null, correlation: null,
@@ -150,14 +177,16 @@ export async function runHubAndSwarm(
   }
 
   // ── 7. Memory commits ────────────────────────────────────────────────────
-  upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority);
+  const finalOutcome = triage?.is_false_positive ? "FALSE_POSITIVE"
+                     : ticket?.priority === "CRITICAL" ? "ESCALATED"
+                     : "TRIAGED";
+  upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
   commitAsync({
     alertId: alert.id, idempotencyKey: traceId,
     alertDescription: alert.description ?? "",
     triage, intel: workerResults.intel, ticket,
-    outcome: triage?.is_false_positive ? "FALSE_POSITIVE"
-           : ticket?.priority === "CRITICAL" ? "ESCALATED"
-           : "TRIAGED",
+    outcome: finalOutcome,
+    triggered_by: 'composer',
   });
 
   return composeOutput({
