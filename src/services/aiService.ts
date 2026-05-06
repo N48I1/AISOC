@@ -342,6 +342,16 @@ export async function revokeApiKey(id: number): Promise<{ ok: boolean }> {
   return res.json();
 }
 
+export async function updateApiKey(
+  id: number,
+  payload: { paused?: boolean; min_severity_override?: number | null }
+): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/api-keys/${id}`, {
+    method: 'PATCH', headers: authHeaders(), body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
 // kept for backward compat — no-op now
 export async function generateWazuhKey(): Promise<{ ok: boolean; webhook_secret: string }> {
   return { ok: false, webhook_secret: '' };

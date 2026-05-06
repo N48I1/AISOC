@@ -339,6 +339,8 @@ try {
   safeAlter('ALTER TABLE ioc_memory          ADD COLUMN fp_count     INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE ioc_memory          ADD COLUMN tp_count     INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE incident_insights   ADD COLUMN triggered_by TEXT DEFAULT \'triage\'');
+  safeAlter('ALTER TABLE api_keys            ADD COLUMN paused               INTEGER DEFAULT 0');
+  safeAlter('ALTER TABLE api_keys            ADD COLUMN min_severity_override INTEGER');
 
   // ── Seed known-asset entries (idempotent — won't overwrite manual changes) ──
   const seedAsset = db.prepare(`
@@ -1347,9 +1349,15 @@ async function startServer() {
         return res.status(401).json({ error: 'API key required. Set X-Api-Key or Authorization: Bearer header.' });
       }
       const keyHash = crypto.createHash('sha256').update(provided).digest('hex');
-      const keyRow  = db.prepare("SELECT id, name FROM api_keys WHERE key_hash=? AND revoked=0 LIMIT 1").get(keyHash) as any;
+      const keyRow  = db.prepare("SELECT id, name, paused, min_severity_override FROM api_keys WHERE key_hash=? AND revoked=0 LIMIT 1").get(keyHash) as any;
       if (!keyRow) {
         return res.status(401).json({ error: 'Invalid or revoked API key.' });
+      }
+      if (keyRow.paused) {
+        return res.status(403).json({ status: 'paused', error: 'Alert ingestion is paused for this API key.' });
+      }
+      if (wcfg.ingest_enabled === 'false') {
+        return res.status(503).json({ status: 'paused', error: 'Global alert ingestion is currently paused.' });
       }
       db.prepare("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?").run(keyRow.id);
 
@@ -1362,8 +1370,10 @@ async function startServer() {
       const sourceIp = alert.data?.srcip || alert.data?.src_ip || null;
       const severity = Number(alert.rule?.level ?? 0);
 
-      // Min severity filter
-      const minSev = Number(wcfg.min_severity ?? 0);
+      // Min severity filter — per-key override takes precedence over global setting
+      const minSev = keyRow.min_severity_override != null
+        ? Number(keyRow.min_severity_override)
+        : Number(wcfg.min_severity ?? 0);
       if (severity < minSev) {
         return res.json({ status: 'filtered', reason: `severity ${severity} below min ${minSev}` });
       }
@@ -1421,7 +1431,7 @@ async function startServer() {
   // ── API Key management ───────────────────────────────────────────────────
   app.get('/api/api-keys', authenticate, requireAdmin, (_req, res) => {
     const rows = db.prepare(
-      'SELECT id, name, key_prefix, created_at, last_used_at, revoked FROM api_keys ORDER BY created_at DESC'
+      'SELECT id, name, key_prefix, created_at, last_used_at, revoked, paused, min_severity_override FROM api_keys ORDER BY created_at DESC'
     ).all();
     res.json(rows);
   });
@@ -1442,6 +1452,19 @@ async function startServer() {
     const { id } = req.params;
     db.prepare('UPDATE api_keys SET revoked=1 WHERE id=?').run(id);
     writeAudit(req.user.id, 'API_KEY_REVOKED', `API key id=${id} revoked`);
+    res.json({ ok: true });
+  });
+
+  app.patch('/api/api-keys/:id', authenticate, requireAdmin, (req: any, res) => {
+    const { id } = req.params;
+    const { paused, min_severity_override } = req.body || {};
+    if (paused !== undefined)
+      db.prepare('UPDATE api_keys SET paused=? WHERE id=?').run(paused ? 1 : 0, id);
+    if (min_severity_override !== undefined)
+      db.prepare('UPDATE api_keys SET min_severity_override=? WHERE id=?').run(
+        min_severity_override === null ? null : Number(min_severity_override), id
+      );
+    writeAudit(req.user.id, 'API_KEY_UPDATED', `API key id=${id} config updated`);
     res.json({ ok: true });
   });
 
@@ -2311,7 +2334,7 @@ async function startServer() {
   app.patch('/api/integrations/:name', authenticate, requireAdmin, (req: any, res) => {
     const { name } = req.params;
     const { enabled, config, auto_send_threshold } = req.body;
-    const updates: string[] = ['updated_at = datetime("now")'];
+    const updates: string[] = ["updated_at = datetime('now')"];
     const values: any[]     = [];
     if (enabled !== undefined)             { updates.push('enabled = ?');             values.push(enabled ? 1 : 0); }
     if (config  !== undefined)             { updates.push('config = ?');              values.push(JSON.stringify(config)); }

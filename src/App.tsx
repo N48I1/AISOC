@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 import PageHeader from './components/ui/PageHeader';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from './features/alerts/alertUtils';
@@ -149,6 +149,7 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
     { id: 'dashboard',        icon: BarChart3,     label: 'Dashboard' },
     { id: 'noise-filter',     icon: Filter,        label: 'Noise Filter' },
     { id: 'fp-archive',       icon: XCircle,       label: 'FP Archive' },
+    { id: 'reports',          icon: FileText,      label: 'Reports' },
     { id: 'response-actions', icon: Zap,           label: 'Response Actions' },
     { id: 'investigation',    icon: AlertTriangle, label: 'Investigation' },
     { id: 'integrations',     icon: Send,          label: 'Integrations' },
@@ -4909,10 +4910,52 @@ const SettingsTab = () => {
   const [createdKey,   setCreatedKey]   = useState<{ key: string; prefix: string } | null>(null);
   const [keyCreating,  setKeyCreating]  = useState(false);
   const [keyRevoke,    setKeyRevoke]    = useState<Record<number, boolean>>({});
+  const [keyUpdating,  setKeyUpdating]  = useState<Record<number, boolean>>({});
   const [showKeyValue, setShowKeyValue] = useState(false);
+  const [expandedKey,  setExpandedKey]  = useState<number | null>(null);
 
   const fetchApiKeys = () => listApiKeys().then(setApiKeys).catch(() => {});
   useEffect(() => { if (isAdmin) fetchApiKeys(); }, [isAdmin]);
+
+  // Ingest config (wazuh global settings)
+  const [ingestCfg,    setIngestCfg]    = useState<Record<string, string>>({
+    ingest_enabled: 'true', min_severity: '7', max_alerts_per_min: '60',
+    dedup_window_minutes: '5', time_window_start: '', time_window_end: '', auto_orchestrate: 'true',
+  });
+  const [ingestSaving, setIngestSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    getIntegrations().then(list => {
+      const w = list.find((i: any) => i.name === 'wazuh');
+      if (w?.config) setIngestCfg((prev) => ({ ...prev, ...w.config }));
+    }).catch(() => {});
+  }, [isAdmin]);
+
+  const handleSaveIngestCfg = async () => {
+    setIngestSaving(true);
+    try {
+      await updateIntegration('wazuh', { config: ingestCfg });
+      showToast('Ingest settings saved', 'success');
+    } catch { showToast('Failed to save settings', 'error'); }
+    finally { setIngestSaving(false); }
+  };
+
+  const handleToggleKeyPause = async (k: any) => {
+    setKeyUpdating(p => ({ ...p, [k.id]: true }));
+    try { await updateApiKey(k.id, { paused: !k.paused }); fetchApiKeys(); }
+    catch { showToast('Failed to update key', 'error'); }
+    finally { setKeyUpdating(p => ({ ...p, [k.id]: false })); }
+  };
+
+  const handleKeyMinSev = async (k: any, raw: string) => {
+    const v = raw.trim() === '' ? null : Number(raw);
+    if (v !== null && (isNaN(v) || v < 0 || v > 15)) return;
+    setKeyUpdating(p => ({ ...p, [k.id]: true }));
+    try { await updateApiKey(k.id, { min_severity_override: v }); fetchApiKeys(); }
+    catch { showToast('Failed to update key', 'error'); }
+    finally { setKeyUpdating(p => ({ ...p, [k.id]: false })); }
+  };
 
   const handleCreateKey = async () => {
     if (!newKeyName.trim()) return;
@@ -5199,6 +5242,151 @@ const SettingsTab = () => {
         </div>
       </div>
 
+      {/* ── Alert Ingestion ──────────────────────────────────────────────── */}
+      {isAdmin && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-[var(--p1)]" />
+              <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">Alert Ingestion</h3>
+              <span className="text-[0.65rem] text-[var(--t3)]">Global controls for all alerts received via API key.</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide ${ingestCfg.ingest_enabled === 'false' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'}`}>
+                {ingestCfg.ingest_enabled === 'false' ? 'Paused' : 'Active'}
+              </span>
+            </div>
+          </div>
+          <div className="p-5 space-y-5">
+
+            {/* Global on/off */}
+            <div className="flex items-center justify-between py-2 border-b border-[var(--b2)]">
+              <div>
+                <p className="text-[0.82rem] font-bold text-[var(--t6)]">Receive alerts</p>
+                <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">When off, all ingest requests return HTTP 503 regardless of key.</p>
+              </div>
+              <button
+                onClick={() => setIngestCfg(c => ({ ...c, ingest_enabled: c.ingest_enabled === 'false' ? 'true' : 'false' }))}
+                className="shrink-0"
+                title="Toggle global ingestion"
+              >
+                {ingestCfg.ingest_enabled === 'false'
+                  ? <ToggleLeft size={32} className="text-[var(--t3)] hover:text-[var(--t5)] transition-colors" />
+                  : <ToggleRight size={32} className="text-[var(--p1)]" />}
+              </button>
+            </div>
+
+            {/* Settings grid */}
+            <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+
+              {/* Min severity */}
+              <div className="space-y-1.5">
+                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Min Severity Level</label>
+                <p className="text-[0.65rem] text-[var(--t3)]">Alerts below this Wazuh level (0–15) are silently dropped.</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range" min="0" max="15" step="1"
+                    value={ingestCfg.min_severity ?? '7'}
+                    onChange={e => setIngestCfg(c => ({ ...c, min_severity: e.target.value }))}
+                    className="flex-1 accent-[var(--p1)]"
+                  />
+                  <span className="w-8 text-center font-black text-[var(--t1)] text-[0.9rem] tabular-nums">{ingestCfg.min_severity ?? '7'}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase ${
+                    Number(ingestCfg.min_severity ?? 7) >= 12 ? 'bg-red-100 text-red-700' :
+                    Number(ingestCfg.min_severity ?? 7) >= 7  ? 'bg-orange-100 text-orange-700' :
+                    Number(ingestCfg.min_severity ?? 7) >= 4  ? 'bg-amber-100 text-amber-700' :
+                    'bg-green-100 text-green-700'
+                  }`}>
+                    {Number(ingestCfg.min_severity ?? 7) >= 12 ? 'Critical+' :
+                     Number(ingestCfg.min_severity ?? 7) >= 7  ? 'High+' :
+                     Number(ingestCfg.min_severity ?? 7) >= 4  ? 'Medium+' : 'All'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Rate limit */}
+              <div className="space-y-1.5">
+                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Rate Limit (alerts / min)</label>
+                <p className="text-[0.65rem] text-[var(--t3)]">Requests beyond this threshold return HTTP 429. Set 0 to disable.</p>
+                <input
+                  type="number" min="0" max="10000" step="10"
+                  value={ingestCfg.max_alerts_per_min ?? '60'}
+                  onChange={e => setIngestCfg(c => ({ ...c, max_alerts_per_min: e.target.value }))}
+                  className="w-full border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                />
+              </div>
+
+              {/* Dedup window */}
+              <div className="space-y-1.5">
+                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Deduplication Window (minutes)</label>
+                <p className="text-[0.65rem] text-[var(--t3)]">Identical alerts (same rule + source IP) within this window are dropped.</p>
+                <input
+                  type="number" min="0" max="1440" step="1"
+                  value={ingestCfg.dedup_window_minutes ?? '5'}
+                  onChange={e => setIngestCfg(c => ({ ...c, dedup_window_minutes: e.target.value }))}
+                  className="w-full border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                />
+              </div>
+
+              {/* Active hours */}
+              <div className="space-y-1.5">
+                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Active Hours (24h, optional)</label>
+                <p className="text-[0.65rem] text-[var(--t3)]">Only accept alerts during this window. Leave empty to accept all hours.</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="time"
+                    value={ingestCfg.time_window_start ?? ''}
+                    onChange={e => setIngestCfg(c => ({ ...c, time_window_start: e.target.value }))}
+                    className="flex-1 border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                  />
+                  <span className="text-[var(--t3)] text-[0.72rem] font-bold shrink-0">to</span>
+                  <input
+                    type="time"
+                    value={ingestCfg.time_window_end ?? ''}
+                    onChange={e => setIngestCfg(c => ({ ...c, time_window_end: e.target.value }))}
+                    className="flex-1 border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                  />
+                  {(ingestCfg.time_window_start || ingestCfg.time_window_end) && (
+                    <button
+                      onClick={() => setIngestCfg(c => ({ ...c, time_window_start: '', time_window_end: '' }))}
+                      className="text-[var(--t3)] hover:text-[var(--t6)]" title="Clear"
+                    ><X size={13} /></button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Auto-orchestrate */}
+            <div className="flex items-center justify-between py-2 border-t border-[var(--b2)]">
+              <div>
+                <p className="text-[0.82rem] font-bold text-[var(--t6)]">Auto-orchestrate new alerts</p>
+                <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">Immediately run AI agents on every alert received via API.</p>
+              </div>
+              <button
+                onClick={() => setIngestCfg(c => ({ ...c, auto_orchestrate: c.auto_orchestrate === 'false' ? 'true' : 'false' }))}
+                className="shrink-0"
+              >
+                {ingestCfg.auto_orchestrate === 'false'
+                  ? <ToggleLeft size={32} className="text-[var(--t3)] hover:text-[var(--t5)] transition-colors" />
+                  : <ToggleRight size={32} className="text-[var(--p1)]" />}
+              </button>
+            </div>
+
+            {/* Save button */}
+            <div className="flex justify-end">
+              <button
+                onClick={handleSaveIngestCfg}
+                disabled={ingestSaving}
+                className="px-4 py-2 rounded bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {ingestSaving ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle size={13} />}
+                {ingestSaving ? 'Saving…' : 'Save Ingest Settings'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── API Keys ─────────────────────────────────────────────────────── */}
       {isAdmin && (
         <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
@@ -5311,42 +5499,123 @@ const SettingsTab = () => {
 
             {/* Existing keys table */}
             {apiKeys.length > 0 ? (
-              <table className="w-full text-left text-[0.78rem]">
-                <thead className="bg-[var(--s1)] border-y border-[var(--b3)] text-[0.62rem] text-[var(--t3)] font-black uppercase tracking-wider">
-                  <tr>
-                    <th className="px-3 py-2">Name</th>
-                    <th className="px-3 py-2">Key prefix</th>
-                    <th className="px-3 py-2">Created</th>
-                    <th className="px-3 py-2">Last used</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--b3)]">
-                  {apiKeys.map((k: any) => (
-                    <tr key={k.id} className={`hover:bg-[var(--s1)] transition-colors ${k.revoked ? 'opacity-50' : ''}`}>
-                      <td className="px-3 py-2 font-semibold text-[var(--t6)]">{k.name}</td>
-                      <td className="px-3 py-2 font-mono text-[var(--t4)] text-[0.72rem]">{k.key_prefix}</td>
-                      <td className="px-3 py-2 text-[var(--t4)] text-[0.72rem]">{new Date(k.created_at).toLocaleDateString()}</td>
-                      <td className="px-3 py-2 text-[var(--t4)] text-[0.72rem]">{k.last_used_at ? new Date(k.last_used_at).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : 'Never'}</td>
-                      <td className="px-3 py-2">
-                        <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide ${k.revoked ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'}`}>
-                          {k.revoked ? 'Revoked' : 'Active'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        {!k.revoked && (
-                          <button
-                            disabled={keyRevoke[k.id]}
-                            onClick={() => handleRevokeKey(k.id)}
-                            className="text-[0.68rem] text-red-600 hover:underline font-semibold disabled:opacity-50"
-                          >Revoke</button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="space-y-2">
+                {apiKeys.map((k: any) => (
+                  <div key={k.id} className={`border border-[var(--b2)] rounded-lg overflow-hidden ${k.revoked ? 'opacity-50' : ''}`}>
+                    {/* Main row */}
+                    <div className="flex items-center gap-3 px-4 py-2.5 bg-[var(--s1)] hover:bg-[var(--s2)] transition-colors">
+                      {/* Status dot */}
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${k.revoked ? 'bg-red-400' : k.paused ? 'bg-amber-400' : 'bg-green-500'}`} />
+
+                      {/* Name + prefix */}
+                      <div className="flex-1 min-w-0">
+                        <span className="text-[0.82rem] font-bold text-[var(--t6)]">{k.name}</span>
+                        <span className="ml-2 font-mono text-[0.68rem] text-[var(--t3)]">{k.key_prefix}</span>
+                      </div>
+
+                      {/* Last used */}
+                      <span className="text-[0.68rem] text-[var(--t3)] hidden sm:block shrink-0">
+                        {k.last_used_at ? `Used ${timeAgo(new Date(k.last_used_at).getTime())}` : 'Never used'}
+                      </span>
+
+                      {/* Status badge */}
+                      <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide shrink-0 ${
+                        k.revoked ? 'bg-red-100 text-red-700' :
+                        k.paused  ? 'bg-amber-100 text-amber-700' :
+                        'bg-green-100 text-green-800'
+                      }`}>
+                        {k.revoked ? 'Revoked' : k.paused ? 'Paused' : 'Active'}
+                      </span>
+
+                      {/* Per-key pause toggle */}
+                      {!k.revoked && (
+                        <button
+                          onClick={() => handleToggleKeyPause(k)}
+                          disabled={keyUpdating[k.id]}
+                          title={k.paused ? 'Resume ingestion for this key' : 'Pause ingestion for this key'}
+                          className="shrink-0 disabled:opacity-40"
+                        >
+                          {k.paused
+                            ? <ToggleLeft size={24} className="text-amber-500 hover:text-amber-600 transition-colors" />
+                            : <ToggleRight size={24} className="text-green-600 hover:text-green-700 transition-colors" />}
+                        </button>
+                      )}
+
+                      {/* Configure button */}
+                      {!k.revoked && (
+                        <button
+                          onClick={() => setExpandedKey(expandedKey === k.id ? null : k.id)}
+                          className="shrink-0 text-[0.65rem] font-bold text-[var(--p1)] hover:underline"
+                        >
+                          {expandedKey === k.id ? 'Close' : 'Configure'}
+                        </button>
+                      )}
+
+                      {/* Revoke */}
+                      {!k.revoked && (
+                        <button
+                          disabled={keyRevoke[k.id]}
+                          onClick={() => handleRevokeKey(k.id)}
+                          className="shrink-0 text-[0.65rem] text-red-600 hover:underline font-semibold disabled:opacity-50"
+                        >Revoke</button>
+                      )}
+                    </div>
+
+                    {/* Expanded per-key config */}
+                    {expandedKey === k.id && !k.revoked && (
+                      <div className="px-4 py-3 border-t border-[var(--b2)] bg-[var(--s0)] space-y-3">
+                        <p className="text-[0.68rem] font-black text-[var(--t3)] uppercase tracking-widest">Per-key overrides</p>
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* Per-key pause */}
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-[0.75rem] font-bold text-[var(--t6)]">Accept alerts</p>
+                              <p className="text-[0.62rem] text-[var(--t3)]">When off, this key returns HTTP 403.</p>
+                            </div>
+                            <button onClick={() => handleToggleKeyPause(k)} disabled={keyUpdating[k.id]} className="shrink-0">
+                              {k.paused
+                                ? <ToggleLeft size={28} className="text-amber-400 hover:text-amber-500 transition-colors" />
+                                : <ToggleRight size={28} className="text-[var(--p1)]" />}
+                            </button>
+                          </div>
+
+                          {/* Per-key min severity */}
+                          <div className="space-y-1">
+                            <label className="text-[0.68rem] font-black text-[var(--t3)] uppercase tracking-widest">
+                              Min Severity Override
+                            </label>
+                            <p className="text-[0.62rem] text-[var(--t3)]">
+                              Overrides global min ({ingestCfg.min_severity ?? '7'}). Leave blank to use global.
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number" min="0" max="15" step="1"
+                                placeholder={`Global: ${ingestCfg.min_severity ?? '7'}`}
+                                defaultValue={k.min_severity_override ?? ''}
+                                onBlur={e => handleKeyMinSev(k, e.target.value)}
+                                className="w-24 border border-[var(--b2)] rounded px-2 py-1 text-[0.72rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s1)]"
+                              />
+                              {k.min_severity_override != null && (
+                                <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase ${
+                                  k.min_severity_override >= 12 ? 'bg-red-100 text-red-700' :
+                                  k.min_severity_override >= 7  ? 'bg-orange-100 text-orange-700' :
+                                  k.min_severity_override >= 4  ? 'bg-amber-100 text-amber-700' :
+                                  'bg-green-100 text-green-700'
+                                }`}>
+                                  {k.min_severity_override >= 12 ? 'Critical+' :
+                                   k.min_severity_override >= 7  ? 'High+' :
+                                   k.min_severity_override >= 4  ? 'Medium+' : 'All'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-[0.6rem] text-[var(--t3)] italic">Changes apply immediately — no restart needed.</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             ) : (
               <p className="text-[0.78rem] text-[var(--t3)] text-center py-4">No API keys yet. Create one above to connect Wazuh.</p>
             )}
@@ -5931,11 +6200,19 @@ const LoginPage = () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Dashboard Tab ───────────────────────────────────────────────────────────
-const DashboardTab = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[]; onAlertClick: (a: Alert) => void; setActiveTab: (t: string) => void }) => {
+const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: { alerts: Alert[]; onAlertClick: (a: Alert) => void; setActiveTab: (t: string) => void; onRefreshAlerts?: () => void }) => {
   const { token } = useAuth();
   const [funnel, setFunnel] = useState<any>(null);
   const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
   const [agentStats, setAgentStatsState] = useState<AgentStat[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = () => {
+    if (!onRefreshAlerts || refreshing) return;
+    setRefreshing(true);
+    onRefreshAlerts();
+    setTimeout(() => setRefreshing(false), 800);
+  };
 
   useEffect(() => {
     if (!token) return;
@@ -6017,7 +6294,18 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab }: { alerts: Alert[];
         <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
           <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
             <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM (WAZUH)</h3>
-            <span className="text-[0.65rem] text-[var(--t2)] font-mono">{alerts.length} ALERTS</span>
+            <div className="flex items-center gap-3">
+              <span className="text-[0.65rem] text-[var(--t2)] font-mono">{alerts.length} ALERTS</span>
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing}
+                title="Refresh alert list"
+                className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+                {refreshing ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
           </div>
           <div className="max-h-[400px] overflow-y-auto">
             {alerts.length > 0 ? (
@@ -6915,7 +7203,7 @@ const IntegrationsTab = () => {
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('soc_active_tab');
-    const validTabs = ['dashboard', 'noise-filter', 'fp-archive', 'response-actions', 'investigation', 'integrations', 'settings'];
+    const validTabs = ['dashboard', 'noise-filter', 'fp-archive', 'reports', 'response-actions', 'investigation', 'integrations', 'settings'];
     return (saved && validTabs.includes(saved)) ? saved : 'dashboard';
   });
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -6933,6 +7221,15 @@ export default function App() {
   }, []);
 
   const selectedAlert = alerts.find((alert) => alert.id === selectedAlertId) || null;
+
+  const refreshAlerts = useCallback(() => {
+    const socToken = localStorage.getItem('soc_token');
+    if (!socToken) return;
+    fetch('/api/alerts?pageSize=100', { headers: { Authorization: `Bearer ${socToken}` } })
+      .then(r => r.json())
+      .then(data => { const list = Array.isArray(data) ? data : data?.alerts; if (Array.isArray(list)) setAlerts(list); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('soc_active_tab', activeTab);
@@ -7032,6 +7329,7 @@ export default function App() {
             onAlertAction={handleAlertAction}
             autoFilter={autoFilter}
             setAutoFilter={setAutoFilter}
+            refreshAlerts={refreshAlerts}
           />
         </AuthProvider>
         <ToastContainer toasts={toasts} />
@@ -7040,41 +7338,50 @@ export default function App() {
   );
 }
 
-const Reports = ({ alerts }: { alerts: Alert[] }) => {
-  const [summary,    setSummary]    = useState<ReportSummary | null>(null);
-  const [reports,    setReports]    = useState<ReportRow[]>([]);
-  const [totalReps,  setTotalReps]  = useState(0);
-  const [page,       setPage]       = useState(1);
-  const [priority,   setPriority]   = useState('');
-  const [viewReport, setViewReport] = useState<{ alert: Alert; aiData: any; mitreTags: string[] } | null>(null);
-  const pageSize = 15;
+const ReportsTab = ({
+  alerts,
+  setActiveTab,
+  setSelectedAlert,
+}: {
+  alerts: Alert[];
+  setActiveTab: (t: string) => void;
+  setSelectedAlert: (a: Alert | null) => void;
+}) => {
+  const [summary,           setSummary]           = useState<ReportSummary | null>(null);
+  const [reports,           setReports]           = useState<ReportRow[]>([]);
+  const [loading,           setLoading]           = useState(true);
+  const [search,            setSearch]            = useState('');
+  const [activePriorities,  setActivePriorities]  = useState<Set<string>>(new Set());
+  const [activeSentVia,     setActiveSentVia]     = useState<Set<string>>(new Set());
+  const [sortBy,            setSortBy]            = useState<'newest'|'oldest'|'severity'|'confidence'>('newest');
+  const [viewReport,        setViewReport]        = useState<{ alert: Alert; aiData: any; mitreTags: string[] } | null>(null);
 
   useEffect(() => {
     getReportSummary().then(setSummary).catch(() => {});
   }, []);
 
   useEffect(() => {
-    getReports({ page, pageSize, priority: priority || undefined })
-      .then(d => { setReports(d.reports as ReportRow[]); setTotalReps(d.total); })
-      .catch(() => {});
-  }, [page, priority]);
+    setLoading(true);
+    getReports({ page: 1, pageSize: 200 })
+      .then(d => { setReports(d.reports as ReportRow[]); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
 
   const priColor: Record<string, string> = {
-    CRITICAL: 'bg-red-100 text-red-800',
-    HIGH:     'bg-orange-100 text-orange-800',
-    MEDIUM:   'bg-blue-100 text-blue-800',
-    LOW:      'bg-green-100 text-green-800',
+    CRITICAL: 'bg-red-100 text-red-700 border border-red-200',
+    HIGH:     'bg-orange-100 text-orange-700 border border-orange-200',
+    MEDIUM:   'bg-amber-100 text-amber-700 border border-amber-200',
+    LOW:      'bg-green-100 text-green-700 border border-green-200',
   };
-  const sevColor = (s: number) => s >= 13 ? 'bg-red-50 text-red-700' : s >= 10 ? 'bg-orange-50 text-orange-700' : s >= 7 ? 'bg-blue-50 text-blue-700' : 'bg-green-50 text-green-700';
-  const sevLabel = (s: number) => s >= 13 ? 'CRIT' : s >= 10 ? 'HIGH' : s >= 7 ? 'MED' : 'LOW';
-
+  const priBtnActive: Record<string, string> = {
+    CRITICAL: 'bg-red-600 text-white border-red-600',
+    HIGH:     'bg-orange-500 text-white border-orange-500',
+    MEDIUM:   'bg-amber-500 text-white border-amber-500',
+    LOW:      'bg-green-600 text-white border-green-600',
+  };
   const intgIcon: Record<string, string> = { email: '📧', glpi: '🎫', telegram: '✈' };
 
-  // Metrics from alerts array
-  const triaged      = alerts.filter(a => a.status === 'TRIAGED').length;
-  const falsePos     = alerts.filter(a => a.status === 'FALSE_POSITIVE').length;
-  const critCount    = alerts.filter(a => a.severity >= 12).length;
-  const highCount    = alerts.filter(a => a.severity >= 7 && a.severity < 12).length;
   const mitreMapping: Record<string, number> = {};
   alerts.forEach(a => {
     if (!a.mitre_attack) return;
@@ -7085,7 +7392,32 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
   });
   const topMitre = Object.entries(mitreMapping).sort(([, a], [, b]) => b - a).slice(0, 5);
 
-  const totalPages = Math.ceil(totalReps / pageSize);
+  const filtered = React.useMemo(() => {
+    let res = [...reports];
+    if (search) {
+      const q = search.toLowerCase();
+      res = res.filter(r =>
+        r.title?.toLowerCase().includes(q) ||
+        r.description?.toLowerCase().includes(q) ||
+        r.alert_id?.toLowerCase().includes(q) ||
+        r.source_ip?.toLowerCase().includes(q)
+      );
+    }
+    if (activePriorities.size > 0)
+      res = res.filter(r => activePriorities.has(r.priority ?? 'UNKNOWN'));
+    if (activeSentVia.size > 0)
+      res = res.filter(r => r.actions_dispatched?.some(a => activeSentVia.has(a)));
+    res.sort((a, b) => {
+      if (sortBy === 'newest')     return new Date(b.run_at).getTime() - new Date(a.run_at).getTime();
+      if (sortBy === 'oldest')     return new Date(a.run_at).getTime() - new Date(b.run_at).getTime();
+      if (sortBy === 'severity')   return b.severity - a.severity;
+      if (sortBy === 'confidence') return (b.confidence ?? 0) - (a.confidence ?? 0);
+      return 0;
+    });
+    return res;
+  }, [reports, search, activePriorities, activeSentVia, sortBy]);
+
+  const hasFilters = search.length > 0 || activePriorities.size > 0 || activeSentVia.size > 0;
 
   const handleViewReport = (rep: ReportRow) => {
     const alert = alerts.find(a => a.id === rep.alert_id);
@@ -7097,190 +7429,245 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
     setViewReport({ alert, aiData, mitreTags });
   };
 
+  const togglePriority = (p: string) => setActivePriorities(prev => {
+    const n = new Set(prev);
+    n.has(p) ? n.delete(p) : n.add(p);
+    return n;
+  });
+  const toggleSentVia = (v: string) => setActiveSentVia(prev => {
+    const n = new Set(prev);
+    n.has(v) ? n.delete(v) : n.add(v);
+    return n;
+  });
+
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      {/* Header */}
-      <PageHeader
-        title="Incident Reports"
-        description={`Agent-generated reports · ${new Date().toLocaleDateString()}`}
-        right={<p className="text-xs font-mono text-[var(--t3)]">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>}
-      />
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 max-w-5xl mx-auto space-y-5">
 
-      {/* Top stats row — 3 cards */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="bg-[var(--s0)] p-5 border border-[var(--b1)] rounded-xl shadow-sm space-y-3">
-          <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-widest">Alert Throughput</p>
-          <div className="flex items-end gap-2">
-            <span className="text-4xl font-black text-[var(--p1)]">{alerts.length}</span>
-            <span className="text-sm text-[#1e8e3e] font-bold mb-1">{triaged + falsePos} resolved</span>
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-xl font-black text-[var(--t1)]">Incident Reports</h2>
+            <p className="text-[0.75rem] text-[var(--t3)] mt-0.5">
+              Agent-generated reports across all analyzed alerts
+            </p>
           </div>
-          {[{ label: 'Triaged', val: triaged, color: 'bg-[var(--p1)]' }, { label: 'False Pos.', val: falsePos, color: 'bg-slate-400' }].map(s => (
-            <div key={s.label}>
-              <div className="flex justify-between text-[0.72rem] mb-0.5"><span>{s.label}</span><span className="font-bold">{s.val}</span></div>
-              <div className="h-1.5 bg-[var(--s1)] rounded-full overflow-hidden">
-                <div className={`h-full ${s.color}`} style={{ width: `${alerts.length ? (s.val / alerts.length) * 100 : 0}%` }} />
-              </div>
-            </div>
-          ))}
+          <p className="text-xs font-mono text-[var(--t3)] mt-1">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>
         </div>
 
-        <div className="bg-[var(--s0)] p-5 border border-[var(--b1)] rounded-xl shadow-sm space-y-3">
-          <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-widest">Severity Distribution</p>
-          {[
-            { label: 'Critical', count: critCount,       color: '#d93025' },
-            { label: 'High',     count: highCount,       color: '#f29900' },
-            { label: 'Med/Low',  count: alerts.length - critCount - highCount, color: '#1a73e8' },
-          ].map(s => (
-            <div key={s.label} className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full shrink-0" style={{ background: s.color }} />
-              <span className="flex-1 text-[0.78rem] text-[var(--t5)]">{s.label}</span>
-              <span className="font-black text-[0.82rem]">{s.count}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="bg-[var(--s0)] p-5 border border-[var(--b1)] rounded-xl shadow-sm space-y-2">
-          <p className="text-[0.72rem] font-black text-[var(--t3)] uppercase tracking-widest">Top MITRE Techniques</p>
-          {topMitre.length > 0 ? topMitre.map(([tech, count]) => (
-            <div key={tech} className="space-y-0.5">
-              <div className="flex justify-between text-[0.68rem] font-bold">
-                <span className="font-mono truncate max-w-[130px]">{tech}</span>
-                <span className="text-[var(--t3)]">{count}×</span>
-              </div>
-              <div className="h-1 bg-[var(--s1)] rounded-full overflow-hidden">
-                <div className="h-full bg-[var(--p1)]" style={{ width: `${(count / alerts.length) * 100}%` }} />
-              </div>
-            </div>
-          )) : <p className="text-[0.72rem] text-[var(--t3)] italic">Run agents to generate MITRE data.</p>}
-        </div>
-      </div>
-
-      {/* Report summary stats from server */}
-      {summary && (
+        {/* Stats row */}
         <div className="grid grid-cols-4 gap-3">
           {[
-            { label: 'Total Reports Generated', value: summary.total,                  color: 'text-[var(--p1)]' },
-            { label: 'Last 7 Days',              value: summary.last_7_days,            color: 'text-[var(--p1)]' },
-            { label: 'Email Notified',           value: `${summary.email_sent_pct}%`,   color: summary.email_sent_pct > 0 ? 'text-[#1e8e3e]' : 'text-[var(--t3)]' },
-            { label: '7-Day Volume',             value: (
-                <div className="flex items-end gap-0.5 h-8">
-                  {summary.daily_volume?.map((d: any, i: number) => {
+            { label: 'Total Reports', value: summary?.total ?? reports.length, color: 'text-[var(--p1)]' },
+            { label: 'Last 7 Days',   value: summary?.last_7_days ?? '—',      color: 'text-[var(--p1)]' },
+            { label: 'Avg Confidence',value: summary?.avg_confidence != null ? `${Math.round(summary.avg_confidence)}%` : '—', color: 'text-[#1e8e3e]' },
+            { label: 'Email Notified',value: summary ? `${summary.email_sent_pct}%` : '—', color: summary && summary.email_sent_pct > 0 ? 'text-[#1e8e3e]' : 'text-[var(--t3)]' },
+          ].map((s, i) => (
+            <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm">
+              <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">{s.label}</p>
+              <p className={`text-[1.8rem] font-black leading-none ${s.color}`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Secondary stats: 7-day sparkline + MITRE */}
+        {(summary?.daily_volume || topMitre.length > 0) && (
+          <div className="grid grid-cols-2 gap-3">
+            {summary?.daily_volume && (
+              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm">
+                <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest mb-3">7-Day Volume</p>
+                <div className="flex items-end gap-0.5 h-10">
+                  {summary.daily_volume.map((d: any, i: number) => {
                     const max = Math.max(...(summary.daily_volume?.map((x: any) => x.count) || [1]), 1);
                     return (
-                      <div key={i} title={`${d.day}: ${d.count}`} className="flex-1 bg-[var(--p1)] rounded-sm" style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }} />
+                      <div key={i} title={`${d.day}: ${d.count}`} className="flex-1 bg-[var(--p1)] rounded-sm opacity-80 hover:opacity-100 transition-opacity" style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }} />
                     );
                   })}
                 </div>
-              ), color: '' },
-          ].map((s, i) => (
-            <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm">
-              <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">{s.label}</p>
-              {typeof s.value === 'number' || typeof s.value === 'string'
-                ? <p className={`text-[1.6rem] font-black ${s.color}`}>{s.value}</p>
-                : s.value}
+              </div>
+            )}
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm space-y-1.5">
+              <p className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Top MITRE Techniques</p>
+              {topMitre.length > 0 ? topMitre.map(([tech, count]) => (
+                <div key={tech} className="space-y-0.5">
+                  <div className="flex justify-between text-[0.65rem] font-bold">
+                    <span className="font-mono truncate max-w-[160px] text-[var(--t5)]">{tech}</span>
+                    <span className="text-[var(--t3)]">{count}×</span>
+                  </div>
+                  <div className="h-1 bg-[var(--s1)] rounded-full overflow-hidden">
+                    <div className="h-full bg-[var(--p1)]" style={{ width: `${alerts.length ? (count / alerts.length) * 100 : 0}%` }} />
+                  </div>
+                </div>
+              )) : <p className="text-[0.72rem] text-[var(--t3)] italic">Run agents to generate MITRE data.</p>}
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        )}
 
-      {/* Reports table */}
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between gap-4">
-          <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide shrink-0">
-            Agent Reports ({totalReps})
-          </p>
-          <div className="flex items-center gap-2">
+        {/* Filter bar */}
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm space-y-3">
+          {/* Row 1: search + sort */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search title, description, alert ID, source IP…"
+                className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.78rem] text-[var(--t7)] placeholder-[var(--t3)] outline-none focus:border-[var(--p1)] transition-colors"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t7)]">
+                  <X size={12} />
+                </button>
+              )}
+            </div>
             <select
-              value={priority}
-              onChange={e => { setPriority(e.target.value); setPage(1); }}
-              className="text-[0.72rem] border border-[var(--b2)] rounded px-2 py-1 outline-none focus:border-[var(--p1)]"
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as any)}
+              className="text-[0.72rem] border border-[var(--b2)] rounded-lg px-2 py-1.5 bg-[var(--s1)] text-[var(--t6)] outline-none focus:border-[var(--p1)] cursor-pointer"
             >
-              <option value="">All priorities</option>
-              {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="severity">Highest severity</option>
+              <option value="confidence">Best confidence</option>
             </select>
           </div>
+
+          {/* Row 2: priority chips + sent-via chips + clear */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[0.58rem] font-black uppercase tracking-widest text-[var(--t3)] shrink-0">Priority:</span>
+            {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => togglePriority(p)}
+                className={`px-2 py-0.5 rounded border text-[0.62rem] font-black uppercase tracking-wider transition-colors ${activePriorities.has(p) ? priBtnActive[p] : (priColor[p] ?? 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]')}`}
+              >
+                {p}
+              </button>
+            ))}
+            <span className="w-px h-4 bg-[var(--b2)] mx-1 shrink-0" />
+            <span className="text-[0.58rem] font-black uppercase tracking-widest text-[var(--t3)] shrink-0">Notified:</span>
+            {(['email','glpi','telegram'] as const).map(v => (
+              <button
+                key={v}
+                onClick={() => toggleSentVia(v)}
+                className={`px-2 py-0.5 rounded border text-[0.65rem] font-bold transition-colors ${activeSentVia.has(v) ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+              >
+                {intgIcon[v]} {v}
+              </button>
+            ))}
+            {hasFilters && (
+              <>
+                <span className="w-px h-4 bg-[var(--b2)] mx-1 shrink-0" />
+                <button
+                  onClick={() => { setSearch(''); setActivePriorities(new Set()); setActiveSentVia(new Set()); }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--b2)] text-[0.62rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] transition-colors"
+                >
+                  <X size={10} /> Clear all
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
-        {reports.length === 0 ? (
-          <div className="p-10 text-center text-[var(--t3)] text-sm">
-            {totalReps === 0
-              ? 'No reports generated yet. Open an alert and click Run Agents.'
-              : 'No reports match the current filter.'}
+        {/* Result count */}
+        <p className="text-[0.72rem] text-[var(--t3)] font-semibold px-1">
+          {loading ? 'Loading…' : `${filtered.length} report${filtered.length !== 1 ? 's' : ''} ${hasFilters ? 'matching filters' : 'total'}`}
+        </p>
+
+        {/* Cards */}
+        {!loading && filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
+            <FileText size={36} className="text-[var(--t3)] opacity-30" />
+            <p className="text-[var(--t3)] text-sm font-semibold">
+              {reports.length === 0 ? 'No reports yet — run agents on an alert to generate one.' : 'No reports match the current filters.'}
+            </p>
           </div>
         ) : (
-          <table className="w-full text-left text-[0.78rem]">
-            <thead className="bg-[var(--s1)]/50 border-b border-[var(--b3)] text-[0.62rem] text-[var(--t3)] font-black uppercase tracking-wider">
-              <tr>
-                <th className="px-4 py-2">Time</th>
-                <th className="px-4 py-2">Alert</th>
-                <th className="px-4 py-2">Title</th>
-                <th className="px-4 py-2">Priority</th>
-                <th className="px-4 py-2">Sev</th>
-                <th className="px-4 py-2">Conf</th>
-                <th className="px-4 py-2">Sent via</th>
-                <th className="px-4 py-2"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {reports.map((rep: ReportRow) => (
-                <tr key={rep.id} className="hover:bg-[var(--s1)] transition-colors">
-                  <td className="px-4 py-2.5 text-[var(--t4)] font-mono text-[0.68rem] whitespace-nowrap">
-                    {new Date(rep.run_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-[var(--p1)] text-[0.68rem]">{rep.alert_id?.substring(0, 8).toUpperCase()}</td>
-                  <td className="px-4 py-2.5 max-w-[220px]">
-                    <p className="font-semibold text-[var(--t7)] truncate">{rep.title || rep.description?.slice(0, 55) || '—'}</p>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    {rep.priority
-                      ? <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black ${priColor[rep.priority] || 'bg-[var(--s1)] text-[var(--t5)]'}`}>{rep.priority}</span>
-                      : <span className="text-[var(--t2)]">—</span>}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <span className={`px-1.5 py-0.5 rounded text-[0.6rem] font-black ${sevColor(rep.severity)}`}>{sevLabel(rep.severity)}</span>
-                  </td>
-                  <td className="px-4 py-2.5 text-[var(--t5)]">
-                    {rep.confidence != null ? `${rep.confidence}%` : '—'}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    {rep.actions_dispatched && rep.actions_dispatched.length > 0
-                      ? <span className="flex gap-1">{rep.actions_dispatched.map(a => <span key={a} title={a}>{intgIcon[a] || '•'}</span>)}</span>
-                      : <span className="text-[var(--t2)] text-[0.68rem]">—</span>}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <button
-                      onClick={() => handleViewReport(rep)}
-                      className="flex items-center gap-1 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t5)] hover:bg-[var(--s1)] transition-colors"
-                    >
-                      <Eye size={11} /> View
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+          <div className="space-y-3">
+            {filtered.map((rep, idx) => {
+              const conf = rep.confidence ?? 0;
+              const alertObj = alerts.find(a => a.id === rep.alert_id);
+              return (
+                <div
+                  key={rep.id}
+                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm hover:border-[var(--b3)] transition-colors"
+                >
+                  <div className="flex items-start gap-4">
+                    {/* Left block */}
+                    <div className="flex-1 min-w-0 space-y-2">
+                      {/* Row 1: rank · priority · inc id · title */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="w-6 h-6 rounded-full bg-[var(--s1)] border border-[var(--b2)] text-[0.6rem] font-black text-[var(--t4)] flex items-center justify-center shrink-0">
+                          {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        {rep.priority && (
+                          <span className={`px-1.5 py-0.5 rounded border text-[0.55rem] font-black uppercase tracking-wider shrink-0 ${priColor[rep.priority] ?? 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]'}`}>
+                            {rep.priority}
+                          </span>
+                        )}
+                        <span className="font-mono text-[0.65rem] font-bold text-[var(--p1)] shrink-0">
+                          INC-{rep.alert_id?.substring(0, 8).toUpperCase() ?? '?'}
+                        </span>
+                        <span className="text-[0.82rem] font-semibold text-[var(--t7)] truncate">
+                          {rep.title || rep.description?.slice(0, 70) || '—'}
+                        </span>
+                      </div>
 
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="px-5 py-3 border-t bg-[var(--s1)] flex items-center justify-between text-[0.72rem]">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="px-3 py-1 rounded border border-[var(--b2)] text-[var(--t5)] font-semibold disabled:opacity-40 hover:bg-[var(--s0)] transition-colors"
-            >
-              ← Previous
-            </button>
-            <span className="text-[var(--t4)] font-semibold">Page {page} of {totalPages}</span>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="px-3 py-1 rounded border border-[var(--b2)] text-[var(--t5)] font-semibold disabled:opacity-40 hover:bg-[var(--s0)] transition-colors"
-            >
-              Next →
-            </button>
+                      {/* Row 2: description */}
+                      {rep.description && (
+                        <p className="text-[0.72rem] text-[var(--t4)] line-clamp-2 leading-relaxed pl-8">
+                          {rep.description}
+                        </p>
+                      )}
+
+                      {/* Row 3: source IP + alert chip + sent-via + time */}
+                      <div className="flex items-center gap-2 flex-wrap pl-8">
+                        {rep.source_ip && (
+                          <span className="font-mono text-[0.62rem] bg-[var(--s1)] text-[var(--t5)] border border-[var(--b2)] px-1.5 py-0.5 rounded">
+                            {rep.source_ip}
+                          </span>
+                        )}
+                        {alertObj && (
+                          <button
+                            onClick={() => { setSelectedAlert(alertObj); setActiveTab('investigation'); }}
+                            className={`font-mono text-[0.62rem] font-bold px-1.5 py-0.5 rounded border transition-colors ${severityChipColor(
+                              alertObj.severity >= 12 ? 'CRITICAL' : alertObj.severity >= 7 ? 'HIGH' : alertObj.severity >= 4 ? 'MEDIUM' : 'LOW'
+                            )}`}
+                            title="Open in Investigation"
+                          >
+                            #{rep.alert_id?.substring(0, 8).toUpperCase()}
+                          </button>
+                        )}
+                        {rep.actions_dispatched && rep.actions_dispatched.length > 0 && (
+                          <span className="flex gap-1 text-sm" title={rep.actions_dispatched.join(', ')}>
+                            {rep.actions_dispatched.map(a => <span key={a}>{intgIcon[a] || '•'}</span>)}
+                          </span>
+                        )}
+                        <span className="text-[0.62rem] text-[var(--t3)] font-mono ml-auto">
+                          {timeAgo(new Date(rep.run_at).getTime())}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Right block: confidence donut + view button */}
+                    <div className="shrink-0 flex flex-col items-center gap-2 w-20">
+                      <PriorityDonut value={conf} size={44} />
+                      <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Confidence</span>
+                      <button
+                        onClick={() => handleViewReport(rep)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t5)] hover:bg-[var(--s1)] transition-colors w-full justify-center"
+                      >
+                        <Eye size={11} /> View
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
+
       </div>
 
       {/* Detailed report modal */}
@@ -7296,7 +7683,7 @@ const Reports = ({ alerts }: { alerts: Alert[] }) => {
   );
 };
 
-const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction, autoFilter, setAutoFilter }: any) => {
+const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction, autoFilter, setAutoFilter, refreshAlerts }: any) => {
   const { user } = useAuth();
 
   if (!user) return <LoginPage />;
@@ -7307,9 +7694,10 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
         <main className="flex-1 overflow-hidden bg-[var(--s3)]">
-          {activeTab === 'dashboard'      && <DashboardTab alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('investigation'); }} setActiveTab={setActiveTab} />}
+          {activeTab === 'dashboard'      && <DashboardTab alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('investigation'); }} setActiveTab={setActiveTab} onRefreshAlerts={refreshAlerts} />}
           {activeTab === 'noise-filter'   && <NoiseFilterTab alerts={alerts} setActiveTab={setActiveTab} autoFilter={autoFilter} setAutoFilter={setAutoFilter} />}
           {activeTab === 'fp-archive'       && <FpArchiveTab />}
+          {activeTab === 'reports'          && <ReportsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
           {activeTab === 'response-actions' && <ResponseActionsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
           {activeTab === 'investigation'    && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
           {activeTab === 'integrations'     && <IntegrationsTab />}
