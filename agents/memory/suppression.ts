@@ -17,9 +17,19 @@ export interface SuppressionRule {
 }
 
 export interface SuppressionHit {
-  rule_id:   number;
-  rule_name: string;
-  reason:    string;
+  rule_id:    number;
+  rule_name:  string;
+  reason:     string;
+  confidence: number;  // 0.78–0.93, grows with validated hit_count
+}
+
+/**
+ * Confidence that scales with how many times a rule has been validated.
+ * Starts at 0.78 (new, unproven rule) and grows logarithmically toward 0.93.
+ * Never reaches 1.0 — even a well-known scanner IP could be compromised.
+ */
+function suppressionConfidence(hitCount: number): number {
+  return Math.min(0.93, 0.78 + (Math.log10(hitCount + 1) * 0.075));
 }
 
 /**
@@ -37,7 +47,12 @@ export function checkSuppressionRules(alert: any): SuppressionHit | null {
     if (matchesRule(rule, alert)) {
       // Bump hit_count
       db.prepare(`UPDATE suppression_rules SET hit_count = hit_count + 1 WHERE id = ?`).run(rule.id);
-      return { rule_id: rule.id, rule_name: rule.name, reason: rule.reason };
+      return {
+        rule_id:    rule.id,
+        rule_name:  rule.name,
+        reason:     rule.reason,
+        confidence: suppressionConfidence(rule.hit_count),  // hit_count before this increment
+      };
     }
   }
   return null;

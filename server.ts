@@ -4,6 +4,7 @@ import { createServer as createHttpsServer } from 'https';
 import { Server } from 'socket.io';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
@@ -38,6 +39,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'black-box-soc-secret-2026';
+
+// --- Ingest rate-limiter (in-memory, resets each minute) -------------------
+const ingestRateMap = new Map<string, { count: number; window: number }>();
+function checkIngestRateLimit(maxPerMin: number): boolean {
+  if (maxPerMin <= 0) return true;
+  const now   = Math.floor(Date.now() / 60000);
+  const entry = ingestRateMap.get('ingest') ?? { count: 0, window: now };
+  if (entry.window !== now) { entry.count = 0; entry.window = now; }
+  if (entry.count >= maxPerMin) return false;
+  entry.count++;
+  ingestRateMap.set('ingest', entry);
+  return true;
+}
 
 // --- Email helper -----------------------------------------------------------
 const smtpConfigured = !!(
@@ -298,6 +312,17 @@ try {
       created_by TEXT DEFAULT 'system'
     );
 
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_used_at DATETIME,
+      revoked INTEGER DEFAULT 0
+    );
+
     -- Performance indexes
     CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
     CREATE INDEX IF NOT EXISTS idx_alerts_status    ON alerts(status);
@@ -551,124 +576,242 @@ try {
       new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
 
     const fpCandidates = [
+      // ── OpenVAS scanner (172.10.9.10) — asset_context fp_default=1 ──────────
       {
-        id: 'fp-cand-openvas-001',
-        hoursAgo: 0.2,
+        id: 'fp-cand-openvas-xss-001',
+        hoursAgo: 0.1,
         rule_id: '31103',
-        description: 'Web attack: XSS attempt detected — <script>alert(1)</script> in POST body',
+        description: 'Web attack: XSS attempt detected — <script>alert(document.cookie)</script> in POST /api/login body',
         severity: 8,
         source_ip: '172.10.9.10',
         dest_ip: '10.0.1.100',
         agent_name: 'web-app-01',
         full_log: JSON.stringify({
-          rule: { id: '31103', description: 'Web attack: XSS attempt detected', level: 8 },
-          data: { srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443, url: '/api/login', method: 'POST', program_name: 'nginx', payload: '<script>alert(1)</script>' },
+          rule: { id: '31103', description: 'Web attack: XSS (Cross-Site Scripting) attempt detected', level: 8 },
+          data: {
+            srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443,
+            url: '/api/login', method: 'POST', program_name: 'nginx',
+            http: { request_body: '<script>alert(document.cookie)</script>', status: 403 },
+            openvas: { scan_id: 'ov-scan-20240115', plugin_id: '10848', plugin_name: 'XSS injection test' },
+          },
           agent: { name: 'web-app-01', ip: '10.0.1.100' },
         }),
       },
       {
-        id: 'fp-cand-openvas-002',
-        hoursAgo: 0.4,
+        id: 'fp-cand-openvas-sqli-001',
+        hoursAgo: 0.15,
         rule_id: '31106',
-        description: "Web attack: SQL injection attempt — ' OR 1=1-- in user-agent header",
+        description: "Web attack: SQL injection — ' UNION SELECT null,null,version()-- in GET /search?q=",
         severity: 9,
         source_ip: '172.10.9.10',
         dest_ip: '10.0.1.100',
         agent_name: 'web-app-01',
         full_log: JSON.stringify({
-          rule: { id: '31106', description: 'SQL injection attempt detected', level: 9 },
-          data: { srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443, url: '/admin/users', method: 'GET', program_name: 'nginx', user_agent: "' OR 1=1--" },
+          rule: { id: '31106', description: 'SQL Injection attempt detected in URL parameter', level: 9 },
+          data: {
+            srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443,
+            url: "/search?q=' UNION SELECT null,null,version()--", method: 'GET', program_name: 'nginx',
+            http: { status: 400 },
+            openvas: { scan_id: 'ov-scan-20240115', plugin_id: '10913', plugin_name: 'SQL injection test' },
+          },
           agent: { name: 'web-app-01', ip: '10.0.1.100' },
         }),
       },
       {
-        id: 'fp-cand-nessus-001',
-        hoursAgo: 0.6,
-        rule_id: '40101',
-        description: 'Port scan detected: sequential TCP SYN scan across 1024 ports from internal host',
-        severity: 7,
-        source_ip: '10.0.0.50',
-        dest_ip: '10.0.1.0',
-        agent_name: 'firewall-01',
+        id: 'fp-cand-openvas-traversal-001',
+        hoursAgo: 0.2,
+        rule_id: '31120',
+        description: 'Web attack: Path traversal — ../../../../etc/passwd in GET /download?file=',
+        severity: 8,
+        source_ip: '172.10.9.10',
+        dest_ip: '10.0.1.100',
+        agent_name: 'web-app-01',
         full_log: JSON.stringify({
-          rule: { id: '40101', description: 'Port scan detected', level: 7 },
-          data: { srcip: '10.0.0.50', dstip: '10.0.1.0', proto: 'TCP', program_name: 'iptables', ports_scanned: 1024, scan_type: 'SYN' },
-          agent: { name: 'firewall-01', ip: '10.0.1.1' },
+          rule: { id: '31120', description: 'Path traversal attack detected', level: 8 },
+          data: {
+            srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443,
+            url: '/download?file=../../../../etc/passwd', method: 'GET', program_name: 'nginx',
+            http: { status: 403 },
+            openvas: { scan_id: 'ov-scan-20240115', plugin_id: '10386', plugin_name: 'Path traversal test' },
+          },
+          agent: { name: 'web-app-01', ip: '10.0.1.100' },
         }),
       },
       {
-        id: 'fp-cand-backup-001',
-        hoursAgo: 1.0,
+        id: 'fp-cand-openvas-scan-001',
+        hoursAgo: 0.3,
+        rule_id: '40101',
+        description: 'Port scan: OpenVAS host discovery — TCP SYN sweep across /24 subnet 10.0.1.0',
+        severity: 7,
+        source_ip: '172.10.9.10',
+        dest_ip: '10.0.1.0',
+        agent_name: 'firewall-01',
+        full_log: JSON.stringify({
+          rule: { id: '40101', description: 'Multiple ports scanned — possible port scan', level: 7 },
+          data: {
+            srcip: '172.10.9.10', dstip: '10.0.1.0', proto: 'TCP', program_name: 'iptables',
+            ports_scanned: 1024, scan_type: 'SYN', rate: '500pps',
+            openvas: { scan_id: 'ov-scan-20240115', type: 'host_discovery' },
+          },
+          agent: { name: 'firewall-01', ip: '10.0.1.1' },
+        }),
+      },
+      // ── Nessus scanner (10.0.0.50) — asset_context fp_default=1 ─────────────
+      {
+        id: 'fp-cand-nessus-bruteforce-001',
+        hoursAgo: 0.5,
+        rule_id: '5712',
+        description: 'SSH brute-force: 523 failed login attempts from 10.0.0.50 in 2 minutes',
+        severity: 10,
+        source_ip: '10.0.0.50',
+        dest_ip: '10.0.1.50',
+        agent_name: 'ssh-server-01',
+        full_log: JSON.stringify({
+          rule: { id: '5712', description: 'SSHD brute force trying to get access to the system', level: 10 },
+          data: {
+            srcip: '10.0.0.50', dstip: '10.0.1.50', dstport: 22, program_name: 'sshd',
+            failed_attempts: 523, interval_seconds: 120,
+            nessus: { scan_id: 'nessus-weekly-001', plugin_id: '10205', plugin_name: 'SSH Server Default Credentials' },
+          },
+          agent: { name: 'ssh-server-01', ip: '10.0.1.50' },
+        }),
+      },
+      {
+        id: 'fp-cand-nessus-vuln-001',
+        hoursAgo: 0.6,
+        rule_id: '40305',
+        description: 'Vulnerability scan: Nessus probing SMB/445 for MS17-010 EternalBlue',
+        severity: 9,
+        source_ip: '10.0.0.50',
+        dest_ip: '10.0.1.80',
+        agent_name: 'win-server-01',
+        full_log: JSON.stringify({
+          rule: { id: '40305', description: 'SMB exploit attempt: EternalBlue probe detected', level: 9 },
+          data: {
+            srcip: '10.0.0.50', dstip: '10.0.1.80', dstport: 445, proto: 'TCP', program_name: 'snort',
+            cve: 'CVE-2017-0144', exploit: 'EternalBlue',
+            nessus: { scan_id: 'nessus-weekly-001', plugin_id: '97833', plugin_name: 'MS17-010 Check' },
+          },
+          agent: { name: 'win-server-01', ip: '10.0.1.80' },
+        }),
+      },
+      // ── Backup service (10.0.0.20) — asset_context fp_default=1 ─────────────
+      {
+        id: 'fp-cand-backup-sudo-001',
+        hoursAgo: 0.8,
         rule_id: '5402',
-        description: 'Privilege escalation: backup-svc executed tar with sudo root privileges',
+        description: 'Privilege escalation: backup-svc ran rsync as root — /var/backups/full-20240115.tar.gz',
         severity: 8,
         source_ip: '10.0.0.20',
         dest_ip: '',
         agent_name: 'backup-host-01',
         full_log: JSON.stringify({
-          rule: { id: '5402', description: 'Sudoers rule executed: elevated privilege', level: 8 },
-          data: { srcip: '10.0.0.20', program_name: 'sudo', srcuser: 'backup-svc', command: '/bin/tar czf /backup/$(date +%Y%m%d).tar.gz /var/data', run_as: 'root' },
+          rule: { id: '5402', description: 'Sudo command run by user', level: 8 },
+          data: {
+            srcip: '10.0.0.20', program_name: 'sudo',
+            srcuser: 'backup-svc', run_as: 'root',
+            command: '/usr/bin/rsync -avz /data/ /mnt/backup/full-20240115/',
+            cwd: '/home/backup-svc',
+          },
           agent: { name: 'backup-host-01', ip: '10.0.0.20' },
         }),
       },
       {
-        id: 'fp-cand-healthcheck-001',
-        hoursAgo: 1.2,
-        rule_id: '5760',
-        description: 'Multiple failed SSH authentication attempts — monitoring user from internal host',
-        severity: 6,
-        source_ip: '10.0.0.30',
-        dest_ip: '10.0.1.50',
-        agent_name: 'monitoring-01',
-        full_log: JSON.stringify({
-          rule: { id: '5760', description: 'Multiple SSH authentication failures', level: 6 },
-          data: { srcip: '10.0.0.30', dstip: '10.0.1.50', dstport: 22, program_name: 'sshd', srcuser: 'monitoring', attempt_count: 12, interval_seconds: 60 },
-          agent: { name: 'monitoring-01', ip: '10.0.0.30' },
-        }),
-      },
-      {
-        id: 'fp-cand-cron-001',
-        hoursAgo: 1.5,
+        id: 'fp-cand-backup-cron-001',
+        hoursAgo: 1.0,
         rule_id: '2930',
-        description: 'Suspicious cron activity: logrotate modified system log files',
-        severity: 5,
+        description: 'Suspicious file access: logrotate compressed /var/log/auth.log during scheduled rotation',
+        severity: 4,
         source_ip: '10.0.0.10',
         dest_ip: '',
         agent_name: 'siem-server-01',
         full_log: JSON.stringify({
-          rule: { id: '2930', description: 'File modified: system log rotation', level: 5 },
-          data: { srcip: '10.0.0.10', program_name: 'logrotate', file: '/var/log/syslog', user: 'root', triggered_by: 'cron' },
+          rule: { id: '2930', description: 'Log file modified or rotated', level: 4 },
+          data: {
+            srcip: '10.0.0.10', program_name: 'logrotate',
+            file: '/var/log/auth.log', action: 'compress',
+            triggered_by: 'cron', user: 'root', schedule: '0 4 * * *',
+          },
           agent: { name: 'siem-server-01', ip: '10.0.0.10' },
         }),
       },
+      // ── Monitoring host (10.0.0.30) — asset_context fp_default=1 ─────────────
       {
-        id: 'fp-cand-healthcheck-002',
-        hoursAgo: 1.8,
+        id: 'fp-cand-monitor-ssh-001',
+        hoursAgo: 1.2,
+        rule_id: '5760',
+        description: 'Multiple failed SSH logins: monitoring user made 48 attempts against 12 hosts (Zabbix agent check)',
+        severity: 6,
+        source_ip: '10.0.0.30',
+        dest_ip: '10.0.1.0',
+        agent_name: 'monitoring-01',
+        full_log: JSON.stringify({
+          rule: { id: '5760', description: 'Multiple SSH authentication failures from same source', level: 6 },
+          data: {
+            srcip: '10.0.0.30', dstport: 22, program_name: 'sshd',
+            srcuser: 'monitoring', failed_attempts: 48, unique_hosts: 12,
+            zabbix: { check_type: 'ssh_agent_reachability', interval: 60 },
+          },
+          agent: { name: 'monitoring-01', ip: '10.0.0.30' },
+        }),
+      },
+      {
+        id: 'fp-cand-monitor-http-001',
+        hoursAgo: 1.4,
         rule_id: '31101',
-        description: 'Web request: automated healthcheck probe — 200 OK responses to /health endpoint',
+        description: 'Automated web probe: 240 GET /health requests/hr from Zabbix monitoring — HTTP 200',
         severity: 3,
         source_ip: '10.0.0.30',
         dest_ip: '10.0.1.100',
         agent_name: 'web-app-01',
         full_log: JSON.stringify({
-          rule: { id: '31101', description: 'Repeated automated web requests detected', level: 3 },
-          data: { srcip: '10.0.0.30', dstip: '10.0.1.100', dstport: 80, url: '/health', method: 'GET', user_agent: 'healthcheck/1.0', request_count: 120, interval_seconds: 30 },
+          rule: { id: '31101', description: 'Repetitive web requests from same source', level: 3 },
+          data: {
+            srcip: '10.0.0.30', dstip: '10.0.1.100', dstport: 80,
+            url: '/health', method: 'GET', program_name: 'nginx',
+            user_agent: 'Zabbix HTTP check/6.0', request_count: 240, interval_seconds: 15, http_status: 200,
+          },
           agent: { name: 'web-app-01', ip: '10.0.1.100' },
         }),
       },
+      // ── Test bench (10.0.0.99) — asset_context fp_default=1 ─────────────────
       {
-        id: 'fp-cand-test-001',
-        hoursAgo: 2.0,
+        id: 'fp-cand-test-pentest-001',
+        hoursAgo: 1.6,
         rule_id: '99001',
-        description: 'Test alert: automated smoke test — NMAP-TEST-SUITE triggered rule 99001',
-        severity: 5,
+        description: 'Penetration test: OWASP ZAP active scan — automated security test suite initiated',
+        severity: 8,
         source_ip: '10.0.0.99',
         dest_ip: '10.0.1.100',
         agent_name: 'test-bench',
         full_log: JSON.stringify({
-          rule: { id: '99001', description: 'Test rule triggered by automated test suite', level: 5 },
-          data: { srcip: '10.0.0.99', program_name: 'test-runner', test_suite: 'NMAP-TEST-SUITE', test_id: 'smoke-001' },
+          rule: { id: '99001', description: 'Multiple web attack signatures detected — possible pentest', level: 8 },
+          data: {
+            srcip: '10.0.0.99', dstip: '10.0.1.100', dstport: 443,
+            program_name: 'nginx', user_agent: 'Mozilla/5.0 (compatible; OWASP ZAP/2.14.0)',
+            attack_types: ['xss', 'sqli', 'path_traversal', 'cmdi'],
+            test_run_id: 'zap-scan-ci-20240115-0900',
+          },
           agent: { name: 'test-bench', ip: '10.0.0.99' },
+        }),
+      },
+      // ── False-positive-by-pattern (triage LLM rules) ──────────────────────────
+      {
+        id: 'fp-cand-nmap-internal-001',
+        hoursAgo: 1.8,
+        rule_id: '40100',
+        description: 'Nmap scan: internal network discovery — nmap -sV -p 1-65535 10.0.0.0/16 by sysadmin',
+        severity: 6,
+        source_ip: '10.0.1.200',
+        dest_ip: '10.0.0.0',
+        agent_name: 'sysadmin-ws',
+        full_log: JSON.stringify({
+          rule: { id: '40100', description: 'Nmap port scanner detected', level: 6 },
+          data: {
+            srcip: '10.0.1.200', dstip: '10.0.0.0', proto: 'TCP', program_name: 'snort',
+            tool: 'nmap', flags: '-sV -p 1-65535', target: '10.0.0.0/16', user: 'sysadmin',
+          },
+          agent: { name: 'sysadmin-ws', ip: '10.0.1.200' },
         }),
       },
     ];
@@ -693,7 +836,24 @@ try {
       upsertFpCandidate.run(a.id, tsAgo(a.hoursAgo), a.rule_id, a.description,
         a.severity, a.source_ip, a.dest_ip || null, a.agent_name, a.full_log);
     }
-    console.log('[DB] Seeded 8 FP-candidate alerts (status=NEW) for Noise Filter demo');
+    console.log(`[DB] Seeded ${fpCandidates.length} FP-candidate alerts (status=NEW) for Noise Filter demo`);
+  }
+
+  // ── Seed default suppression rules (INSERT OR IGNORE — won't overwrite user edits) ──
+  {
+    const suppTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppression_rules'").get();
+    if (suppTable) {
+      const seedRule = db.prepare(`
+        INSERT OR IGNORE INTO suppression_rules
+          (name, source_ip_pattern, description_pattern, min_severity, max_severity, reason, enabled, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 'system_seed')
+      `);
+      seedRule.run('OpenVAS Scanner Traffic',  '172.10.9.10',   null,                   0, 15, 'Authorized OpenVAS vulnerability scanner — all traffic from this IP is expected');
+      seedRule.run('Nessus Scanner Traffic',   '10.0.0.50',     null,                   0, 15, 'Authorized Nessus vulnerability scanner — all traffic from this IP is expected');
+      seedRule.run('Nmap Internal Scan',       null,            'nmap',                 0, 8,  'Internal nmap scans by sysadmin are authorized and scheduled');
+      seedRule.run('Test/Smoke Alerts',        null,            'test|smoke|pentest',   0, 9,  'Automated test and pentest alerts from CI/CD or QA bench');
+      seedRule.run('Logrotate/Cron Activity',  null,            'logrotate|cron',       0, 6,  'Scheduled log rotation and cron activity is expected system maintenance');
+    }
   }
 
   // Seed integration rows if not already present (INSERT OR IGNORE preserves user config)
@@ -706,6 +866,17 @@ try {
     JSON.stringify({ url: process.env.GLPI_URL || '', app_token: process.env.GLPI_APP_TOKEN || '', user_token: process.env.GLPI_USER_TOKEN || '' }), 'CRITICAL');
   seedIntegration.run('telegram', 0,
     JSON.stringify({ bot_token: process.env.TELEGRAM_BOT_TOKEN || '', chat_id: process.env.TELEGRAM_CHAT_ID || '' }), 'HIGH');
+
+  // Wazuh ingest filter config — INSERT OR IGNORE preserves user changes across restarts
+  seedIntegration.run('wazuh', 1,
+    JSON.stringify({
+      min_severity:         '7',
+      dedup_window_minutes: '5',
+      max_alerts_per_min:   '60',
+      time_window_start:    '',
+      time_window_end:      '',
+      auto_orchestrate:     'true',
+    }), 'NEVER');
 
   // Seed local LLM defaults
   const seedLocalCfg = db.prepare('INSERT OR IGNORE INTO local_llm_config (key, value) VALUES (?, ?)');
@@ -1132,39 +1303,146 @@ async function startServer() {
   });
 
   // ── Ingest ────────────────────────────────────────────────────────────────
-  app.post('/api/ingest', (req, res) => {
-    const alert = req.body;
-    const id    = alert.id || Math.random().toString(36).substr(2, 9);
-    const ruleId   = alert.rule?.id   || 'unknown';
-    const sourceIp = alert.data?.srcip || null;
+
+  // Helper: fire-and-forget orchestration on a freshly-ingested alert
+  async function triggerOrchestration(alertId: string) {
     try {
-      // Deduplication: same rule_id + source_ip within last 5 minutes
-      const dup = db.prepare(
-        `SELECT id FROM alerts WHERE rule_id = ? AND source_ip = ? AND timestamp >= datetime('now', '-5 minutes') LIMIT 1`
-      ).get(ruleId, sourceIp);
-      if (dup) {
-        return res.json({ status: 'deduplicated', original_id: (dup as any).id });
+      const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId);
+      if (!alert) return;
+      const recentAlerts = db.prepare(
+        `SELECT * FROM alerts WHERE id != ? AND timestamp >= datetime('now', '-3 days') ORDER BY timestamp DESC LIMIT 50`
+      ).all(alertId);
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
+      const update = await runOrchestration(alert, recentAlerts, { modelAssignments: getAgentModelAssignments() });
+      db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=? WHERE id=?`)
+        .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+      db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
+        .run(alertId, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.status);
+      try {
+        const parsed = JSON.parse(update.ai_analysis || '{}');
+        const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
+        if (ticket) await dispatchActions({ alertId, ticket, db, io });
+      } catch {}
+      io.emit('alert_updated', { id: alertId, ...update });
+    } catch (err: any) {
+      console.error('[Auto-Orchestrate]', err?.message);
+      db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alertId);
+      io.emit('alert_updated', { id: alertId, status: 'NEW' });
+    }
+  }
+
+  app.post('/api/ingest', (req, res) => {
+    try {
+      // Load Wazuh filter config (independent of auth)
+      const wRow = db.prepare("SELECT config FROM integrations WHERE name='wazuh'").get() as any;
+      const wcfg = JSON.parse(wRow?.config || '{}');
+
+      // API key auth — check X-Api-Key or Authorization: Bearer header against api_keys table
+      const authHeader  = (req.headers['authorization'] as string) || '';
+      const apiKeyHeader = (req.headers['x-api-key'] as string) || '';
+      const provided     = apiKeyHeader || (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '');
+
+      if (!provided) {
+        return res.status(401).json({ error: 'API key required. Set X-Api-Key or Authorization: Bearer header.' });
       }
+      const keyHash = crypto.createHash('sha256').update(provided).digest('hex');
+      const keyRow  = db.prepare("SELECT id, name FROM api_keys WHERE key_hash=? AND revoked=0 LIMIT 1").get(keyHash) as any;
+      if (!keyRow) {
+        return res.status(401).json({ error: 'Invalid or revoked API key.' });
+      }
+      db.prepare("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?").run(keyRow.id);
+
+      // Support Wazuh 4.x native format (_source wrapper) and flat integration format
+      const raw   = req.body;
+      const alert = (raw._source && typeof raw._source === 'object') ? raw._source : raw;
+
+      const id       = alert.id || crypto.randomBytes(6).toString('hex');
+      const ruleId   = alert.rule?.id   || 'unknown';
+      const sourceIp = alert.data?.srcip || alert.data?.src_ip || null;
+      const severity = Number(alert.rule?.level ?? 0);
+
+      // Min severity filter
+      const minSev = Number(wcfg.min_severity ?? 0);
+      if (severity < minSev) {
+        return res.json({ status: 'filtered', reason: `severity ${severity} below min ${minSev}` });
+      }
+
+      // Time window filter (HH:MM 24h)
+      if (wcfg.time_window_start && wcfg.time_window_end) {
+        const now  = new Date();
+        const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        if (hhmm < wcfg.time_window_start || hhmm > wcfg.time_window_end) {
+          return res.json({ status: 'filtered', reason: 'outside configured time window' });
+        }
+      }
+
+      // Rate limit
+      const maxPerMin = Number(wcfg.max_alerts_per_min ?? 0);
+      if (!checkIngestRateLimit(maxPerMin)) {
+        return res.status(429).json({ status: 'rate_limited', error: `Exceeded ${maxPerMin} alerts/min` });
+      }
+
+      // Configurable dedup window
+      const dedupMin = Number(wcfg.dedup_window_minutes ?? 5);
+      const dup = db.prepare(
+        `SELECT id FROM alerts WHERE rule_id = ? AND source_ip = ? AND timestamp >= datetime('now', '-${dedupMin} minutes') LIMIT 1`
+      ).get(ruleId, sourceIp);
+      if (dup) return res.json({ status: 'deduplicated', original_id: (dup as any).id });
 
       db.prepare(`INSERT INTO alerts (id, rule_id, description, severity, source_ip, dest_ip, user, hostname, agent_name, full_log) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           id,
           ruleId,
           alert.rule?.description || 'No description',
-          alert.rule?.level       || 0,
+          severity,
           sourceIp,
-          alert.data?.dstip       || null,
-          alert.data?.dstuser     || null,
-          alert.agent?.name       || 'unknown',
-          alert.agent?.name       || 'unknown',
+          alert.data?.dstip  || alert.data?.dst_ip  || null,
+          alert.data?.dstuser || (alert.data?.win?.system?.subjectUserName) || null,
+          alert.agent?.name  || 'unknown',
+          alert.agent?.name  || 'unknown',
           JSON.stringify(alert),
         );
+
       io.emit('new_alert', { id });
+
+      // Auto-orchestrate (fire-and-forget)
+      if (wcfg.auto_orchestrate !== 'false') {
+        setImmediate(() => triggerOrchestration(id));
+      }
+
       res.json({ status: 'ok', id });
     } catch (err) {
       console.error('Ingestion error:', err);
       res.status(500).json({ error: 'Failed to ingest alert' });
     }
+  });
+
+  // ── API Key management ───────────────────────────────────────────────────
+  app.get('/api/api-keys', authenticate, requireAdmin, (_req, res) => {
+    const rows = db.prepare(
+      'SELECT id, name, key_prefix, created_at, last_used_at, revoked FROM api_keys ORDER BY created_at DESC'
+    ).all();
+    res.json(rows);
+  });
+
+  app.post('/api/api-keys', authenticate, requireAdmin, (req: any, res) => {
+    const { name } = req.body || {};
+    if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+    const raw     = 'sk_aisoc_' + crypto.randomBytes(24).toString('hex');
+    const keyHash = crypto.createHash('sha256').update(raw).digest('hex');
+    const prefix  = raw.slice(0, 17) + '…';
+    db.prepare('INSERT INTO api_keys (name, key_hash, key_prefix, created_by) VALUES (?, ?, ?, ?)')
+      .run(name.trim(), keyHash, prefix, req.user.id);
+    writeAudit(req.user.id, 'API_KEY_CREATED', `API key "${name}" created`);
+    res.json({ ok: true, key: raw, prefix });
+  });
+
+  app.delete('/api/api-keys/:id', authenticate, requireAdmin, (req: any, res) => {
+    const { id } = req.params;
+    db.prepare('UPDATE api_keys SET revoked=1 WHERE id=?').run(id);
+    writeAudit(req.user.id, 'API_KEY_REVOKED', `API key id=${id} revoked`);
+    res.json({ ok: true });
   });
 
   // ── AI model settings ─────────────────────────────────────────────────────

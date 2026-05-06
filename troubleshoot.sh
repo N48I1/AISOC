@@ -65,7 +65,7 @@ fi
 # ── 3. HTTPS reachability ────────────────────────────────────────────────────────
 sep
 echo "3. HTTPS ENDPOINT"
-HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" "https://localhost:$PORT/" 2>/dev/null || echo "000")
+HTTP_CODE=$(curl -sk --max-time 5 --connect-timeout 3 -o /dev/null -w "%{http_code}" "https://localhost:$PORT/" 2>/dev/null || true)
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
   ok "https://localhost:$PORT/ → HTTP $HTTP_CODE"
 elif [ "$HTTP_CODE" = "000" ]; then
@@ -77,9 +77,10 @@ fi
 # ── 4. Login API ────────────────────────────────────────────────────────────────
 sep
 echo "4. LOGIN API"
-LOGIN_RESP=$(curl -sk -X POST "https://localhost:$PORT/api/auth/login" \
+LOGIN_RESP=$(curl -sk --max-time 5 --connect-timeout 3 -X POST "https://localhost:$PORT/api/auth/login" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin123"}' 2>/dev/null || echo '{"error":"curl failed"}')
+  -d '{"username":"admin","password":"admin123"}' 2>/dev/null || true)
+[ -z "$LOGIN_RESP" ] && LOGIN_RESP='{"error":"curl failed"}'
 if echo "$LOGIN_RESP" | grep -q '"token"'; then
   ok "Login OK (admin/admin123 works)"
 elif echo "$LOGIN_RESP" | grep -q "Invalid credentials"; then
@@ -139,7 +140,7 @@ sep
 echo "7. ENVIRONMENT"
 if [ -f "$APP_DIR/.env" ]; then
   ok ".env found"
-  HAS_KEY=$(grep -c "OPENROUTER_API_KEY=sk-" "$APP_DIR/.env" 2>/dev/null || true)
+  HAS_KEY=$(grep -cE 'OPENROUTER_API_KEY="?sk-' "$APP_DIR/.env" 2>/dev/null || true)
   if [ "${HAS_KEY:-0}" -gt 0 ] 2>/dev/null; then
     ok "OpenRouter API key present"
   else
@@ -199,15 +200,17 @@ fi
 # --fix (restart server)
 if $FIX; then
   info "Killing any existing server processes..."
-  kill -9 "$(pgrep -f "tsx.*server" 2>/dev/null)" 2>/dev/null || true
+  pkill -9 -f "tsx.*server" 2>/dev/null || true
   sleep 1
   info "Starting server..."
   npm run dev > "$LOG" 2>&1 &
-  sleep 7
+  sleep 12
   SERVER_PID=$(pgrep -f "tsx.*server" 2>/dev/null || true)
   if [ -n "$SERVER_PID" ]; then
     ok "Server started (PID $SERVER_PID)"
     tail -8 "$LOG"
+    # Re-check HTTPS after restart so summary reflects new state
+    HTTP_CODE=$(curl -sk --max-time 5 --connect-timeout 3 -o /dev/null -w "%{http_code}" "https://localhost:$PORT/" 2>/dev/null || true)
   else
     err "Server failed to start — check log:"
     tail -20 "$LOG"
@@ -223,7 +226,7 @@ fi
 # ── Summary ─────────────────────────────────────────────────────────────────────
 sep
 echo "SUMMARY"
-if $SERVER_UP && [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ] 2>/dev/null; then
+if $SERVER_UP && { [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; }; then
   ok "App is reachable at https://soar.bbs.lan:$PORT"
   info "If browser shows a stale page: Ctrl+Shift+R (hard refresh)"
 else

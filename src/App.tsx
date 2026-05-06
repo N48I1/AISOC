@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database } from 'lucide-react';
+import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 import PageHeader from './components/ui/PageHeader';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from './features/alerts/alertUtils';
@@ -146,12 +146,13 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   }, [expanded]);
 
   const menuItems = [
-    { id: 'dashboard',      icon: BarChart3,     label: 'Dashboard' },
-    { id: 'noise-filter',   icon: Filter,        label: 'Noise Filter' },
-    { id: 'fp-archive',     icon: XCircle,       label: 'FP Archive' },
-    { id: 'investigation',  icon: AlertTriangle, label: 'Investigation' },
-    { id: 'integrations',   icon: Send,          label: 'Integrations' },
-    { id: 'settings',       icon: Settings,      label: 'Settings' },
+    { id: 'dashboard',        icon: BarChart3,     label: 'Dashboard' },
+    { id: 'noise-filter',     icon: Filter,        label: 'Noise Filter' },
+    { id: 'fp-archive',       icon: XCircle,       label: 'FP Archive' },
+    { id: 'response-actions', icon: Zap,           label: 'Response Actions' },
+    { id: 'investigation',    icon: AlertTriangle, label: 'Investigation' },
+    { id: 'integrations',     icon: Send,          label: 'Integrations' },
+    { id: 'settings',         icon: Settings,      label: 'Settings' },
   ];
 
   return (
@@ -273,6 +274,12 @@ const StatCard = ({ label, value, icon: Icon, trend, color }: any) => (
 const MANDATORY_PHASES    = ['analysis'];
 const INVESTIGATOR_PHASES = ['intel', 'knowledge', 'correlation', 'recall', 'ioc_check'];
 const COMPOSER_PHASES     = ['ticketing', 'response', 'validation'];
+
+const severityChipColor = (sv: string) =>
+  sv === 'CRITICAL' ? 'bg-red-100 text-red-700 border border-red-200 hover:bg-red-200' :
+  sv === 'HIGH'     ? 'bg-orange-100 text-orange-700 border border-orange-200 hover:bg-orange-200' :
+  sv === 'MEDIUM'   ? 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200' :
+                      'bg-[var(--s1)] text-[var(--t5)] border border-[var(--b2)] hover:bg-[var(--s2)]';
 
 const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () => void, isSelected?: boolean, key?: any }) => {
   let aiData: any = null;
@@ -1282,7 +1289,15 @@ const IocTable = ({ iocs }: { iocs: any }) => {
   );
 };
 
-const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData: any, mitreTags: string[] }) => {
+const InvestigationGrid = ({
+  alert, aiData, mitreTags,
+  allAlerts = [],
+  onAlertSelect,
+}: {
+  alert: Alert; aiData: any; mitreTags: string[];
+  allAlerts?: Alert[];
+  onAlertSelect?: (a: Alert) => void;
+}) => {
   const pd = aiData?.phaseData || {};
   const misp = pd.intel?.misp;
   const actions = pd.response?.actions || aiData?.response?.actions || [];
@@ -1291,6 +1306,27 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
   const correlation = aiData?.correlation;
   const correlationObj = pd.correlation;
   const validation = aiData?.validation;
+
+  const sameActionMap = React.useMemo(() => {
+    const map: Record<string, Array<{ id: string; sv: string; alertObj: Alert }>> = {};
+    for (const a of allAlerts) {
+      if (a.id === alert.id) continue;
+      if (['FALSE_POSITIVE','FP_CONFIRMED'].includes(a.status)) continue;
+      let ai2: any = null;
+      try { ai2 = a.ai_analysis ? JSON.parse(a.ai_analysis) : null; } catch {}
+      const pd2 = ai2?.phaseData || {};
+      const acts = pd2.response?.actions || ai2?.response?.actions || [];
+      const sv: string = pd2.analysis?.severity_validation ?? ai2?.analysis?.severity_validation ?? 'MEDIUM';
+      for (const ac of acts) {
+        if (!ac.type) continue;
+        if (!map[ac.type]) map[ac.type] = [];
+        if (!map[ac.type].some(x => x.id === a.id)) {
+          map[ac.type].push({ id: a.id, sv, alertObj: a });
+        }
+      }
+    }
+    return map;
+  }, [allAlerts, alert.id]);
 
   const lvlColor: Record<string, string> = {
     High: 'bg-red-100 text-red-800 border-red-200',
@@ -1469,9 +1505,29 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
           {actions.length > 0 ? (
             <div className="space-y-1">
               {actions.map((a: any, i: number) => (
-                <div key={i} className="flex items-center gap-2 bg-[var(--s1)] rounded px-2 py-1.5 border border-[var(--b3)]">
-                  <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wider ${actionTone[a.type] || 'bg-blue-100 text-blue-700'}`}>{(a.type || '').replace(/_/g,' ')}</span>
-                  <span className="flex-1 text-[0.7rem] font-mono font-bold text-[var(--t6)] truncate">{a.target || '—'}</span>
+                <div key={i} className="bg-[var(--s1)] rounded border border-[var(--b3)] px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-wider ${actionTone[a.type] || 'bg-blue-100 text-blue-700'}`}>{(a.type || '').replace(/_/g,' ')}</span>
+                    <span className="flex-1 text-[0.7rem] font-mono font-bold text-[var(--t6)] truncate">{a.target || '—'}</span>
+                  </div>
+                  {(sameActionMap[a.type]?.length ?? 0) > 0 && onAlertSelect && (
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Also in:</span>
+                      {sameActionMap[a.type].slice(0, 8).map(x => (
+                        <button
+                          key={x.id}
+                          onClick={() => onAlertSelect(x.alertObj)}
+                          className={`font-mono text-[0.58rem] font-bold px-1.5 py-0.5 rounded transition-colors ${severityChipColor(x.sv)}`}
+                          title={x.alertObj.description}
+                        >
+                          #{x.id.substring(0, 8).toUpperCase()}
+                        </button>
+                      ))}
+                      {sameActionMap[a.type].length > 8 && (
+                        <span className="text-[0.55rem] text-[var(--t3)]">+{sameActionMap[a.type].length - 8} more</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
               {actions[0]?.reason && <p className="text-[0.65rem] text-[var(--t4)] italic leading-snug">{actions[0].reason}</p>}
@@ -1581,12 +1637,18 @@ const InvestigationGrid = ({ alert, aiData, mitreTags }: { alert: Alert, aiData:
   );
 };
 
-const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
+const AlertDetail = ({
+  alert, onClose, onAction, returnTab, setActiveTab,
+  allAlerts = [],
+  onAlertSelect,
+}: {
   alert: Alert;
   onClose: () => void;
   onAction: (id: string, update: any) => void;
   returnTab?: string;
   setActiveTab?: (t: string) => void;
+  allAlerts?: Alert[];
+  onAlertSelect?: (a: Alert) => void;
 }) => {
   const showToast = useToast();
   const [showReport, setShowReport] = useState(false);
@@ -2506,7 +2568,7 @@ const AlertDetail = ({ alert, onClose, onAction, returnTab, setActiveTab }: {
           })()}
         </div>
 
-        <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} />
+        <InvestigationGrid alert={alert} aiData={aiData} mitreTags={mitreTags} allAlerts={allAlerts} onAlertSelect={onAlertSelect} />
 
         <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-lg">
           <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/50">
@@ -3561,6 +3623,8 @@ const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, set
               onAction={onAlertAction}
               returnTab="alerts"
               setActiveTab={setActiveTab}
+              allAlerts={alerts}
+              onAlertSelect={setSelectedAlert}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-[var(--t3)] flex-col gap-4">
@@ -3812,7 +3876,21 @@ const ActionsTab = () => {
     }
   };
 
-  const INTG_META: Record<string, { icon: React.ReactNode; label: string; color: string; fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean }> }> = {
+  const INTG_META: Record<string, { icon: React.ReactNode; label: string; color: string; type?: string; fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean }> }> = {
+    wazuh: {
+      icon:  <Shield size={20} />,
+      label: 'Wazuh (Real-Time Ingest)',
+      color: 'text-orange-700 bg-orange-50 border-orange-200',
+      type:  'ingest',
+      fields: [
+        { key: 'min_severity',         label: 'Min Severity Level (0–15)',                  placeholder: '7' },
+        { key: 'dedup_window_minutes', label: 'Dedup Window (minutes)',                      placeholder: '5' },
+        { key: 'max_alerts_per_min',   label: 'Rate Limit (alerts/min; 0 = unlimited)',      placeholder: '60' },
+        { key: 'time_window_start',    label: 'Accept From (HH:MM — leave blank for 24 h)', placeholder: '08:00' },
+        { key: 'time_window_end',      label: 'Accept Until (HH:MM)',                        placeholder: '20:00' },
+        { key: 'auto_orchestrate',     label: 'Auto-run AI pipeline (true/false)',            placeholder: 'true' },
+      ],
+    },
     email: {
       icon:  <Mail size={20} />,
       label: 'Email (SMTP)',
@@ -3937,18 +4015,20 @@ const ActionsTab = () => {
                 ))}
               </div>
 
-              {/* Auto-fire setting */}
-              <div className="px-4 py-3 flex items-center justify-between border-b border-[var(--b3)]">
-                <p className="text-[0.7rem] font-bold text-[var(--t4)] uppercase tracking-wider">Auto-fire on</p>
-                <select
-                  value={intg.auto_send_threshold}
-                  disabled={!isAdmin}
-                  onChange={e => handleThresholdChange(intg.name, e.target.value)}
-                  className={`text-[0.7rem] font-bold border rounded px-2 py-1 outline-none ${priColor[intg.auto_send_threshold] || priColor.NEVER} disabled:opacity-60`}
-                >
-                  {['CRITICAL','HIGH','NEVER'].map(v => <option key={v} value={v}>{v}</option>)}
-                </select>
-              </div>
+              {/* Auto-fire setting — hidden for ingest-type integrations */}
+              {meta.type !== 'ingest' && (
+                <div className="px-4 py-3 flex items-center justify-between border-b border-[var(--b3)]">
+                  <p className="text-[0.7rem] font-bold text-[var(--t4)] uppercase tracking-wider">Auto-fire on</p>
+                  <select
+                    value={intg.auto_send_threshold}
+                    disabled={!isAdmin}
+                    onChange={e => handleThresholdChange(intg.name, e.target.value)}
+                    className={`text-[0.7rem] font-bold border rounded px-2 py-1 outline-none ${priColor[intg.auto_send_threshold] || priColor.NEVER} disabled:opacity-60`}
+                  >
+                    {['CRITICAL','HIGH','NEVER'].map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              )}
 
               {/* Config section */}
               {isAdmin && (
@@ -3961,7 +4041,7 @@ const ActionsTab = () => {
                     className="flex items-center gap-1 text-[0.7rem] font-bold text-[var(--p1)] hover:underline"
                   >
                     <ChevronDown size={12} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                    Configure
+                    {intg.name === 'wazuh' ? 'Filter Settings' : 'Configure'}
                   </button>
                   {isExpanded && (
                     <div className="mt-2 space-y-2">
@@ -3989,18 +4069,20 @@ const ActionsTab = () => {
                 </div>
               )}
 
-              {/* Test button */}
-              <div className="px-4 py-3">
-                <button
-                  onClick={() => handleTest(intg.name)}
-                  disabled={testing[intg.name] || !isAdmin}
-                  className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.72rem] font-bold hover:bg-[var(--sa)] transition-colors disabled:opacity-50"
-                >
-                  {testing[intg.name]
-                    ? <><div className="w-3 h-3 rounded-full border-2 border-[var(--p1)]/40 border-t-[#004a99] animate-spin" />Testing…</>
-                    : <><Send size={12} />Send Test</>}
-                </button>
-              </div>
+              {/* Test button — hidden for ingest-type integrations */}
+              {meta.type !== 'ingest' && (
+                <div className="px-4 py-3">
+                  <button
+                    onClick={() => handleTest(intg.name)}
+                    disabled={testing[intg.name] || !isAdmin}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.72rem] font-bold hover:bg-[var(--sa)] transition-colors disabled:opacity-50"
+                  >
+                    {testing[intg.name]
+                      ? <><div className="w-3 h-3 rounded-full border-2 border-[var(--p1)]/40 border-t-[#004a99] animate-spin" />Testing…</>
+                      : <><Send size={12} />Send Test</>}
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -4821,6 +4903,36 @@ const SettingsTab = () => {
     showToast('Playbook deleted', 'info');
   };
 
+  // API Keys
+  const [apiKeys,      setApiKeys]      = useState<any[]>([]);
+  const [newKeyName,   setNewKeyName]   = useState('');
+  const [createdKey,   setCreatedKey]   = useState<{ key: string; prefix: string } | null>(null);
+  const [keyCreating,  setKeyCreating]  = useState(false);
+  const [keyRevoke,    setKeyRevoke]    = useState<Record<number, boolean>>({});
+  const [showKeyValue, setShowKeyValue] = useState(false);
+
+  const fetchApiKeys = () => listApiKeys().then(setApiKeys).catch(() => {});
+  useEffect(() => { if (isAdmin) fetchApiKeys(); }, [isAdmin]);
+
+  const handleCreateKey = async () => {
+    if (!newKeyName.trim()) return;
+    setKeyCreating(true);
+    try {
+      const r = await createApiKey(newKeyName.trim());
+      if (r.ok) { setCreatedKey({ key: r.key, prefix: r.prefix }); setNewKeyName(''); fetchApiKeys(); }
+      else showToast(r.error || 'Failed to create key', 'error');
+    } catch { showToast('Failed to create key', 'error'); }
+    finally { setKeyCreating(false); }
+  };
+
+  const handleRevokeKey = async (id: number) => {
+    if (!confirm('Revoke this key? Any Wazuh scripts using it will stop working immediately.')) return;
+    setKeyRevoke(p => ({ ...p, [id]: true }));
+    await revokeApiKey(id);
+    fetchApiKeys();
+    setKeyRevoke(p => ({ ...p, [id]: false }));
+  };
+
   const [pwForm, setPwForm]   = useState({ current: '', next: '', confirm: '' });
   const [pwError, setPwError] = useState('');
   const [pwOk, setPwOk]       = useState('');
@@ -5087,6 +5199,161 @@ const SettingsTab = () => {
         </div>
       </div>
 
+      {/* ── API Keys ─────────────────────────────────────────────────────── */}
+      {isAdmin && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Key className="w-4 h-4 text-[var(--p1)]" />
+              <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">API Keys</h3>
+              <span className="text-[0.65rem] text-[var(--t3)]">Authenticate Wazuh and external forwarders to POST alerts to this platform.</span>
+            </div>
+          </div>
+          <div className="p-5 space-y-4">
+            {/* Ingest endpoint info */}
+            <div className="bg-[var(--s2)] border border-[var(--b2)] rounded-lg px-4 py-3 flex items-start gap-3">
+              <Webhook className="w-4 h-4 text-[var(--p1)] mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-[0.72rem] font-bold text-[var(--t6)] mb-1">Ingest endpoint</p>
+                <div className="flex gap-2 items-center">
+                  <code className="flex-1 text-[0.72rem] font-mono text-[var(--t5)] bg-[var(--s0)] border border-[var(--b2)] rounded px-2 py-1 truncate">
+                    POST {window.location.protocol}//{window.location.host}/api/ingest
+                  </code>
+                  <button onClick={() => { navigator.clipboard.writeText(`${window.location.protocol}//${window.location.host}/api/ingest`); showToast('URL copied'); }} className="shrink-0 px-2 py-1 rounded border border-[var(--b2)] hover:bg-[var(--s1)] transition-colors" title="Copy">
+                    <Copy size={12} className="text-[var(--t4)]" />
+                  </button>
+                </div>
+                <p className="text-[0.65rem] text-[var(--t3)] mt-1.5">
+                  Send alerts with header: <code className="font-mono bg-[var(--s1)] px-1 rounded">X-Api-Key: sk_aisoc_…</code>
+                </p>
+                <details className="mt-2 group">
+                  <summary className="cursor-pointer text-[0.65rem] font-bold text-[var(--p1)] hover:underline list-none flex items-center gap-1">
+                    <ChevronDown size={10} className="group-open:rotate-180 transition-transform" />Test curl command
+                  </summary>
+                  <div className="mt-2">
+                    {(() => {
+                      const cmd = `curl -sk -X POST ${window.location.protocol}//${window.location.host}/api/ingest \\\n  -H "Content-Type: application/json" \\\n  -H "X-Api-Key: YOUR_KEY_HERE" \\\n  -d '{"rule":{"id":"test-001","description":"API key connectivity test","level":3},"agent":{"name":"test-host"},"data":{"srcip":"192.168.1.100"}}'`;
+                      return (
+                        <>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-[0.6rem] text-[var(--t3)]">Replace <code className="font-mono bg-[var(--s1)] px-0.5">YOUR_KEY_HERE</code> with your key</p>
+                            <button onClick={() => { navigator.clipboard.writeText(cmd.replace(/\\\n  /g, ' \\\n  ')); showToast('Copied'); }} className="flex items-center gap-1 text-[0.6rem] text-[var(--p1)] hover:underline"><Copy size={8}/>Copy</button>
+                          </div>
+                          <pre className="bg-slate-900 text-slate-200 rounded p-2.5 text-[0.65rem] font-mono overflow-x-auto whitespace-pre leading-relaxed">{cmd}</pre>
+                          <p className="text-[0.6rem] text-[var(--t3)] mt-1">
+                            ✓ <code className="font-mono">{`{"status":"filtered",...}`}</code> = key valid, alert below min severity<br/>
+                            ✗ <code className="font-mono">{`{"error":"Invalid or revoked API key."}`}</code> = key rejected
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            {/* Key creation row */}
+            <div className="flex gap-2">
+              <input
+                value={newKeyName}
+                onChange={e => setNewKeyName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCreateKey()}
+                placeholder="Key name (e.g. wazuh-manager-prod)"
+                className="flex-1 border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono"
+              />
+              <button
+                onClick={handleCreateKey}
+                disabled={keyCreating || !newKeyName.trim()}
+                className="px-4 py-2 rounded bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Plus size={13} />{keyCreating ? 'Creating…' : 'Create Key'}
+              </button>
+            </div>
+
+            {/* Created key reveal — shown once */}
+            {createdKey && (() => {
+              const curlCmd = `curl -sk -X POST ${window.location.protocol}//${window.location.host}/api/ingest \\\n  -H "Content-Type: application/json" \\\n  -H "X-Api-Key: ${createdKey.key}" \\\n  -d '{"rule":{"id":"test-001","description":"API key connectivity test","level":3},"agent":{"name":"test-host"},"data":{"srcip":"192.168.1.100"}}'`;
+              return (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
+                  <p className="text-[0.72rem] font-black text-green-800 flex items-center gap-1.5">
+                    <CheckCircle size={13} /> API key created — copy it now, it won't be shown again
+                  </p>
+                  {/* Key value row */}
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      type={showKeyValue ? 'text' : 'password'}
+                      value={createdKey.key}
+                      className="flex-1 border border-green-300 rounded px-2 py-1.5 text-[0.75rem] font-mono bg-white text-green-900"
+                    />
+                    <button onClick={() => setShowKeyValue(v => !v)} className="px-2 py-1.5 rounded border border-green-300 text-green-700 text-[0.68rem] font-bold hover:bg-green-100 transition-colors">{showKeyValue ? 'Hide' : 'Show'}</button>
+                    <button onClick={() => { navigator.clipboard.writeText(createdKey.key); showToast('Key copied!', 'success'); }} className="px-2 py-1.5 rounded border border-green-300 hover:bg-green-100 transition-colors" title="Copy key"><Copy size={13} className="text-green-700" /></button>
+                    <button onClick={() => { setCreatedKey(null); setShowKeyValue(false); }} className="px-2 py-1.5 rounded border border-green-300 text-green-700 hover:bg-green-100 transition-colors"><X size={13} /></button>
+                  </div>
+                  {/* Test curl snippet */}
+                  <div className="border-t border-green-200 pt-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-wider">Test your key (run this in a terminal)</p>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(curlCmd.replace(/\\\n  /g, ' \\\n  ')); showToast('curl command copied!', 'success'); }}
+                        className="flex items-center gap-1 text-[0.62rem] text-green-700 hover:underline font-bold"
+                      ><Copy size={9} />Copy</button>
+                    </div>
+                    <pre className="bg-green-900 text-green-200 rounded p-3 text-[0.68rem] font-mono overflow-x-auto whitespace-pre leading-relaxed">{curlCmd}</pre>
+                    <p className="text-[0.62rem] text-green-700 mt-1.5">
+                      Expected response: <code className="font-mono bg-green-100 px-1 rounded">{`{"status":"filtered","reason":"severity 3 below min 7"}`}</code> — key works, alert filtered by severity setting.<br/>
+                      If you see <code className="font-mono bg-green-100 px-1 rounded">{`{"error":"Invalid or revoked API key."}`}</code> the key is wrong.
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Existing keys table */}
+            {apiKeys.length > 0 ? (
+              <table className="w-full text-left text-[0.78rem]">
+                <thead className="bg-[var(--s1)] border-y border-[var(--b3)] text-[0.62rem] text-[var(--t3)] font-black uppercase tracking-wider">
+                  <tr>
+                    <th className="px-3 py-2">Name</th>
+                    <th className="px-3 py-2">Key prefix</th>
+                    <th className="px-3 py-2">Created</th>
+                    <th className="px-3 py-2">Last used</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--b3)]">
+                  {apiKeys.map((k: any) => (
+                    <tr key={k.id} className={`hover:bg-[var(--s1)] transition-colors ${k.revoked ? 'opacity-50' : ''}`}>
+                      <td className="px-3 py-2 font-semibold text-[var(--t6)]">{k.name}</td>
+                      <td className="px-3 py-2 font-mono text-[var(--t4)] text-[0.72rem]">{k.key_prefix}</td>
+                      <td className="px-3 py-2 text-[var(--t4)] text-[0.72rem]">{new Date(k.created_at).toLocaleDateString()}</td>
+                      <td className="px-3 py-2 text-[var(--t4)] text-[0.72rem]">{k.last_used_at ? new Date(k.last_used_at).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : 'Never'}</td>
+                      <td className="px-3 py-2">
+                        <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide ${k.revoked ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'}`}>
+                          {k.revoked ? 'Revoked' : 'Active'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        {!k.revoked && (
+                          <button
+                            disabled={keyRevoke[k.id]}
+                            onClick={() => handleRevokeKey(k.id)}
+                            className="text-[0.68rem] text-red-600 hover:underline font-semibold disabled:opacity-50"
+                          >Revoke</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-[0.78rem] text-[var(--t3)] text-center py-4">No API keys yet. Create one above to connect Wazuh.</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── AI Model Configuration ────────────────────────────────────────── */}
       <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
         <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center gap-2">
@@ -5099,6 +5366,463 @@ const SettingsTab = () => {
         <div className="p-5">
           <AgentsTab />
         </div>
+      </div>
+    </div>
+  );
+};
+
+type ActionCategory = 'network' | 'endpoint' | 'identity' | 'monitor' | 'other';
+
+const ACTION_CATEGORIES: Record<ActionCategory, {
+  label: string; icon: any; tint: string; bg: string; ring: string; border: string; types: string[];
+}> = {
+  network:  { label: 'Network',    icon: Shield,   tint: 'text-blue-600',    bg: 'bg-blue-50',    ring: 'ring-blue-200',    border: 'border-l-blue-500',    types: ['BLOCK_IP', 'BLOCK_DOMAIN', 'BLOCK_URL', 'BLOCK_PORT'] },
+  endpoint: { label: 'Endpoint',   icon: Database, tint: 'text-purple-600',  bg: 'bg-purple-50',  ring: 'ring-purple-200',  border: 'border-l-purple-500',  types: ['ISOLATE_HOST', 'KILL_PROCESS', 'QUARANTINE_FILE', 'REMOVE_FILE'] },
+  identity: { label: 'Identity',   icon: User,     tint: 'text-indigo-600',  bg: 'bg-indigo-50',  ring: 'ring-indigo-200',  border: 'border-l-indigo-500',  types: ['DISABLE_USER', 'RESET_CREDENTIALS', 'REVOKE_TOKENS', 'DISABLE_ACCOUNT', 'FORCE_LOGOUT'] },
+  monitor:  { label: 'Monitoring', icon: Eye,      tint: 'text-emerald-600', bg: 'bg-emerald-50', ring: 'ring-emerald-200', border: 'border-l-emerald-500', types: ['MONITOR', 'INVESTIGATE', 'ALERT', 'OBSERVE', 'ESCALATE'] },
+  other:    { label: 'Other',      icon: Zap,      tint: 'text-amber-600',   bg: 'bg-amber-50',   ring: 'ring-amber-200',   border: 'border-l-amber-500',   types: [] },
+};
+
+const categorize = (type: string): ActionCategory => {
+  for (const k of Object.keys(ACTION_CATEGORIES) as ActionCategory[]) {
+    if (ACTION_CATEGORIES[k].types.includes(type)) return k;
+  }
+  return 'other';
+};
+
+const timeAgo = (ts: number) => {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return 'just now';
+  const m = Math.floor(diff / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+};
+
+// ── Priority scoring ────────────────────────────────────────────────────────
+// Each action item is keyed by (type, target). Score is an absolute 0–100
+// with a transparent breakdown: Threat (worst risk among related alerts),
+// Reach (how many alerts reference this target), and Urgency (recency +
+// approval pressure). The final score weights them 60 / 25 / 15.
+type PriorityBreakdown = { score: number; threat: number; reach: number; urgency: number };
+
+const computePriority = (entries: { riskScore: number; timestamp: number; approvalRequired: boolean }[]): PriorityBreakdown => {
+  const threat = Math.min(100, Math.max(...entries.map(e => e.riskScore)));
+  const reach  = Math.min(100, entries.length * 20);
+  const newest = Math.max(...entries.map(e => e.timestamp));
+  const ageH   = (Date.now() - newest) / 3_600_000;
+  let urgency  = ageH < 1 ? 100 : ageH < 6 ? 70 : ageH < 24 ? 50 : ageH < 168 ? 30 : 10;
+  if (entries.some(e => e.approvalRequired)) urgency = Math.min(100, urgency + 20);
+  const score = Math.round(threat * 0.6 + reach * 0.25 + urgency * 0.15);
+  return { score, threat, reach, urgency };
+};
+
+const tierFor = (score: number) =>
+  score >= 80 ? { label: 'CRITICAL', text: 'text-red-700',     bg: 'bg-red-50',     border: 'border-red-300',     stroke: '#dc2626' } :
+  score >= 60 ? { label: 'HIGH',     text: 'text-orange-700',  bg: 'bg-orange-50',  border: 'border-orange-300',  stroke: '#ea580c' } :
+  score >= 40 ? { label: 'MEDIUM',   text: 'text-amber-700',   bg: 'bg-amber-50',   border: 'border-amber-300',   stroke: '#d97706' } :
+                { label: 'LOW',      text: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-300', stroke: '#10b981' };
+
+const PriorityDonut = ({ value, size = 40 }: { value: number; size?: number }) => {
+  const stroke      = 4;
+  const radius      = (size - stroke) / 2;
+  const circ        = 2 * Math.PI * radius;
+  const pct         = Math.max(0, Math.min(100, value));
+  const dashOffset  = circ - (pct / 100) * circ;
+  const color       = tierFor(pct).stroke;
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#e2e8f0" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2} cy={size / 2} r={radius}
+          stroke={color} strokeWidth={stroke} fill="none"
+          strokeLinecap="round"
+          strokeDasharray={circ}
+          strokeDashoffset={dashOffset}
+          className="transition-[stroke-dashoffset,stroke] duration-500"
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center text-[0.62rem] font-black tabular-nums" style={{ color }}>
+        {pct}
+      </div>
+    </div>
+  );
+};
+
+const ResponseActionsTab = ({
+  alerts,
+  setActiveTab,
+  setSelectedAlert,
+}: {
+  alerts: Alert[];
+  setActiveTab: (t: string) => void;
+  setSelectedAlert: (a: Alert | null) => void;
+}) => {
+  const [search, setSearch]             = useState('');
+  const [activeCats, setActiveCats]     = useState<Set<ActionCategory>>(new Set());
+  const [activeTypes, setActiveTypes]   = useState<Set<string>>(new Set());
+  const [activeSevs, setActiveSevs]     = useState<Set<string>>(new Set());
+  const [sortBy, setSortBy]             = useState<'priority' | 'count' | 'latest' | 'threat'>('priority');
+  const [onlyApproval, setOnlyApproval] = useState(false);
+
+  // Each action card represents ONE (type, target) pair, not a type group.
+  const actionData = React.useMemo(() => {
+    type Entry = {
+      alertId: string; sv: string; riskScore: number;
+      alertObj: Alert; timestamp: number;
+      approvalRequired: boolean;
+    };
+    type ActionItem = {
+      key: string; type: string; target: string; category: ActionCategory;
+      entries: Entry[]; count: number;
+      latestTimestamp: number;
+      approvalRequired: boolean;
+      sevCounts: Record<string, number>;
+      priority: PriorityBreakdown;
+    };
+
+    const map: Record<string, { type: string; target: string; entries: Entry[] }> = {};
+
+    for (const alert of alerts) {
+      if (['FALSE_POSITIVE','FP_CONFIRMED'].includes(alert.status)) continue;
+      let ai: any = null;
+      try { ai = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch {}
+      if (!ai) continue;
+      const pd = ai.phaseData || {};
+      const acts: any[] = pd.response?.actions || ai.response?.actions || [];
+      if (!acts.length) continue;
+      const riskScore: number = pd.analysis?.risk_score ?? ai.analysis?.risk_score ?? (alert.severity * 4);
+      const sv: string = pd.analysis?.severity_validation ?? ai.analysis?.severity_validation ?? 'MEDIUM';
+      const ts = new Date(alert.timestamp).getTime();
+      const approvalRequired = !!(pd.response?.approval_required ?? ai.response?.approval_required);
+
+      for (const ac of acts) {
+        if (!ac.type) continue;
+        const target = (ac.target || '').trim();
+        const key = `${ac.type}::${target || '__no_target__'}`;
+        if (!map[key]) map[key] = { type: ac.type, target, entries: [] };
+        map[key].entries.push({ alertId: alert.id, sv, riskScore, alertObj: alert, timestamp: ts, approvalRequired });
+      }
+    }
+
+    const items: ActionItem[] = Object.entries(map).map(([key, { type, target, entries }]) => {
+      const sevCounts = entries.reduce((acc, e) => { acc[e.sv] = (acc[e.sv] || 0) + 1; return acc; }, {} as Record<string, number>);
+      return {
+        key, type, target,
+        category: categorize(type),
+        entries,
+        count: entries.length,
+        latestTimestamp: Math.max(...entries.map(e => e.timestamp)),
+        approvalRequired: entries.some(e => e.approvalRequired),
+        sevCounts,
+        priority: computePriority(entries),
+      };
+    });
+
+    return items;
+  }, [alerts]);
+
+  const availableTypes = React.useMemo(
+    () => Array.from(new Set(actionData.map(a => a.type))).sort(),
+    [actionData],
+  );
+
+  const filtered = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return actionData
+      .filter(a => {
+        if (activeCats.size  > 0 && !activeCats.has(a.category)) return false;
+        if (activeTypes.size > 0 && !activeTypes.has(a.type))    return false;
+        if (activeSevs.size  > 0 && !a.entries.some(e => activeSevs.has(e.sv))) return false;
+        if (onlyApproval && !a.approvalRequired) return false;
+        if (q) {
+          const inType   = a.type.toLowerCase().includes(q);
+          const inTarget = a.target.toLowerCase().includes(q);
+          const inAlert  = a.entries.some(e => e.alertId.toLowerCase().includes(q));
+          if (!inType && !inTarget && !inAlert) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === 'count')  return b.count - a.count;
+        if (sortBy === 'latest') return b.latestTimestamp - a.latestTimestamp;
+        if (sortBy === 'threat') return b.priority.threat - a.priority.threat;
+        return b.priority.score - a.priority.score;
+      });
+  }, [actionData, activeCats, activeTypes, activeSevs, onlyApproval, search, sortBy]);
+
+  const stats = {
+    items:        actionData.length,
+    totalAlerts:  actionData.reduce((s, a) => s + a.count, 0),
+    critical:     actionData.filter(a => a.priority.score >= 80).length,
+    needApproval: actionData.filter(a => a.approvalRequired).length,
+  };
+
+  const toggleSet = <T extends string>(set: Set<T>, val: T): Set<T> => {
+    const next = new Set(set);
+    next.has(val) ? next.delete(val) : next.add(val);
+    return next;
+  };
+
+  const filtersActive = activeCats.size > 0 || activeTypes.size > 0 || activeSevs.size > 0 || !!search || onlyApproval;
+
+  if (actionData.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-16 text-center h-full">
+        <div>
+          <Shield size={40} className="mx-auto text-[var(--t3)] mb-4 opacity-30" />
+          <p className="text-[var(--t3)] text-sm font-semibold">No response actions yet</p>
+          <p className="text-[var(--t4)] text-xs mt-1">Run agents on alerts to generate response plans.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 max-w-5xl mx-auto space-y-4">
+        {/* Header */}
+        <div>
+          <h2 className="text-xl font-black text-[var(--t1)]">Response Actions</h2>
+          <p className="text-[0.75rem] text-[var(--t3)] mt-1">
+            One card per <span className="font-mono text-[var(--t5)]">action × target</span>. Priority is a 0–100 score derived from threat severity, reach, and urgency.
+          </p>
+        </div>
+
+        {/* Stat strip */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: 'Action Items',  value: stats.items,        icon: Zap,            tone: 'text-[var(--t1)]' },
+            { label: 'Total Alerts',  value: stats.totalAlerts,  icon: AlertTriangle,  tone: 'text-[var(--t1)]' },
+            { label: 'Critical',      value: stats.critical,     icon: Shield,         tone: 'text-red-600' },
+            { label: 'Need Approval', value: stats.needApproval, icon: Bell,           tone: 'text-amber-600' },
+          ].map(s => (
+            <div key={s.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 flex items-center gap-3">
+              <div className={`w-9 h-9 rounded-lg bg-[var(--s1)] flex items-center justify-center ${s.tone}`}>
+                <s.icon size={16} />
+              </div>
+              <div>
+                <div className="text-[1.4rem] font-black tracking-tight leading-none text-[var(--t1)]">{s.value}</div>
+                <div className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mt-0.5">{s.label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Filter bar */}
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2.5">
+          <div className="flex gap-2 items-center">
+            <div className="flex-1 relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search action type, target, or alert ID…"
+                className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as any)}
+              className="py-1.5 px-2 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.7rem] font-bold text-[var(--t1)] focus:outline-none focus:border-[var(--p1)]"
+            >
+              <option value="priority">Sort: Priority</option>
+              <option value="threat">Sort: Threat level</option>
+              <option value="count">Sort: Most alerts</option>
+              <option value="latest">Sort: Latest</option>
+            </select>
+          </div>
+
+          <div className="flex gap-2 items-center flex-wrap">
+            <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Category:</span>
+            {(Object.keys(ACTION_CATEGORIES) as ActionCategory[]).map(k => {
+              const c = ACTION_CATEGORIES[k];
+              const isActive = activeCats.has(k);
+              const Icon = c.icon;
+              return (
+                <button
+                  key={k}
+                  onClick={() => setActiveCats(toggleSet(activeCats, k))}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[0.65rem] font-bold transition-all ${isActive ? `${c.bg} ${c.tint} border-current ring-2 ring-offset-0 ${c.ring}` : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                >
+                  <Icon size={11} /> {c.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {availableTypes.length > 0 && (
+            <div className="flex gap-2 items-center flex-wrap">
+              <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Action:</span>
+              {availableTypes.map(t => {
+                const isActive = activeTypes.has(t);
+                const cat = ACTION_CATEGORIES[categorize(t)];
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setActiveTypes(toggleSet(activeTypes, t))}
+                    className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all font-mono ${isActive ? `${cat.bg} ${cat.tint} border-current ring-2 ring-offset-0 ${cat.ring}` : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                  >
+                    {t.replace(/_/g, ' ')}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex gap-2 items-center flex-wrap">
+            <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Severity:</span>
+            {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).map(sv => {
+              const isActive = activeSevs.has(sv);
+              return (
+                <button
+                  key={sv}
+                  onClick={() => setActiveSevs(toggleSet(activeSevs, sv))}
+                  className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? severityChipColor(sv) + ' ring-2 ring-offset-0 ring-current' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                >
+                  {sv}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setOnlyApproval(!onlyApproval)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[0.62rem] font-bold transition-all ${onlyApproval ? 'bg-amber-50 text-amber-700 border-amber-300 ring-2 ring-offset-0 ring-amber-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+            >
+              <Bell size={10} /> Approval only
+            </button>
+            {filtersActive && (
+              <button
+                onClick={() => { setActiveCats(new Set()); setActiveTypes(new Set()); setActiveSevs(new Set()); setSearch(''); setOnlyApproval(false); }}
+                className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Result count */}
+        <div className="text-[0.65rem] font-bold text-[var(--t3)]">
+          Showing <span className="text-[var(--t1)]">{filtered.length}</span> of <span className="text-[var(--t1)]">{actionData.length}</span> action item{actionData.length !== 1 ? 's' : ''}
+        </div>
+
+        {/* Action cards */}
+        {filtered.length === 0 ? (
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-10 text-center">
+            <Filter size={28} className="mx-auto text-[var(--t3)] mb-2 opacity-40" />
+            <p className="text-[0.78rem] font-semibold text-[var(--t3)]">No actions match your filters.</p>
+          </div>
+        ) : (
+          filtered.map((a, rank) => {
+            const cat   = ACTION_CATEGORIES[a.category];
+            const Icon  = cat.icon;
+            const tier  = tierFor(a.priority.score);
+
+            return (
+              <div key={a.key} className={`bg-[var(--s0)] border border-[var(--b1)] border-l-4 ${cat.border} rounded-xl shadow-sm overflow-hidden`}>
+                <div className="p-4 space-y-3">
+                  {/* Top row */}
+                  <div className="flex items-start gap-3">
+                    <span className="w-6 h-6 rounded-full bg-[var(--s1)] border border-[var(--b2)] text-[0.65rem] font-black text-[var(--t4)] flex items-center justify-center shrink-0 mt-0.5">
+                      {rank + 1}
+                    </span>
+                    <div className={`w-10 h-10 rounded-lg ${cat.bg} flex items-center justify-center shrink-0`}>
+                      <Icon size={18} className={cat.tint} />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <span className="text-[0.85rem] font-black text-[var(--t1)] tracking-tight uppercase">
+                          {a.type.replace(/_/g, ' ')}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-wider ${cat.bg} ${cat.tint}`}>
+                          {cat.label}
+                        </span>
+                        {a.approvalRequired && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[0.55rem] font-black uppercase tracking-wider">
+                            <Bell size={9} /> Approval
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-mono text-[0.85rem] font-bold text-[var(--t7)] truncate" title={a.target || 'no target specified'}>
+                        {a.target || <span className="italic text-[var(--t3)] font-sans font-normal text-[0.75rem]">no target specified</span>}
+                      </div>
+                      <div className="flex items-center gap-3 text-[0.62rem] text-[var(--t4)] font-medium mt-1">
+                        <span><span className="font-mono font-bold text-[var(--t6)]">{a.count}</span> alert{a.count !== 1 ? 's' : ''}</span>
+                        <span className="text-[var(--t3)]">·</span>
+                        <span className="flex items-center gap-1"><Clock size={9} /> Latest {timeAgo(a.latestTimestamp)}</span>
+                      </div>
+                    </div>
+
+                    {/* Priority — tier + donut */}
+                    <div className="text-right shrink-0 space-y-2">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className={`px-1.5 py-0.5 rounded border text-[0.55rem] font-black uppercase tracking-wider ${tier.bg} ${tier.text} ${tier.border}`}>
+                          {tier.label}
+                        </span>
+                        <PriorityDonut value={a.priority.score} size={40} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Severity distribution */}
+                  <div className="flex items-center gap-1.5 flex-wrap pl-[3.75rem]">
+                    {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).filter(sv => a.sevCounts[sv]).map(sv => (
+                      <span key={sv} className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-wider ${severityChipColor(sv)} pointer-events-none`}>
+                        {a.sevCounts[sv]} {sv}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Alert chips & Urgency bar */}
+                  <div className="flex items-end justify-between gap-6 pl-[3.75rem]">
+                    <div className="flex flex-wrap gap-1.5 items-center">
+                      <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Alerts:</span>
+                      {a.entries.slice(0, 16).map(e => (
+                        <button
+                          key={e.alertId}
+                          onClick={() => { setSelectedAlert(e.alertObj); setActiveTab('investigation'); }}
+                          className={`font-mono text-[0.6rem] font-bold px-1.5 py-0.5 rounded transition-colors ${severityChipColor(e.sv)}`}
+                          title={`${e.alertObj.description} — Risk ${e.riskScore} · ${timeAgo(e.timestamp)}`}
+                        >
+                          #{e.alertId.substring(0, 8).toUpperCase()}
+                        </button>
+                      ))}
+                      {a.entries.length > 16 && (
+                        <span className="text-[0.58rem] text-[var(--t3)]">+{a.entries.length - 16} more</span>
+                      )}
+                    </div>
+
+                    <div className="shrink-0 w-32 space-y-1 pb-0.5" title="Urgency = recency of latest alert + approval pressure">
+                      <div className="flex items-center justify-between text-[0.55rem]">
+                        <span className="font-black uppercase tracking-widest text-[var(--t3)]">Urgency</span>
+                        <span className="font-mono font-bold text-[var(--t6)] tabular-nums">{a.priority.urgency}%</span>
+                      </div>
+                      <div className="relative h-1 w-full rounded-full overflow-hidden bg-[var(--s1)]">
+                        <div
+                          className="absolute inset-0"
+                          style={{ background: 'linear-gradient(to right, #10b981, #84cc16, #facc15, #f97316, #ef4444)' }}
+                        />
+                        <div
+                          className="absolute inset-y-0 right-0 bg-[var(--s1)] transition-[width] duration-500"
+                          style={{ width: `${100 - a.priority.urgency}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
@@ -5992,6 +6716,8 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
             onAction={onAlertAction}
             returnTab="investigation"
             setActiveTab={setActiveTab}
+            allAlerts={investigationAlerts}
+            onAlertSelect={setSelectedAlert}
           />
           {/* Action bar */}
           <div className="sticky bottom-0 bg-[var(--s0)] border-t border-[var(--b1)] px-6 py-3 flex gap-3">
@@ -6189,7 +6915,7 @@ const IntegrationsTab = () => {
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('soc_active_tab');
-    const validTabs = ['dashboard', 'noise-filter', 'fp-archive', 'investigation', 'integrations', 'settings'];
+    const validTabs = ['dashboard', 'noise-filter', 'fp-archive', 'response-actions', 'investigation', 'integrations', 'settings'];
     return (saved && validTabs.includes(saved)) ? saved : 'dashboard';
   });
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -6583,9 +7309,10 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
         <main className="flex-1 overflow-hidden bg-[var(--s3)]">
           {activeTab === 'dashboard'      && <DashboardTab alerts={alerts} onAlertClick={(a) => { setSelectedAlert(a); setActiveTab('investigation'); }} setActiveTab={setActiveTab} />}
           {activeTab === 'noise-filter'   && <NoiseFilterTab alerts={alerts} setActiveTab={setActiveTab} autoFilter={autoFilter} setAutoFilter={setAutoFilter} />}
-          {activeTab === 'fp-archive'     && <FpArchiveTab />}
-          {activeTab === 'investigation'  && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
-          {activeTab === 'integrations'   && <IntegrationsTab />}
+          {activeTab === 'fp-archive'       && <FpArchiveTab />}
+          {activeTab === 'response-actions' && <ResponseActionsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
+          {activeTab === 'investigation'    && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
+          {activeTab === 'integrations'     && <IntegrationsTab />}
           {activeTab === 'settings'       && <SettingsTab />}
         </main>
       </div>

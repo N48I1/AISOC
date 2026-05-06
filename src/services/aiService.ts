@@ -321,6 +321,32 @@ export async function acceptFpSuggestion(value: string, type: string): Promise<{
   return res.json();
 }
 
+// ─── API Keys ────────────────────────────────────────────────────────────────
+export async function listApiKeys(): Promise<any[]> {
+  const res = await fetch('/api/api-keys', { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function createApiKey(name: string): Promise<{ ok: boolean; key: string; prefix: string; error?: string }> {
+  const res = await fetch('/api/api-keys', {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+export async function revokeApiKey(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/api-keys/${id}`, {
+    method: 'DELETE', headers: authHeaders(),
+  });
+  return res.json();
+}
+
+// kept for backward compat — no-op now
+export async function generateWazuhKey(): Promise<{ ok: boolean; webhook_secret: string }> {
+  return { ok: false, webhook_secret: '' };
+}
+
 // ─── Pipeline: FP Scan + Investigation ──────────────────────────────────────
 
 export async function fpScan(alertId: string): Promise<any> {

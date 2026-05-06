@@ -45,16 +45,20 @@ FALSE POSITIVE INDICATORS — set is_false_positive=true and populate false_posi
 - known maintenance patterns in data.program_name (cron, logrotate, backup scripts)
 
 MEMORY-DRIVEN FP RULES (THESE ARE AUTHORITATIVE — TREAT AS GROUND TRUTH):
-- If KNOWN ASSET CONTEXT lists any IOC in this alert with fp_default=true, AND the alert
-  does NOT show data exfiltration / lateral movement / credential access patterns,
-  set is_false_positive=true with false_positive_confidence >= 0.9.
-- If PRIOR FALSE-POSITIVE OUTCOMES contains a >85% similar past incident,
-  strongly bias toward false_positive=true (confidence >= 0.85) unless this alert
-  has new IOCs/severity not present in the past one.
-- If IOC HISTORY shows fp_ratio >= 0.85 with at least 5 prior observations,
-  strongly bias toward false_positive=true.
-- The "exfil/lateral/credential" exception above is non-negotiable — even known
-  scanner IPs can be hijacked, so never auto-FP an alert that shows those patterns.
+- If KNOWN ASSET CONTEXT lists any IOC with fp_default=true AND the alert does NOT
+  show exfiltration / lateral movement / credential access: set is_false_positive=true
+  with false_positive_confidence in [0.82, 0.90]. Do NOT exceed 0.90 — the asset
+  could be compromised even if it is a known scanner.
+- If PRIOR FALSE-POSITIVE OUTCOMES has a >85% similar past incident: bias toward
+  false_positive=true with confidence in [0.78, 0.86]. Lower end if this alert has
+  new severity, new IOCs, or new attack patterns not in the prior one.
+- If IOC HISTORY shows fp_ratio >= 0.85 with at least 5 prior observations: bias
+  toward false_positive=true with confidence in [0.76, 0.84].
+- When multiple memory signals agree (e.g. known asset + prior FP outcome), you may
+  combine them up to a maximum of 0.91.
+- The exfil/lateral/credential exception is non-negotiable — never auto-FP those patterns.
+- Calibrate honestly: 0.75 means "likely FP but worth a second look", 0.90 means
+  "very strong prior evidence, near-certain FP". Never assign > 0.92 from LLM alone.
 
 ATTACK CATEGORY: Choose the single MITRE ATT&CK tactic that best matches the alert intent.
 
@@ -62,12 +66,17 @@ KILL CHAIN STAGE: Map to the Lockheed Martin Kill Chain phase:
   RECONNAISSANCE | WEAPONIZATION | DELIVERY | EXPLOITATION | INSTALLATION | C2 | ACTIONS_ON_OBJECTIVES
 
 RISK SCORE (0-100):
-  Base = rule.level * 6 (max 78)
+  Base = rule.level * 6 (max 78 at level 13+)
   +10 if lateral movement signals present
   +10 if credential access category
   +5  if external IP (non-RFC1918) as src
-  -20 if is_false_positive=true
-  Clamp result to [0, 100]
+  -15% of base score if is_false_positive=true (proportional discount, not flat)
+
+  HARD FLOOR — risk_score MUST be at least max(5, rule.level * 2):
+    level  1 → min  5   level  5 → min 10
+    level 10 → min 20   level 15 → min 30
+  This floor applies even for confirmed false positives — the raw event still happened.
+  NEVER output 0 or any value below the floor. Clamp final result to [floor, 100].
 
 RECOMMENDED_ACTION rules:
   IGNORE      if false_positive_confidence > 0.85
@@ -94,7 +103,7 @@ Respond with this exact JSON structure:
   "iocs": { "ips": [], "users": [], "hosts": [], "hashes": [], "files": [], "ports": [], "domains": [], "processes": [], "urls": [] },
   "attack_category": "<MITRE tactic enum>",
   "kill_chain_stage": "<kill chain enum>",
-  "risk_score": 0,
+  "risk_score": 45,
   "severity_validation": "<CRITICAL|HIGH|MEDIUM|LOW>",
   "recommended_action": "<action enum>",
   "is_false_positive": false,
@@ -132,10 +141,12 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
     logs.push(`[Analysis] Correlating against ${related.length} historical alerts from same source/agent.`);
   }
 
-  // ── Memory context blocks (treated as authoritative by the system prompt) ──
+  // ── Intelligence context blocks ──────────────────────────────────────────
   const assetCtx: any[]  = Array.isArray(state.assetContext)    ? state.assetContext    : [];
   const priorFp: any[]   = Array.isArray(state.priorFpInsights) ? state.priorFpInsights : [];
   const iocHits: any[]   = Array.isArray(state.iocMemoryHits)   ? state.iocMemoryHits   : [];
+  const suppHit: any     = state.suppressionHit ?? null;
+  const corrResult: any  = state.correlationResult ?? null;
 
   const assetBlock = assetCtx.length ? assetCtx.map((a: any) =>
     `- ${a.value} (${a.type}) → ${a.role}${a.fp_default ? ' [fp_default=TRUE]' : ''}${a.description ? ` — ${a.description}` : ''}`
@@ -152,14 +163,33 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
     return `- ${h.value} (${h.type}): ${seenStr}${ratioStr}`;
   }).join('\n') : '';
 
+  // Suppression rule match — rule-based signal, treat as strong but not conclusive evidence
+  const suppressionBlock = suppHit
+    ? `SUPPRESSION RULE MATCH (deterministic rule-based signal):\n- Rule: "${suppHit.rule_name}" (confidence=${(suppHit.confidence * 100).toFixed(0)}%)\n- Reason: ${suppHit.reason}\n- Treat as strong FP evidence. Do NOT treat as conclusive — verify independently against the alert data.`
+    : '';
+
+  // Correlation — if campaign or escalation detected, it OVERRIDES other FP signals
+  const corrBlock = corrResult
+    ? `CORRELATION ANALYSIS:\n- campaign_detected: ${corrResult.campaign_detected}\n- escalation_needed: ${corrResult.escalation_needed}\n- campaign_name: ${corrResult.campaign_name || 'N/A'}\n- related_alerts: ${corrResult.related_alert_count ?? 0}\n${corrResult.campaign_detected || corrResult.escalation_needed ? '⚠ CORRELATION OVERRIDE: campaign or escalation detected — do NOT classify as false positive regardless of other signals.' : '- No campaign pattern detected.'}`
+    : '';
+
   const memoryBlock = [
-    assetBlock   ? `KNOWN ASSET CONTEXT (analyst-curated, treat as ground truth):\n${assetBlock}`            : '',
+    suppressionBlock,
+    corrBlock,
+    assetBlock   ? `KNOWN ASSET CONTEXT (analyst-curated):\n${assetBlock}`                                    : '',
     priorFpBlock ? `PRIOR FALSE-POSITIVE OUTCOMES FOR SIMILAR INCIDENTS (semantic recall):\n${priorFpBlock}` : '',
     iocHistBlock ? `IOC HISTORY (this alert's IOCs in past memory):\n${iocHistBlock}`                       : '',
   ].filter(Boolean).join('\n\n');
 
   if (memoryBlock) {
-    logs.push(`[Analysis] Memory context applied (${assetCtx.length} asset, ${priorFp.length} prior FP, ${iocHits.length} IOC hits).`);
+    const parts = [
+      suppHit    ? 'suppression rule'     : '',
+      corrResult ? 'correlation'          : '',
+      assetCtx.length  ? `${assetCtx.length} asset`   : '',
+      priorFp.length   ? `${priorFp.length} prior FP` : '',
+      iocHits.length   ? `${iocHits.length} IOC`      : '',
+    ].filter(Boolean);
+    logs.push(`[Analysis] Intelligence context applied: ${parts.join(', ')}`);
   }
 
   const userPrompt = `${memoryBlock ? memoryBlock + '\n\n' : ''}ALERT TO TRIAGE:
@@ -175,6 +205,9 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
 RECENT RELATED ALERTS (same agent or source IP — last 72 hours):
 ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
 
+  const severity = a.severity ?? 0;
+  const riskFloor = Math.max(5, severity * 2);   // level 10 SSH brute force → floor 20
+
   const analysis = await callStructuredLLM({
     phase: "analysis",
     model,
@@ -182,11 +215,11 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
     systemPrompt: SYSTEM_PROMPT,
     userPrompt,
     fallback: {
-      analysis_summary:          "Alert analysis unavailable — LLM did not respond.",
+      analysis_summary:          "Alert analysis unavailable — LLM did not respond. Manual review required.",
       iocs:                      { ips: [], users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] },
       attack_category:           "EXECUTION",
       kill_chain_stage:          "DELIVERY",
-      risk_score:                0,
+      risk_score:                Math.max(riskFloor, severity * 4),   // deterministic fallback, never 0
       severity_validation:       "MEDIUM" as const,
       recommended_action:        "INVESTIGATE" as const,
       is_false_positive:         false,
@@ -196,6 +229,12 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
     },
     ctx,
   });
+
+  // Hard floor — guaranteed regardless of what the LLM returned
+  if ((analysis.risk_score ?? 0) < riskFloor) {
+    logs.push(`[Analysis] risk_score ${analysis.risk_score} below floor ${riskFloor} — applying floor`);
+    analysis.risk_score = riskFloor;
+  }
 
   if (typeof analysis.false_positive_confidence !== "number") {
     analysis.false_positive_confidence = analysis.is_false_positive ? analysis.confidence : 0;

@@ -70,40 +70,14 @@ export async function runHubAndSwarm(
 
   const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
 
-  // ── 0. Suppression rules (deterministic, instant) ────────────────────────
+  // ── 0. Suppression rules — collect as signal, do NOT exit early ─────────────
   const suppressionHit = checkSuppressionRules(alert);
   if (suppressionHit) {
-    log(`Suppression rule matched: "${suppressionHit.rule_name}" — ${suppressionHit.reason}`);
-    upsertIocs({ ips: [alert.source_ip].filter(Boolean) }, alert.id, "Low", "FALSE_POSITIVE");
-    commitAsync({
-      alertId: alert.id, idempotencyKey: traceId,
-      alertDescription: alert.description ?? "",
-      triage: { is_false_positive: true, false_positive_confidence: 0.99, false_positive_reason: suppressionHit.reason },
-      outcome: "FALSE_POSITIVE",
-      triggered_by: 'suppression',
-    });
-    return composeOutput({
-      analysis: {
-        analysis_summary: `Auto-suppressed: ${suppressionHit.reason}`,
-        is_false_positive: true,
-        false_positive_confidence: 0.99,
-        false_positive_reason: suppressionHit.reason,
-        risk_score: 0,
-        attack_category: 'NONE',
-        kill_chain_stage: 'NONE',
-        severity_validation: 'LOW',
-        recommended_action: 'IGNORE',
-        confidence: 0.99,
-        iocs: { ips: [alert.source_ip].filter(Boolean), users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] },
-      },
-      intel: null, knowledge: null, correlation: null,
-      ticket: null, responsePlan: null, validation: null,
-      ctx, fpShortCircuit: true,
-    });
+    log(`Suppression signal: "${suppressionHit.rule_name}" matched (confidence=${(suppressionHit.confidence * 100).toFixed(0)}%) — continuing through full intelligence pipeline`);
   }
 
-  // ── 1. Pre-flight memory recall (deterministic, parallel) ────────────────
-  const queryText = `${alert.description ?? ""}`.slice(0, 1500);
+  // ── 1. Pre-flight intelligence (all run in parallel, always) ─────────────
+  const queryText   = `${alert.description ?? ""}`.slice(0, 1500);
   const assetValues = extractAssetValuesFromAlert(alert);
   const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
@@ -112,11 +86,11 @@ export async function runHubAndSwarm(
   ]);
   const iocPreflight = lookupIocs(iocPreflightValues);
 
-  if (recallHits.length > 0)  log(`Recall: ${recallHits.length} similar past incident(s)`);
+  if (recallHits.length > 0)   log(`Recall: ${recallHits.length} similar past incident(s)`);
   if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
-  if (assetCtx.length > 0)    log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+  if (assetCtx.length > 0)     log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
 
-  // Detect memory-driven FP signals (deterministic, no LLM yet)
+  // Collect all FP signals — each is evidence for triage, not a verdict on its own
   const fpSimilar    = recallHits.find((h: any) => h.outcome === 'FALSE_POSITIVE' && h.similarity > 0.85);
   const fpAsset      = assetCtx.find(a => a.fp_default === 1);
   const fpIocPattern = iocPreflight.find((i: any) =>
@@ -126,25 +100,29 @@ export async function runHubAndSwarm(
     fpAsset:      fpAsset      ? { value: fpAsset.value, role: fpAsset.role, description: fpAsset.description } : null,
     fpIocPattern: fpIocPattern ? { value: fpIocPattern.value, fp_count: fpIocPattern.fp_count, tp_count: fpIocPattern.tp_count, fp_ratio: fpIocPattern.fp_ratio } : null,
   } : null;
-  if (memoryFpHint) log(`Memory FP hint active — triage will receive structured pre-flight context.`);
+  if (memoryFpHint) log(`Memory FP signals active — passing to triage as context.`);
 
-  // Track if memory drove the FP decision (for analytics)
-  const memoryDroveFp = !!memoryFpHint;
+  // Track which signals were active (for fp_method analytics)
+  const hasSuppressionSignal = !!suppressionHit;
+  const hasMemorySignal      = !!memoryFpHint;
 
-  // ── 2. Mandatory triage ──────────────────────────────────────────────────
+  // ── 2. Mandatory triage — receives ALL signals as structured context ───────
   const triageRes = await alertAnalysisNode({
     alert, recentAlerts,
     assetContext:    assetCtx,
     priorFpInsights: recallHits.filter((h: any) => h.outcome === 'FALSE_POSITIVE'),
     iocMemoryHits:   iocPreflight,
     memoryFpHint,
+    suppressionHit,   // rule-based signal
   }, modelFor("analysis"), ctx);
   ctx.agentLogs.push(...(triageRes.agentLogs ?? []));
   const triage = triageRes.analysis;
 
-  // ── 3. FP short-circuit ──────────────────────────────────────────────────
+  // ── 3. FP short-circuit (triage has now seen all evidence) ────────────────
   if (triage?.is_false_positive && (triage?.false_positive_confidence ?? 0) > 0.85) {
-    const triggeredBy = memoryDroveFp ? 'memoryFP' : 'triage';
+    const triggeredBy = hasSuppressionSignal ? 'suppression'
+                      : hasMemorySignal      ? 'memoryFP'
+                      :                        'triage';
     log(`Confirmed false positive — short-circuiting orchestration. (triggered_by=${triggeredBy})`);
     upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
     commitAsync({
@@ -270,51 +248,29 @@ export async function runFpScan(
 
   const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
 
-  // ── 0. Suppression rules ──────────────────────────────────────────────
+  // ── 0. Suppression rules — signal only, no early exit ─────────────────
   const suppressionHit = checkSuppressionRules(alert);
   if (suppressionHit) {
-    log(`Suppression rule matched: "${suppressionHit.rule_name}" — ${suppressionHit.reason}`);
-    upsertIocs({ ips: [alert.source_ip].filter(Boolean) }, alert.id, "Low", "FALSE_POSITIVE");
-    commitAsync({
-      alertId: alert.id, idempotencyKey: traceId,
-      alertDescription: alert.description ?? "",
-      triage: { is_false_positive: true, false_positive_confidence: 0.99, false_positive_reason: suppressionHit.reason },
-      outcome: "FALSE_POSITIVE",
-      triggered_by: 'suppression',
-    });
-    const analysis = {
-      analysis_summary: `Auto-suppressed: ${suppressionHit.reason}`,
-      is_false_positive: true, false_positive_confidence: 0.99,
-      false_positive_reason: suppressionHit.reason,
-      risk_score: 0, attack_category: 'NONE', kill_chain_stage: 'NONE',
-      severity_validation: 'LOW', recommended_action: 'IGNORE', confidence: 0.99,
-      iocs: { ips: [alert.source_ip].filter(Boolean), users: [], hosts: [], hashes: [], files: [], ports: [], domains: [], processes: [], urls: [] },
-    };
-    return {
-      is_fp: true, fp_confidence: 0.99,
-      fp_reason: suppressionHit.reason,
-      fp_method: 'suppression',
-      fp_details: { rule_name: suppressionHit.rule_name, rule_id: suppressionHit.rule_id },
-      triage: analysis,
-      ai_analysis: composeOutput({ analysis, intel: null, knowledge: null, correlation: null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: true }).ai_analysis,
-      status: 'FALSE_POSITIVE',
-      agentLogs: ctx.agentLogs,
-    };
+    log(`Suppression signal: "${suppressionHit.rule_name}" matched (confidence=${(suppressionHit.confidence * 100).toFixed(0)}%) — continuing through full pipeline`);
   }
 
-  // ── 1. Pre-flight memory recall ───────────────────────────────────────
-  const queryText = `${alert.description ?? ""}`.slice(0, 1500);
+  // ── 1. Full intelligence pre-flight — RAG + IOC + assets + correlation ──
+  // All run in parallel so FP scan has the same evidence quality as full orchestration
+  const queryText   = `${alert.description ?? ""}`.slice(0, 1500);
   const assetValues = extractAssetValuesFromAlert(alert);
-  const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
+  const [recallHits, iocPreflightValues, assetCtx, corrRes] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
     Promise.resolve(lookupAssetContext(assetValues)),
+    correlationNode({ alert, recentAlerts }, modelFor("correlation"), ctx).catch(() => null),
   ]);
   const iocPreflight = lookupIocs(iocPreflightValues);
+  ctx.agentLogs.push(...(corrRes?.agentLogs ?? []));
 
   if (recallHits.length > 0)   log(`Recall: ${recallHits.length} similar past incident(s)`);
   if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
   if (assetCtx.length > 0)     log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+  if (corrRes?.correlation)     log(`Correlation: campaign_detected=${corrRes.correlation.campaign_detected}, escalation_needed=${corrRes.correlation.escalation_needed}`);
 
   const fpSimilar    = recallHits.find((h: any) => h.outcome === 'FALSE_POSITIVE' && h.similarity > 0.85);
   const fpAsset      = assetCtx.find(a => a.fp_default === 1);
@@ -325,26 +281,38 @@ export async function runFpScan(
     fpAsset:      fpAsset      ? { value: fpAsset.value, role: fpAsset.role, description: fpAsset.description } : null,
     fpIocPattern: fpIocPattern ? { value: fpIocPattern.value, fp_count: fpIocPattern.fp_count, tp_count: fpIocPattern.tp_count, fp_ratio: fpIocPattern.fp_ratio } : null,
   } : null;
-  if (memoryFpHint) log(`Memory FP hint active — triage will receive structured pre-flight context.`);
 
-  const memoryDroveFp = !!memoryFpHint;
+  const hasSuppressionSignal = !!suppressionHit;
+  const hasMemorySignal      = !!memoryFpHint;
 
-  // ── 2. Mandatory triage ───────────────────────────────────────────────
+  // ── 2. Mandatory triage — receives ALL intelligence as structured context ─
   const triageRes = await alertAnalysisNode({
     alert, recentAlerts,
-    assetContext: assetCtx,
-    priorFpInsights: recallHits.filter((h: any) => h.outcome === 'FALSE_POSITIVE'),
-    iocMemoryHits: iocPreflight,
+    assetContext:      assetCtx,
+    priorFpInsights:   recallHits.filter((h: any) => h.outcome === 'FALSE_POSITIVE'),
+    iocMemoryHits:     iocPreflight,
     memoryFpHint,
+    suppressionHit,         // rule-based signal
+    correlationResult:      corrRes?.correlation ?? null,   // campaign/escalation signal
   }, modelFor("analysis"), ctx);
   ctx.agentLogs.push(...(triageRes.agentLogs ?? []));
   const triage = triageRes.analysis;
 
-  // ── 3. FP decision ────────────────────────────────────────────────────
-  const isFp = !!(triage?.is_false_positive && (triage?.false_positive_confidence ?? 0) > 0.85);
+  // ── 3. FP decision — threshold 0.72 (scan is purpose-built for FP detection)
+  // Correlation can VETO: if campaign_detected=true or escalation_needed=true,
+  // never suppress as FP regardless of other signals.
+  const correlationVeto = !!(corrRes?.correlation?.campaign_detected || corrRes?.correlation?.escalation_needed);
+  if (correlationVeto) {
+    log(`Correlation VETO: campaign or escalation detected — overriding any FP signals`);
+  }
+
+  const isFp = !correlationVeto &&
+    !!(triage?.is_false_positive && (triage?.false_positive_confidence ?? 0) > 0.72);
 
   if (isFp) {
-    const triggeredBy = memoryDroveFp ? 'memoryFP' : 'triage';
+    const triggeredBy = hasSuppressionSignal ? 'suppression'
+                      : hasMemorySignal      ? 'memoryFP'
+                      :                        'triage';
     log(`FP scan verdict: FALSE POSITIVE (confidence=${(triage.false_positive_confidence * 100).toFixed(0)}%, method=${triggeredBy})`);
     upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
     commitAsync({
@@ -354,35 +322,35 @@ export async function runFpScan(
       triggered_by: triggeredBy,
     });
 
-    // Build fp_details
     const fpDetails: any = {};
+    if (suppressionHit)          fpDetails.suppression_rule = { rule_name: suppressionHit.rule_name, rule_id: suppressionHit.rule_id };
     if (memoryFpHint?.fpSimilar)    fpDetails.similar_incident = memoryFpHint.fpSimilar;
     if (memoryFpHint?.fpAsset)      fpDetails.known_asset = memoryFpHint.fpAsset;
     if (memoryFpHint?.fpIocPattern) fpDetails.ioc_pattern = memoryFpHint.fpIocPattern;
 
     return {
       is_fp: true,
-      fp_confidence: triage.false_positive_confidence,
-      fp_reason: triage.false_positive_reason || 'Triage LLM classified as false positive',
-      fp_method: memoryDroveFp ? 'memory' : 'triage',
-      fp_details: fpDetails,
+      fp_confidence:  triage.false_positive_confidence,
+      fp_reason:      triage.false_positive_reason || 'Triage LLM classified as false positive',
+      fp_method:      triggeredBy as any,
+      fp_details:     fpDetails,
       triage,
-      ai_analysis: composeOutput({ analysis: triage, intel: null, knowledge: null, correlation: null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: true }).ai_analysis,
+      ai_analysis: composeOutput({ analysis: triage, intel: null, knowledge: null, correlation: corrRes?.correlation ?? null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: true }).ai_analysis,
       status: 'FALSE_POSITIVE',
       agentLogs: ctx.agentLogs,
     };
   }
 
-  // Not FP — alert should proceed to investigation
-  log(`FP scan verdict: NOT FALSE POSITIVE (risk=${triage?.risk_score}, category=${triage?.attack_category})`);
+  // Not FP
+  log(`FP scan verdict: NOT FALSE POSITIVE (risk=${triage?.risk_score}, category=${triage?.attack_category}${correlationVeto ? ', correlation veto applied' : ''})`);
   return {
     is_fp: false,
-    fp_confidence: triage?.false_positive_confidence ?? 0,
-    fp_reason: null,
-    fp_method: null,
-    fp_details: null,
+    fp_confidence:  triage?.false_positive_confidence ?? 0,
+    fp_reason:      null,
+    fp_method:      null,
+    fp_details:     null,
     triage,
-    ai_analysis: composeOutput({ analysis: triage, intel: null, knowledge: null, correlation: null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: false }).ai_analysis,
+    ai_analysis: composeOutput({ analysis: triage, intel: null, knowledge: null, correlation: corrRes?.correlation ?? null, ticket: null, responsePlan: null, validation: null, ctx, fpShortCircuit: false }).ai_analysis,
     status: 'FILTERED',
     agentLogs: ctx.agentLogs,
   };
