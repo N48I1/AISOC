@@ -54,31 +54,46 @@ function checkIngestRateLimit(maxPerMin: number): boolean {
 }
 
 // --- Email helper -----------------------------------------------------------
-const smtpConfigured = !!(
-  process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
-);
+// Config comes from DB (configurable in UI). Falls back to env vars for bootstrapping.
+async function sendIncidentAlert(subject: string, body: string, emailCfg?: Record<string, string>) {
+  const cfg  = emailCfg || {};
+  const host = cfg.smtp_host || process.env.SMTP_HOST;
+  const port = Number(cfg.smtp_port || process.env.SMTP_PORT || 587);
+  const user = cfg.smtp_user || process.env.SMTP_USER;
+  const pass = cfg.smtp_pass || process.env.SMTP_PASS;
+  const to   = cfg.to   || process.env.ALERT_EMAIL_TO;
+  const from = cfg.from || user;
 
-const mailer = smtpConfigured
-  ? nodemailer.createTransport({
-      host:   process.env.SMTP_HOST,
-      port:   Number(process.env.SMTP_PORT || 587),
-      secure: Number(process.env.SMTP_PORT || 587) === 465,
-      auth:   { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    })
-  : null;
+  if (!host || !user || !pass || !to) {
+    console.warn('[Email] Not configured — skipping');
+    return;
+  }
 
-async function sendIncidentAlert(subject: string, body: string) {
-  if (!mailer || !process.env.ALERT_EMAIL_TO) return;
+  const transport = nodemailer.createTransport({
+    host, port, secure: port === 465,
+    auth: { user, pass },
+  });
+
+  await transport.sendMail({
+    from, to,
+    subject: `[BBS AISOC] ${subject}`,
+    text:    body,
+  });
+  console.log(`[Email] Sent: ${subject} → ${to}`);
+}
+
+// --- Slack helper ------------------------------------------------------------
+async function sendSlackWebhook(webhookUrl: string, text: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    await mailer.sendMail({
-      from:    process.env.SMTP_USER,
-      to:      process.env.ALERT_EMAIL_TO,
-      subject: `[BBS AISOC] ${subject}`,
-      text:    body,
+    const res = await fetch(webhookUrl, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text }),
     });
-    console.log(`[Email] Sent: ${subject}`);
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true };
   } catch (err: any) {
-    console.warn(`[Email] Failed to send: ${err?.message}`);
+    return { ok: false, error: err?.message };
   }
 }
 
@@ -365,6 +380,338 @@ try {
   safeAlter("ALTER TABLE alerts ADD COLUMN investigated_at DATETIME");
   safeAlter("ALTER TABLE alerts ADD COLUMN escalated_at    DATETIME");
   safeAlter("ALTER TABLE alerts ADD COLUMN closed_at       DATETIME");
+
+  // ── Incident management migrations ────────────────────────────────────────
+  safeAlter("ALTER TABLE incidents ADD COLUMN phase TEXT DEFAULT 'analysis'");
+  safeAlter("ALTER TABLE incidents ADD COLUMN escalated_by INTEGER");
+  safeAlter("ALTER TABLE incidents ADD COLUMN escalated_at DATETIME");
+  safeAlter("ALTER TABLE incidents ADD COLUMN closed_by INTEGER");
+  safeAlter("ALTER TABLE incidents ADD COLUMN closed_at DATETIME");
+  safeAlter("ALTER TABLE incidents ADD COLUMN glpi_ticket_id TEXT");
+  safeAlter("ALTER TABLE incidents ADD COLUMN reason TEXT");
+  safeAlter("ALTER TABLE incidents ADD COLUMN report_body TEXT");
+  safeAlter("ALTER TABLE incident_actions ADD COLUMN order_index INTEGER DEFAULT 0");
+
+  // One-time correction: align existing incidents with the new status rule
+  // (unassigned + early-phase → OPEN, not IN_PROGRESS).
+  try {
+    const fixed = db.prepare(`
+      UPDATE incidents
+      SET status = 'OPEN'
+      WHERE status = 'IN_PROGRESS'
+        AND assigned_to IS NULL
+        AND phase IN ('detection', 'analysis', 'containment')
+    `).run();
+    if (fixed.changes > 0) console.log(`[Backfill] Reverted ${fixed.changes} unassigned incident(s) to OPEN status`);
+  } catch (err: any) {
+    console.warn('[Backfill] Status correction failed:', err?.message);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS incident_timeline (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      incident_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      phase_from TEXT,
+      phase_to TEXT,
+      status_from TEXT,
+      status_to TEXT,
+      user_id INTEGER,
+      note TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_incident_timeline_incident ON incident_timeline(incident_id);
+
+    CREATE TABLE IF NOT EXISTS incident_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      incident_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,        -- block_ip | isolate_host | disable_user | reset_password | collect_forensics | firewall_rule | escalate | other
+      target TEXT,                       -- IP / host / user / file
+      priority TEXT DEFAULT 'MEDIUM',    -- CRITICAL | HIGH | MEDIUM | LOW
+      status TEXT DEFAULT 'pending',     -- pending | approved | executed | failed | skipped
+      source TEXT DEFAULT 'ai',          -- ai | analyst | playbook
+      description TEXT,
+      notes TEXT,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      executed_at DATETIME,
+      executed_by INTEGER,
+      FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE,
+      FOREIGN KEY(created_by) REFERENCES users(id),
+      FOREIGN KEY(executed_by) REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_incident_actions_incident ON incident_actions(incident_id);
+  `);
+
+  // Backfill: any existing ESCALATED alerts with no incident record → create one
+  try {
+    const orphans = db.prepare(`
+      SELECT a.id, a.description, a.severity, a.ai_analysis, a.escalated_at
+      FROM alerts a
+      LEFT JOIN incident_alerts ia ON ia.alert_id = a.id
+      WHERE a.status = 'ESCALATED' AND ia.alert_id IS NULL
+    `).all() as any[];
+    if (orphans.length > 0) {
+      const insIncident = db.prepare(
+        `INSERT INTO incidents (id, title, severity, status, phase, escalated_at, analysis, action_plan, reason)
+         VALUES (?, ?, ?, 'OPEN', 'analysis', COALESCE(?, datetime('now')), ?, ?, 'Backfilled from existing escalated alert')`
+      );
+      const linkAlert = db.prepare('INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id) VALUES (?, ?)');
+      const insTimeline = db.prepare(
+        `INSERT INTO incident_timeline (incident_id, event_type, phase_to, status_to, note)
+         VALUES (?, 'created', 'analysis', 'OPEN', 'Backfilled from existing escalated alert')`
+      );
+      for (const a of orphans) {
+        let priority = 'HIGH';
+        let actionPlan: string | null = null;
+        try {
+          const j = JSON.parse(a.ai_analysis || '{}');
+          priority = j?.ticket?.priority || j?.phaseData?.ticket?.priority || 'HIGH';
+          actionPlan = j?.response?.actions ? JSON.stringify(j.response.actions) : null;
+        } catch {}
+        const incId = `INC-${a.id.slice(0, 8).toUpperCase()}`;
+        try {
+          insIncident.run(incId, (a.description || 'Untitled').slice(0, 200), priority, a.escalated_at, a.ai_analysis || null, actionPlan);
+          linkAlert.run(incId, a.id);
+          insTimeline.run(incId);
+        } catch { /* already exists */ }
+      }
+      console.log(`[Backfill] Created ${orphans.length} incident records for existing escalated alerts`);
+    }
+  } catch (err: any) {
+    console.warn('[Backfill] Incident creation failed:', err?.message);
+  }
+
+  // Backfill: populate report_body + incident_actions for incidents that pre-existed the schema
+  try {
+    const incidentsNoActions = db.prepare(`
+      SELECT i.id, i.title, i.severity, i.analysis, i.report_body
+      FROM incidents i
+      LEFT JOIN incident_actions a ON a.incident_id = i.id
+      WHERE a.id IS NULL
+      GROUP BY i.id
+    `).all() as any[];
+
+    const setReport = db.prepare('UPDATE incidents SET report_body = ? WHERE id = ? AND (report_body IS NULL OR report_body = \'\')');
+    const insAction = db.prepare(
+      `INSERT INTO incident_actions (incident_id, action_type, target, priority, status, source, description, order_index)
+       VALUES (?, ?, ?, ?, 'pending', 'ai', ?, ?)`
+    );
+    const getLinkedAlertSrc = db.prepare(
+      `SELECT a.source_ip, a.dest_ip, a.user, a.agent_name, a.description
+       FROM alerts a INNER JOIN incident_alerts ia ON ia.alert_id = a.id
+       WHERE ia.incident_id = ? LIMIT 1`
+    );
+
+    // Heuristic action sets keyed on title patterns
+    function defaultActionsForTitle(title: string, severity: string, alertCtx: any): { type: string; target: string | null; priority: string; desc: string }[] {
+      const t = (title || '').toLowerCase();
+      const ip   = alertCtx?.source_ip || null;
+      const user = alertCtx?.user || null;
+      const host = alertCtx?.agent_name || null;
+      const sev  = severity || 'MEDIUM';
+
+      const out: { type: string; target: string | null; priority: string; desc: string }[] = [];
+
+      if (/exfil|data.*transfer|outbound/.test(t)) {
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: 'CRITICAL', desc: `Block outbound traffic to suspicious destination (${ip})` });
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'CRITICAL', desc: `Isolate ${host} from the network to stop ongoing exfiltration` });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'HIGH',     desc: 'Capture memory dump and disk image of the affected host' });
+                  out.push({ type: 'firewall_rule',     target: ip,   priority: 'HIGH',     desc: 'Add permanent egress block for the destination IP at the perimeter firewall' });
+                  out.push({ type: 'escalate',          target: null, priority: 'HIGH',     desc: 'Notify incident lead — possible data breach' });
+      } else if (/lateral|pass.?the.?hash|smb/.test(t)) {
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: 'CRITICAL', desc: `Block lateral source IP ${ip} at internal firewall` });
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'CRITICAL', desc: `Quarantine ${host} pending containment` });
+        if (user) out.push({ type: 'disable_user',      target: user, priority: 'HIGH',     desc: `Disable potentially compromised account ${user}` });
+        if (user) out.push({ type: 'reset_password',    target: user, priority: 'HIGH',     desc: `Force password reset and revoke active sessions for ${user}` });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'HIGH',     desc: 'Capture memory + Windows event logs for credential theft analysis' });
+      } else if (/privilege.*escalation|sudo|uac.*bypass|kerberoast/.test(t)) {
+        if (user) out.push({ type: 'disable_user',      target: user, priority: 'CRITICAL', desc: `Disable account ${user} immediately` });
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'HIGH',     desc: `Isolate ${host} for forensic analysis` });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'HIGH',     desc: 'Capture sudoers/auth logs and memory dump' });
+                  out.push({ type: 'reset_password',    target: user, priority: 'HIGH',     desc: 'Reset password and rotate any service-account credentials touched by the user' });
+      } else if (/c2|beacon|command.*control/.test(t)) {
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: 'CRITICAL', desc: `Block C2 destination ${ip} at perimeter` });
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'CRITICAL', desc: `Isolate beaconing host ${host}` });
+                  out.push({ type: 'firewall_rule',     target: ip,   priority: 'HIGH',     desc: 'Add IDS signature for the C2 indicator and propagate to all egress points' });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'HIGH',     desc: 'Pull DNS and process logs to identify the implant' });
+      } else if (/ransomware|encrypt/.test(t)) {
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'CRITICAL', desc: `Immediately isolate ${host} from network and shared storage` });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'CRITICAL', desc: 'Memory dump + suspend running processes for malware analysis' });
+                  out.push({ type: 'escalate',          target: null, priority: 'CRITICAL', desc: 'Activate ransomware response runbook — notify CISO + legal' });
+                  out.push({ type: 'firewall_rule',     target: null, priority: 'HIGH',     desc: 'Block known ransomware family C2 patterns at perimeter' });
+      } else if (/webshell|backdoor|web.*upload/.test(t)) {
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'CRITICAL', desc: `Take ${host} offline pending malware analysis` });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'HIGH',     desc: 'Snapshot the webshell file and surrounding directory contents' });
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: 'HIGH',     desc: `Block source IP ${ip} that uploaded the artifact` });
+                  out.push({ type: 'firewall_rule',     target: null, priority: 'MEDIUM',   desc: 'Add WAF rule blocking PHP/JSP uploads to public directories' });
+      } else if (/brute.?force|failed.*login|authentication/.test(t)) {
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: 'HIGH',     desc: `Block source IP ${ip} at perimeter — brute-force origin` });
+        if (user) out.push({ type: 'reset_password',    target: user, priority: 'HIGH',     desc: `Force password reset for ${user} and enforce MFA` });
+                  out.push({ type: 'firewall_rule',     target: ip,   priority: 'MEDIUM',   desc: 'Lower auth-failure threshold and add geofencing if applicable' });
+      } else if (/dns|domain/.test(t)) {
+        if (host) out.push({ type: 'isolate_host',      target: host, priority: 'HIGH',     desc: `Isolate ${host} pending malware scan` });
+                  out.push({ type: 'firewall_rule',     target: null, priority: 'HIGH',     desc: 'Sinkhole the suspicious DNS domain at the resolver' });
+                  out.push({ type: 'collect_forensics', target: host, priority: 'MEDIUM',   desc: 'Capture DNS query history and process tree from the host' });
+      } else if (/scan|port|recon/.test(t)) {
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: 'MEDIUM', desc: `Block scanning source ${ip}` });
+                  out.push({ type: 'firewall_rule',     target: ip,   priority: 'MEDIUM', desc: 'Add reconnaissance pattern to IDS signatures' });
+      } else {
+        // Generic fallback
+                  out.push({ type: 'collect_forensics', target: host, priority: sev,        desc: 'Capture relevant logs and artifacts from the affected system' });
+        if (ip)   out.push({ type: 'block_ip',          target: ip,   priority: sev,        desc: `Review and block source ${ip} if confirmed malicious` });
+                  out.push({ type: 'escalate',          target: null, priority: sev,        desc: 'Engage incident lead for assessment and containment plan' });
+      }
+      return out;
+    }
+
+    function fallbackReport(title: string, severity: string, alertCtx: any): string {
+      const ip   = alertCtx?.source_ip ? ` from source IP \`${alertCtx.source_ip}\`` : '';
+      const host = alertCtx?.agent_name ? ` on host \`${alertCtx.agent_name}\`` : '';
+      return `**${title}**\n\nSeverity: ${severity}${ip}${host}\n\n` +
+             `Initial detection raised this incident from the alerts queue. ` +
+             `Recommended response actions are listed below — execute, mark each one as completed in the Response Actions panel, and update this report with the outcome of each step.\n\n` +
+             `## Investigation\n_To be completed by the assigned analyst._\n\n` +
+             `## Containment\n_Document containment steps taken and their effectiveness._\n\n` +
+             `## Remediation\n_Document permanent fixes and any policy changes._\n\n` +
+             `## Lessons Learned\n_Post-incident review notes._\n`;
+    }
+
+    let totalActions = 0;
+    let reportsBackfilled = 0;
+    for (const inc of incidentsNoActions) {
+      try {
+        let usedSource = 'fallback';
+        let order = 0;
+        let createdAny = false;
+
+        // Try analysis JSON first
+        try {
+          const j = JSON.parse(inc.analysis || '{}');
+          const reportBody = j?.ticket?.report_body || j?.phaseData?.ticket?.report_body || null;
+          if (reportBody) { setReport.run(reportBody, inc.id); reportsBackfilled++; }
+
+          const planActions: any[] = j?.response?.actions || j?.phaseData?.response?.actions || [];
+          for (const a of (Array.isArray(planActions) ? planActions : [])) {
+            const text = typeof a === 'string' ? a : (a?.action || a?.description || a?.title || JSON.stringify(a));
+            const lower = String(text || '').toLowerCase();
+            let actionType = 'other';
+            if      (/block.*ip|firewall block/.test(lower))             actionType = 'block_ip';
+            else if (/isolate|quarantine|disconnect/.test(lower))        actionType = 'isolate_host';
+            else if (/disable.*user|disable.*account/.test(lower))       actionType = 'disable_user';
+            else if (/reset password|password reset/.test(lower))        actionType = 'reset_password';
+            else if (/forensic|memory dump|capture|collect/.test(lower)) actionType = 'collect_forensics';
+            else if (/firewall rule|acl|policy/.test(lower))             actionType = 'firewall_rule';
+            else if (/escalate|notify lead/.test(lower))                 actionType = 'escalate';
+            const target = a?.target || a?.ip || a?.user || a?.host || null;
+            const priority = a?.priority || inc.severity || 'MEDIUM';
+            const desc = String(text || '').slice(0, 500);
+            insAction.run(inc.id, actionType, target, priority, desc, order++);
+            totalActions++;
+            createdAny = true;
+            usedSource = 'analysis';
+          }
+        } catch { /* malformed analysis JSON */ }
+
+        // Heuristic fallback: derive from title + linked alert context
+        if (!createdAny) {
+          const alertCtx = getLinkedAlertSrc.get(inc.id) as any;
+          const heuristic = defaultActionsForTitle(inc.title || '', inc.severity || 'MEDIUM', alertCtx);
+          for (const a of heuristic) {
+            insAction.run(inc.id, a.type, a.target, a.priority, a.desc, order++);
+            totalActions++;
+          }
+          // Also generate a default report body if missing
+          if (!inc.report_body) {
+            setReport.run(fallbackReport(inc.title || 'Incident', inc.severity || 'MEDIUM', alertCtx), inc.id);
+            reportsBackfilled++;
+          }
+        }
+      } catch { /* skip on error */ }
+    }
+    if (totalActions > 0 || reportsBackfilled > 0) {
+      console.log(`[Backfill] Seeded ${totalActions} action(s) + ${reportsBackfilled} report_body across ${incidentsNoActions.length} pre-existing incident(s)`);
+    }
+  } catch (err: any) {
+    console.warn('[Backfill] Action/report backfill failed:', err?.message);
+  }
+
+  // ── One-time backfill: bring existing alerts under the new FP-archive rules ──
+  // Idempotent — only touches rows that don't already have an FP classification.
+  try {
+    const lowPriorityResult = db.prepare(`
+      UPDATE alerts
+      SET status = 'FALSE_POSITIVE',
+          fp_method = 'noise_priority',
+          fp_reason = 'Triaged as ' || COALESCE(
+            json_extract(ai_analysis, '$.ticket.priority'),
+            json_extract(ai_analysis, '$.phaseData.ticket.priority'),
+            'LOW/MEDIUM'
+          ) || ' priority — auto-archived (only HIGH+ reach analysts) [backfilled]',
+          fp_confidence = 0.6,
+          filtered_at = COALESCE(filtered_at, datetime('now'))
+      WHERE status IN ('TRIAGED', 'CLOSED')
+        AND ai_analysis IS NOT NULL
+        AND (
+          json_extract(ai_analysis, '$.ticket.priority') IN ('LOW', 'MEDIUM')
+          OR json_extract(ai_analysis, '$.phaseData.ticket.priority') IN ('LOW', 'MEDIUM')
+        )
+    `).run();
+    if (lowPriorityResult.changes > 0) {
+      console.log(`[Backfill] Reclassified ${lowPriorityResult.changes} LOW/MEDIUM-priority alerts → FP archive`);
+    }
+
+    // Backfill: alerts that the agents already flagged as FP but where fp_method is missing
+    // (legacy rows where we wrote status only). Tag them as 'triage' so the badge renders.
+    const fpMissingMethod = db.prepare(`
+      UPDATE alerts
+      SET fp_method = 'triage',
+          fp_reason = COALESCE(fp_reason, 'Agent classified as false positive'),
+          fp_confidence = COALESCE(NULLIF(fp_confidence, 0), 0.75),
+          filtered_at = COALESCE(filtered_at, datetime('now'))
+      WHERE status = 'FALSE_POSITIVE'
+        AND fp_method IS NULL
+        AND ai_analysis IS NOT NULL
+    `).run();
+    if (fpMissingMethod.changes > 0) {
+      console.log(`[Backfill] Tagged ${fpMissingMethod.changes} legacy FP rows with fp_method='triage'`);
+    }
+
+    // Backfill: manually-confirmed FPs (FP_CONFIRMED) get fp_method='analyst' so the badge
+    // doesn't show '?' for the ones the user clicked "Confirm FP" on.
+    const confirmedMissingMethod = db.prepare(`
+      UPDATE alerts
+      SET fp_method = 'analyst',
+          fp_reason = COALESCE(fp_reason, 'Confirmed as false positive by analyst'),
+          fp_confidence = COALESCE(NULLIF(fp_confidence, 0), 1.0),
+          filtered_at = COALESCE(filtered_at, datetime('now'))
+      WHERE status = 'FP_CONFIRMED'
+        AND fp_method IS NULL
+    `).run();
+    if (confirmedMissingMethod.changes > 0) {
+      console.log(`[Backfill] Tagged ${confirmedMissingMethod.changes} analyst-confirmed FPs with fp_method='analyst'`);
+    }
+
+    // Backfill: legacy FILTERED alerts (from the old two-step FP-scan path) → FALSE_POSITIVE.
+    // These are alerts that the legacy FP-scan deemed not-FP-but-not-yet-investigated.
+    // With the new auto-investigate flow, FILTERED is obsolete as a resting state — they belong in the archive.
+    const legacyFiltered = db.prepare(`
+      UPDATE alerts
+      SET status = 'FALSE_POSITIVE',
+          fp_method = COALESCE(fp_method, 'legacy_filter'),
+          fp_reason = COALESCE(fp_reason, 'Legacy FP-scan filter — auto-archived'),
+          fp_confidence = COALESCE(NULLIF(fp_confidence, 0), 0.7),
+          filtered_at = COALESCE(filtered_at, datetime('now'))
+      WHERE status = 'FILTERED'
+    `).run();
+    if (legacyFiltered.changes > 0) {
+      console.log(`[Backfill] Moved ${legacyFiltered.changes} legacy FILTERED alerts → FP archive`);
+    }
+  } catch (err: any) {
+    console.warn('[Backfill] FP archive reclassification failed:', err?.message);
+  }
 
   // Seed admin user if not exists
   const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
@@ -862,12 +1209,22 @@ try {
   const seedIntegration = db.prepare(
     'INSERT OR IGNORE INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, ?, ?, ?)'
   );
-  seedIntegration.run('email',    smtpConfigured ? 1 : 0,
-    JSON.stringify({ to: process.env.ALERT_EMAIL_TO || '' }), 'HIGH');
-  seedIntegration.run('glpi',     0,
+  const smtpConfigured = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  seedIntegration.run('email', smtpConfigured ? 1 : 0,
+    JSON.stringify({
+      smtp_host: process.env.SMTP_HOST || '',
+      smtp_port: process.env.SMTP_PORT || '587',
+      smtp_user: process.env.SMTP_USER || '',
+      smtp_pass: process.env.SMTP_PASS || '',
+      from:      process.env.SMTP_USER || '',
+      to:        process.env.ALERT_EMAIL_TO || '',
+    }), 'HIGH');
+  seedIntegration.run('glpi', 0,
     JSON.stringify({ url: process.env.GLPI_URL || '', app_token: process.env.GLPI_APP_TOKEN || '', user_token: process.env.GLPI_USER_TOKEN || '' }), 'CRITICAL');
   seedIntegration.run('telegram', 0,
-    JSON.stringify({ bot_token: process.env.TELEGRAM_BOT_TOKEN || '', chat_id: process.env.TELEGRAM_CHAT_ID || '' }), 'HIGH');
+    JSON.stringify({ bot_token: process.env.TELEGRAM_BOT_TOKEN || '', chat_id: process.env.TELEGRAM_CHAT_ID || '' }), 'MEDIUM');
+  seedIntegration.run('slack', 0,
+    JSON.stringify({ webhook_url: '' }), 'HIGH');
 
   // Wazuh ingest filter config — INSERT OR IGNORE preserves user changes across restarts
   seedIntegration.run('wazuh', 1,
@@ -929,6 +1286,16 @@ async function dispatchActions(params: {
   const { alertId, ticket, db: database, io: socketIo } = params;
   if (!ticket?.priority) return;
 
+  // Fetch alert context for richer notifications
+  const alertRow = database.prepare(
+    'SELECT source_ip, dest_ip, agent_name, mitre_attack FROM alerts WHERE id = ?'
+  ).get(alertId) as any;
+  const sourceIp  = alertRow?.source_ip  || 'n/a';
+  const destIp    = alertRow?.dest_ip    || 'n/a';
+  const agentName = alertRow?.agent_name || 'unknown';
+  let mitreTags: string[] = [];
+  try { const m = JSON.parse(alertRow?.mitre_attack || '[]'); if (Array.isArray(m)) mitreTags = m; } catch {}
+
   const integrations = database.prepare("SELECT * FROM integrations WHERE enabled = 1").all() as any[];
   const logAction = database.prepare(
     'INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)'
@@ -946,15 +1313,34 @@ async function dispatchActions(params: {
       try {
         const subject = ticket.title || `Alert ${alertId}`;
         const body    = ticket.report_body || `Alert ${alertId}: ${ticket.title}`;
-        await sendIncidentAlert(subject, body);
+        await sendIncidentAlert(subject, body, cfg);
         logAction.run(alertId, 'email', 'send_email', 'success', subject.slice(0, 120), null);
       } catch (err: any) {
         logAction.run(alertId, 'email', 'send_email', 'failed', ticket.title?.slice(0, 120) || '', err?.message?.slice(0, 200));
       }
     }
 
+    if (intg.name === 'slack' && cfg.webhook_url) {
+      const text = `🚨 *[BBS AISOC]* ${ticket.priority} Alert\n\n*${ticket.title}*\n\n${(ticket.report_body || '').slice(0, 300)}`;
+      const result = await sendSlackWebhook(cfg.webhook_url, text);
+      logAction.run(alertId, 'slack', 'send_message', result.ok ? 'success' : 'failed',
+        ticket.title?.slice(0, 120) || '', result.error || null);
+    }
+
     if (intg.name === 'telegram' && cfg.bot_token && cfg.chat_id) {
-      const text = `🚨 <b>[BBS AISOC]</b> ${ticket.priority} Alert\n\n<b>${ticket.title}</b>\n\n${(ticket.report_body || '').slice(0, 300)}`;
+      const conf = ticket.confidence != null ? Math.round(ticket.confidence * (ticket.confidence <= 1 ? 100 : 1)) : null;
+      const mitreLine = mitreTags.length ? mitreTags.slice(0, 5).join(', ') : '—';
+      const escape = (s: string) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const text =
+        `🚨 <b>[BBS AISOC]</b> ${escape(ticket.priority)} INCIDENT\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `<b>${escape(ticket.title || 'Untitled')}</b>\n\n` +
+        `🆔 Alert: <code>${escape(alertId.slice(0, 8).toUpperCase())}</code>\n` +
+        `🌐 Source: <code>${escape(sourceIp)}</code> → <code>${escape(destIp)}</code>\n` +
+        `🖥 Host: <code>${escape(agentName)}</code>\n` +
+        `🎯 MITRE: ${escape(mitreLine)}\n` +
+        (conf != null ? `📊 Confidence: ${conf}%\n` : '') +
+        `\n${escape((ticket.report_body || '').slice(0, 600))}`;
       const result = await sendTelegramMessage({ botToken: cfg.bot_token, chatId: cfg.chat_id }, text);
       logAction.run(alertId, 'telegram', 'send_message', result.ok ? 'success' : 'failed',
         ticket.title?.slice(0, 120) || '', result.error || null);
@@ -1210,61 +1596,23 @@ async function startServer() {
     res.json(result);
   });
 
-  // ── Incidents ─────────────────────────────────────────────────────────────
-  app.get('/api/incidents', authenticate, (_req, res) => {
-    const incidents  = db.prepare('SELECT * FROM incidents ORDER BY created_at DESC').all();
-    const withAlerts = incidents.map((inc: any) => {
-      const linkedAlerts = db.prepare('SELECT alert_id FROM incident_alerts WHERE incident_id = ?').all(inc.id).map((r: any) => r.alert_id);
-      return { ...inc, alerts: linkedAlerts };
-    });
-    res.json(withAlerts);
-  });
-
-  app.post('/api/incidents', authenticate, (req: any, res) => {
-    const { title, severity, status, assigned_to, analysis, action_plan, alert_ids } = req.body;
-    if (!title) return res.status(400).json({ error: 'title is required' });
-    const id  = 'INC-' + Math.random().toString(36).substr(2, 6).toUpperCase();
-    const now = new Date().toISOString();
-    try {
-      db.prepare(`INSERT INTO incidents (id, title, severity, status, created_at, updated_at, assigned_to, analysis, action_plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, title, severity || 'MEDIUM', status || 'OPEN', now, now, assigned_to || null, analysis || null, action_plan || null);
-      if (Array.isArray(alert_ids)) {
-        const insertLink = db.prepare('INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id) VALUES (?, ?)');
-        for (const aid of alert_ids) insertLink.run(id, aid);
-      }
-      writeAudit(req.user?.id, 'INCIDENT_CREATED', `Incident ${id}: ${title}`);
-      io.emit('incident_created', { id, title, severity, status });
-      res.json({ id, title, severity: severity || 'MEDIUM', status: status || 'OPEN', created_at: now, updated_at: now, alerts: alert_ids || [] });
-    } catch (err: any) {
-      console.error('Create incident error:', err);
-      res.status(500).json({ error: 'Failed to create incident' });
-    }
-  });
-
-  app.patch('/api/incidents/:id', authenticate, (req: any, res) => {
-    const { id } = req.params;
-    const { status, analysis, action_plan, assigned_to } = req.body;
-    const updates: string[] = ['updated_at = ?'];
-    const values: any[]     = [new Date().toISOString()];
-    if (status)      { updates.push('status = ?');      values.push(status); }
-    if (analysis)    { updates.push('analysis = ?');    values.push(analysis); }
-    if (action_plan) { updates.push('action_plan = ?'); values.push(action_plan); }
-    if (assigned_to !== undefined) { updates.push('assigned_to = ?'); values.push(assigned_to); }
-    try {
-      values.push(id);
-      db.prepare(`UPDATE incidents SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-      writeAudit(req.user?.id, 'INCIDENT_UPDATED', `Incident ${id} updated`);
-      io.emit('incident_updated', { id, ...req.body });
-      res.json({ status: 'ok' });
-    } catch (err: any) {
-      console.error('Update incident error:', err);
-      res.status(500).json({ error: 'Failed to update incident' });
-    }
-  });
+  // ── Incidents — see canonical routes lower in this file (Incident Management section)
+  // The legacy GET/POST/PATCH /api/incidents handlers were removed because they returned
+  // a flat array (incompatible with the new {rows, total} shape used by IncidentsTab).
 
   // ── Users ─────────────────────────────────────────────────────────────────
   app.get('/api/users', authenticate, requireAdmin, (_req, res) => {
     res.json(db.prepare('SELECT id, username, email, role FROM users').all());
+  });
+
+  // Users available for incident assignment — visible to all authenticated users
+  app.get('/api/users/analysts', authenticate, (_req, res) => {
+    const rows = db.prepare(
+      `SELECT id, username, role FROM users
+       WHERE role IN ('ADMIN', 'TIER2', 'INCIDENT_LEAD')
+       ORDER BY role DESC, username ASC`
+    ).all();
+    res.json(rows);
   });
 
   app.post('/api/users', authenticate, requireAdmin, (req: any, res) => {
@@ -1300,6 +1648,61 @@ async function startServer() {
     res.json({ reset: result.changes });
   });
 
+  // Helper: delete alerts and ALL FK-related child rows. SQLite enforces foreign keys
+  // (incident_responses, agent_runs, feedback, action_logs, blocks all reference alerts.id).
+  function deleteAlertsAndChildren(idList: string[]): number {
+    if (idList.length === 0) return 0;
+    const inPlaceholders = idList.map(() => '?').join(',');
+    const tx = db.transaction(() => {
+      // Children with FK on alerts.id — order doesn't matter, but delete all before parent.
+      for (const tbl of ['incident_responses', 'agent_runs', 'feedback', 'action_logs', 'blocks', 'working_memory']) {
+        try {
+          db.prepare(`DELETE FROM ${tbl} WHERE alert_id IN (${inPlaceholders})`).run(...idList);
+        } catch { /* table may not exist on older schemas */ }
+      }
+      const r = db.prepare(`DELETE FROM alerts WHERE id IN (${inPlaceholders})`).run(...idList);
+      return r.changes;
+    });
+    return tx();
+  }
+
+  // Wipe everything currently visible in the Incidents tab (TRIAGED / ESCALATED / CLOSED / ANALYZING).
+  // FP archive entries (FALSE_POSITIVE / FP_CONFIRMED) are preserved.
+  app.post('/api/admin/clear-investigation', authenticate, requireAdmin, (req: any, res) => {
+    const STATUSES = ['TRIAGED', 'ESCALATED', 'CLOSED', 'ANALYZING'];
+    const placeholders = STATUSES.map(() => '?').join(',');
+    const ids = db.prepare(`SELECT id FROM alerts WHERE status IN (${placeholders})`).all(...STATUSES) as any[];
+    const idList = ids.map(r => r.id);
+
+    try {
+      const deleted = deleteAlertsAndChildren(idList);
+      writeAudit(req.user?.id, 'INVESTIGATION_CLEARED', `Deleted ${deleted} alerts from Incidents queue`);
+      io.emit('alerts_cleared', { ids: idList });
+      res.json({ ok: true, deleted });
+    } catch (err: any) {
+      console.error('[Clear Incidents] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Failed to clear Incidents' });
+    }
+  });
+
+  // Wipe the FP Archive (FALSE_POSITIVE + FP_CONFIRMED). Incidents queue is preserved.
+  app.post('/api/admin/clear-fp-archive', authenticate, requireAdmin, (req: any, res) => {
+    const STATUSES = ['FALSE_POSITIVE', 'FP_CONFIRMED'];
+    const placeholders = STATUSES.map(() => '?').join(',');
+    const ids = db.prepare(`SELECT id FROM alerts WHERE status IN (${placeholders})`).all(...STATUSES) as any[];
+    const idList = ids.map(r => r.id);
+
+    try {
+      const deleted = deleteAlertsAndChildren(idList);
+      writeAudit(req.user?.id, 'FP_ARCHIVE_CLEARED', `Deleted ${deleted} alerts from FP archive`);
+      io.emit('alerts_cleared', { ids: idList });
+      res.json({ ok: true, deleted });
+    } catch (err: any) {
+      console.error('[Clear FP Archive] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Failed to clear FP archive' });
+    }
+  });
+
   app.get('/api/audit-logs', authenticate, requireAdmin, (_req, res) => {
     res.json(db.prepare('SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 100').all());
   });
@@ -1317,14 +1720,19 @@ async function startServer() {
       db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alertId);
       io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
       const update = await runOrchestration(alert, recentAlerts, { modelAssignments: getAgentModelAssignments() });
-      db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=? WHERE id=?`)
-        .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+      if (update.status === 'FALSE_POSITIVE' && update.fp_method) {
+        db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=datetime('now') WHERE id=?`)
+          .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, update.fp_method, update.fp_reason, update.fp_confidence ?? 0, alertId);
+      } else {
+        db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=? WHERE id=?`)
+          .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+      }
       db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
         .run(alertId, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.status);
       try {
         const parsed = JSON.parse(update.ai_analysis || '{}');
         const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
-        if (ticket) await dispatchActions({ alertId, ticket, db, io });
+        if (ticket && update.status !== 'FALSE_POSITIVE') await dispatchActions({ alertId, ticket, db, io });
       } catch {}
       io.emit('alert_updated', { id: alertId, ...update });
     } catch (err: any) {
@@ -1370,35 +1778,42 @@ async function startServer() {
       const sourceIp = alert.data?.srcip || alert.data?.src_ip || null;
       const severity = Number(alert.rule?.level ?? 0);
 
-      // Min severity filter — per-key override takes precedence over global setting
-      const minSev = keyRow.min_severity_override != null
-        ? Number(keyRow.min_severity_override)
-        : Number(wcfg.min_severity ?? 0);
-      if (severity < minSev) {
-        return res.json({ status: 'filtered', reason: `severity ${severity} below min ${minSev}` });
-      }
-
-      // Time window filter (HH:MM 24h)
-      if (wcfg.time_window_start && wcfg.time_window_end) {
-        const now  = new Date();
-        const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-        if (hhmm < wcfg.time_window_start || hhmm > wcfg.time_window_end) {
-          return res.json({ status: 'filtered', reason: 'outside configured time window' });
-        }
-      }
-
-      // Rate limit
+      // Rate limit (cheap reject — no DB write)
       const maxPerMin = Number(wcfg.max_alerts_per_min ?? 0);
       if (!checkIngestRateLimit(maxPerMin)) {
         return res.status(429).json({ status: 'rate_limited', error: `Exceeded ${maxPerMin} alerts/min` });
       }
 
-      // Configurable dedup window
+      // Configurable dedup window (cheap reject — duplicate of an existing alert)
       const dedupMin = Number(wcfg.dedup_window_minutes ?? 5);
       const dup = db.prepare(
         `SELECT id FROM alerts WHERE rule_id = ? AND source_ip = ? AND timestamp >= datetime('now', '-${dedupMin} minutes') LIMIT 1`
       ).get(ruleId, sourceIp);
       if (dup) return res.json({ status: 'deduplicated', original_id: (dup as any).id });
+
+      // Min severity filter — per-key override takes precedence over global setting.
+      // Below-threshold alerts are inserted as FALSE_POSITIVE so they're auditable in the FP Archive,
+      // but skip the AI pipeline (cheap noise — no agent run, no Telegram).
+      const minSev = keyRow.min_severity_override != null
+        ? Number(keyRow.min_severity_override)
+        : Number(wcfg.min_severity ?? 0);
+      const belowMinSeverity = severity < minSev;
+
+      // Time window filter (HH:MM 24h) — same treatment: archive instead of drop.
+      let outsideTimeWindow = false;
+      if (wcfg.time_window_start && wcfg.time_window_end) {
+        const now  = new Date();
+        const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        if (hhmm < wcfg.time_window_start || hhmm > wcfg.time_window_end) outsideTimeWindow = true;
+      }
+
+      const autoFp = belowMinSeverity || outsideTimeWindow;
+      const fpMethod = belowMinSeverity ? 'severity_filter' : outsideTimeWindow ? 'time_window' : null;
+      const fpReason = belowMinSeverity
+        ? `Severity ${severity} below threshold ${minSev}`
+        : outsideTimeWindow
+          ? `Outside active hours (${wcfg.time_window_start}–${wcfg.time_window_end})`
+          : null;
 
       db.prepare(`INSERT INTO alerts (id, rule_id, description, severity, source_ip, dest_ip, user, hostname, agent_name, full_log) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
@@ -1414,14 +1829,20 @@ async function startServer() {
           JSON.stringify(alert),
         );
 
+      if (autoFp) {
+        db.prepare(
+          `UPDATE alerts SET status='FALSE_POSITIVE', fp_method=?, fp_reason=?, fp_confidence=1.0, filtered_at=datetime('now') WHERE id=?`
+        ).run(fpMethod, fpReason, id);
+      }
+
       io.emit('new_alert', { id });
 
-      // Auto-orchestrate (fire-and-forget)
-      if (wcfg.auto_orchestrate !== 'false') {
+      // Auto-orchestrate (fire-and-forget) — but skip for auto-FP'd noise
+      if (!autoFp && wcfg.auto_orchestrate !== 'false') {
         setImmediate(() => triggerOrchestration(id));
       }
 
-      res.json({ status: 'ok', id });
+      res.json({ status: autoFp ? 'archived_fp' : 'ok', id, fp_reason: fpReason });
     } catch (err) {
       console.error('Ingestion error:', err);
       res.status(500).json({ error: 'Failed to ingest alert' });
@@ -1623,6 +2044,58 @@ async function startServer() {
     // Parse ttp_tags JSON for the client
     const parsed = (rows as any[]).map(r => ({ ...r, ttp_tags: safeParseJsonArray(r.ttp_tags) }));
     res.json(parsed);
+  });
+
+  // Browse all insights with search/filter/pagination (Knowledge Base).
+  app.get('/api/memory/insights', authenticate, (req: any, res) => {
+    const q       = String(req.query.q || '').trim();
+    const outcome = String(req.query.outcome || '').trim();
+    const limit   = Math.min(Number(req.query.limit) || 50, 200);
+    const offset  = Math.max(0, Number(req.query.offset) || 0);
+
+    const where: string[] = [];
+    const params: any[]   = [];
+    if (q) {
+      where.push('(summary LIKE ? OR attack_pattern LIKE ? OR threat_actor LIKE ?)');
+      const like = `%${q}%`;
+      params.push(like, like, like);
+    }
+    if (outcome) { where.push('outcome = ?'); params.push(outcome); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const total = (db.prepare(`SELECT COUNT(*) as c FROM incident_insights ${whereSql}`).get(...params) as any).c;
+    const rows  = db.prepare(
+      `SELECT alert_id, summary, attack_pattern, threat_actor, outcome, ttp_tags, triggered_by, created_at
+       FROM incident_insights ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).all(...params, limit, offset);
+    const parsed = (rows as any[]).map(r => ({ ...r, ttp_tags: safeParseJsonArray(r.ttp_tags) }));
+    res.json({ rows: parsed, total });
+  });
+
+  // Browse all IOCs with search/filter/pagination (Knowledge Base).
+  app.get('/api/memory/iocs/all', authenticate, (req: any, res) => {
+    const q      = String(req.query.q || '').trim();
+    const type   = String(req.query.type || '').trim();
+    const limit  = Math.min(Number(req.query.limit) || 50, 200);
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    const where: string[] = [];
+    const params: any[]   = [];
+    if (q)    { where.push('(value LIKE ? OR notes LIKE ?)'); const like = `%${q}%`; params.push(like, like); }
+    if (type) { where.push('type = ?'); params.push(type); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const total = (db.prepare(`SELECT COUNT(*) as c FROM ioc_memory ${whereSql}`).get(...params) as any).c;
+    const rows  = db.prepare(
+      `SELECT value, type, first_seen, last_seen, alert_count, threat_level, notes, fp_count, tp_count
+       FROM ioc_memory ${whereSql} ORDER BY alert_count DESC, last_seen DESC LIMIT ? OFFSET ?`
+    ).all(...params, limit, offset);
+    const enriched = (rows as any[]).map(r => {
+      const total = (r.fp_count || 0) + (r.tp_count || 0);
+      const fp_ratio = total > 0 ? r.fp_count / total : null;
+      return { ...r, fp_ratio };
+    });
+    res.json({ rows: enriched, total });
   });
 
   // Working-memory trail (planner's scratchpad) for a given alert — debug view.
@@ -1937,6 +2410,9 @@ async function startServer() {
   });
 
   // ── FP Scan Batch: scan all NEW alerts ──────────────────────────────────
+  // "Scan All" — runs the FULL defense-in-depth pipeline on every NEW alert.
+  // Each alert exits this loop with a final verdict: FALSE_POSITIVE → FP archive
+  // OR TRIAGED/ESCALATED → Investigation tab (with notifications dispatched).
   app.post('/api/ai/fp-scan-batch', authenticate, async (req: any, res) => {
     try {
       const newAlerts = db.prepare("SELECT * FROM alerts WHERE status = 'NEW' ORDER BY timestamp DESC LIMIT 50").all() as any[];
@@ -1952,17 +2428,27 @@ async function startServer() {
           db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alert.id);
           io.emit('alert_updated', { id: alert.id, status: 'ANALYZING' });
 
-          const result = await runFpScan(alert, recentAlerts.filter((a: any) => a.id !== alert.id), { modelAssignments: getAgentModelAssignments() });
+          const update = await runOrchestration(alert, recentAlerts.filter((a: any) => a.id !== alert.id), { modelAssignments: getAgentModelAssignments() });
 
-          db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, fp_method=?, fp_confidence=?, fp_reason=?, fp_details=?, triage_data=?, filtered_at=datetime('now') WHERE id=?`)
-            .run(result.status, result.ai_analysis,
-              result.fp_method, result.fp_confidence, result.fp_reason,
-              result.fp_details ? JSON.stringify(result.fp_details) : null,
-              result.triage ? JSON.stringify(result.triage) : null,
-              alert.id);
+          if (update.status === 'FALSE_POSITIVE' && update.fp_method) {
+            db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=datetime('now') WHERE id=?`)
+              .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, update.fp_method, update.fp_reason, update.fp_confidence ?? 0, alert.id);
+          } else {
+            db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=? WHERE id=?`)
+              .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alert.id);
+          }
+          db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
+            .run(alert.id, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.status);
 
-          io.emit('alert_updated', { id: alert.id, status: result.status });
-          results.push({ id: alert.id, is_fp: result.is_fp, status: result.status, fp_method: result.fp_method, fp_reason: result.fp_reason });
+          // Dispatch Telegram/Slack/email/GLPI for non-FP outcomes only
+          try {
+            const parsed = JSON.parse(update.ai_analysis || '{}');
+            const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
+            if (ticket && update.status !== 'FALSE_POSITIVE') await dispatchActions({ alertId: alert.id, ticket, db, io });
+          } catch {}
+
+          io.emit('alert_updated', { id: alert.id, ...update });
+          results.push({ id: alert.id, status: update.status, fp_method: update.fp_method ?? null, fp_reason: update.fp_reason ?? null });
         } catch (err: any) {
           db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alert.id);
           io.emit('alert_updated', { id: alert.id, status: 'NEW' });
@@ -1970,11 +2456,13 @@ async function startServer() {
         }
       }
 
-      writeAudit(req.user?.id, 'FP_SCAN_BATCH', `Batch scanned ${newAlerts.length} alerts`);
-      res.json({ scanned: newAlerts.length, results });
+      const fpCount  = results.filter(r => r.status === 'FALSE_POSITIVE').length;
+      const incCount = results.filter(r => r.status === 'TRIAGED' || r.status === 'ESCALATED').length;
+      writeAudit(req.user?.id, 'SCAN_ALL', `Full pipeline scan: ${newAlerts.length} alerts → ${fpCount} FP, ${incCount} incidents`);
+      res.json({ scanned: newAlerts.length, fp: fpCount, incidents: incCount, results });
     } catch (err: any) {
-      console.error('[FP Scan Batch Error]', err?.message);
-      res.status(500).json({ error: err?.message || 'Batch scan failed' });
+      console.error('[Scan All Error]', err?.message);
+      res.status(500).json({ error: err?.message || 'Scan all failed' });
     }
   });
 
@@ -2011,17 +2499,22 @@ async function startServer() {
         update = await runOrchestration(alert, recentAlerts, { modelAssignments: getAgentModelAssignments() });
       }
 
-      db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, investigated_at=datetime('now') WHERE id=?`)
-        .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+      if (update.status === 'FALSE_POSITIVE' && update.fp_method) {
+        db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=datetime('now'), investigated_at=datetime('now') WHERE id=?`)
+          .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, update.fp_method, update.fp_reason, update.fp_confidence ?? 0, alertId);
+      } else {
+        db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, investigated_at=datetime('now') WHERE id=?`)
+          .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
+      }
 
       db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
         .run(alertId, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.status);
 
-      // Dispatch integrations
+      // Dispatch integrations only for non-FP outcomes
       try {
         const parsed = JSON.parse(update.ai_analysis || '{}');
         const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
-        if (ticket) await dispatchActions({ alertId, ticket, db, io });
+        if (ticket && update.status !== 'FALSE_POSITIVE') await dispatchActions({ alertId, ticket, db, io });
       } catch (dispatchErr: any) { console.warn('[Dispatch] Error:', dispatchErr?.message); }
 
       writeAudit(req.user?.id, 'INVESTIGATION_RUN', `Alert ${alertId} investigated → ${update.status}`);
@@ -2065,33 +2558,585 @@ async function startServer() {
     res.json({ alerts: enriched, total, page, pageSize });
   });
 
-  // ── Escalate alert: set status + trigger integrations ──────────────────────
-  app.post('/api/alerts/:id/escalate', authenticate, async (req: any, res) => {
-    const { id } = req.params;
-    const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(id);
-    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+  // ── Incident management ───────────────────────────────────────────────────
+  const INCIDENT_PHASES = ['detection', 'analysis', 'containment', 'eradication', 'recovery', 'post_incident'];
+  const PHASE_TO_STATUS: Record<string, string> = {
+    detection:     'OPEN',
+    analysis:      'OPEN',
+    containment:   'IN_PROGRESS',
+    eradication:   'IN_PROGRESS',
+    recovery:      'CONTAINED',
+    post_incident: 'RESOLVED',
+  };
 
-    db.prepare("UPDATE alerts SET status = 'ESCALATED', escalated_at = datetime('now') WHERE id = ?").run(id);
+  // Compute status from phase + assignee. Rule:
+  //   - phase past analysis → status follows phase
+  //   - phase = detection or analysis:
+  //       - assigned → IN_PROGRESS (an analyst is on it)
+  //       - unassigned → OPEN (waiting for owner)
+  //   - sticky terminal states (CLOSED / RECLASSIFIED_FP) are never auto-changed
+  function computeIncidentStatus(phase: string, assignedTo: number | null, currentStatus?: string | null): string {
+    if (currentStatus === 'CLOSED' || currentStatus === 'RECLASSIFIED_FP') return currentStatus;
+    if (phase === 'post_incident') return 'RESOLVED';
+    if (phase === 'recovery')      return 'CONTAINED';
+    if (phase === 'containment' || phase === 'eradication') return 'IN_PROGRESS';
+    return assignedTo ? 'IN_PROGRESS' : 'OPEN';
+  }
 
-    // Trigger integrations with the existing ticket data
+  async function createIncidentFromAlert(args: {
+    alertId:     string;
+    title?:      string;
+    severity?:   string;
+    assigned_to: number | null;
+    phase?:      string;
+    note?:       string;
+    create_glpi?: boolean;
+    user_id:     number | null;
+  }): Promise<{ id: string; glpi_ticket_id: string | null }> {
+    const alert: any = db.prepare('SELECT * FROM alerts WHERE id = ?').get(args.alertId);
+    if (!alert) throw new Error('Alert not found');
+
+    let priority = args.severity;
+    let actionPlan: string | null = null;
+    let analysis: string | null = alert.ai_analysis || null;
+    let ticket: any = null;
     try {
       const parsed = JSON.parse(alert.ai_analysis || '{}');
-      const ticket = parsed?.ticket || parsed?.phaseData?.ticket;
-      if (ticket) {
-        ticket.priority = ticket.priority || 'HIGH';
-        await dispatchActions({ alertId: id, ticket, db, io });
-      }
-    } catch (err: any) { console.warn('[Escalate dispatch] Error:', err?.message); }
+      ticket = parsed?.ticket || parsed?.phaseData?.ticket || null;
+      if (!priority) priority = ticket?.priority || 'HIGH';
+      actionPlan = parsed?.response?.actions ? JSON.stringify(parsed.response.actions) : null;
+    } catch {}
 
-    writeAudit(req.user?.id, 'ALERT_ESCALATED', `Alert ${id} escalated`);
-    io.emit('alert_updated', { id, status: 'ESCALATED' });
-    res.json({ ok: true, status: 'ESCALATED' });
+    const phase  = args.phase && INCIDENT_PHASES.includes(args.phase) ? args.phase : 'analysis';
+    const status = computeIncidentStatus(phase, args.assigned_to ?? null);
+    const incId  = `INC-${args.alertId.slice(0, 8).toUpperCase()}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+    const title  = (args.title || ticket?.title || alert.description || 'Untitled').slice(0, 200);
+
+    const reportBody = ticket?.report_body || null;
+    db.prepare(
+      `INSERT INTO incidents (id, title, severity, status, phase, assigned_to, escalated_by, escalated_at, analysis, action_plan, reason, report_body)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)`
+    ).run(incId, title, priority || 'HIGH', status, phase, args.assigned_to ?? null, args.user_id ?? null, analysis, actionPlan, args.note || null, reportBody);
+
+    db.prepare('INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id) VALUES (?, ?)').run(incId, args.alertId);
+    db.prepare("UPDATE alerts SET status = 'ESCALATED', escalated_at = datetime('now') WHERE id = ?").run(args.alertId);
+
+    // Seed incident_actions from the agent's response.actions (best-effort)
+    try {
+      const parsed = JSON.parse(alert.ai_analysis || '{}');
+      const planActions: any[] = parsed?.response?.actions || parsed?.phaseData?.response?.actions || [];
+      const insAction = db.prepare(
+        `INSERT INTO incident_actions (incident_id, action_type, target, priority, status, source, description, order_index)
+         VALUES (?, ?, ?, ?, 'pending', 'ai', ?, ?)`
+      );
+      let orderIdx = 0;
+      for (const a of (Array.isArray(planActions) ? planActions : [])) {
+        const text = typeof a === 'string' ? a : (a?.action || a?.description || a?.title || JSON.stringify(a));
+        const lower = String(text || '').toLowerCase();
+        let actionType = 'other';
+        if (/block.*ip|firewall block/.test(lower))           actionType = 'block_ip';
+        else if (/isolate|quarantine|disconnect/.test(lower)) actionType = 'isolate_host';
+        else if (/disable.*user|disable.*account/.test(lower))actionType = 'disable_user';
+        else if (/reset password|password reset/.test(lower)) actionType = 'reset_password';
+        else if (/forensic|memory dump|capture|collect/.test(lower)) actionType = 'collect_forensics';
+        else if (/firewall rule|acl|policy/.test(lower))      actionType = 'firewall_rule';
+        else if (/escalate|notify lead/.test(lower))          actionType = 'escalate';
+        const target = a?.target || a?.ip || a?.user || a?.host || null;
+        const actionPriority = a?.priority || priority || 'MEDIUM';
+        insAction.run(incId, actionType, target, actionPriority, String(text || '').slice(0, 500), orderIdx++);
+      }
+    } catch { /* malformed action_plan — skip seeding */ }
+
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, phase_to, status_to, user_id, note)
+       VALUES (?, 'created', ?, ?, ?, ?)`
+    ).run(incId, phase, status, args.user_id ?? null, args.note || null);
+
+    if (args.assigned_to) {
+      db.prepare(
+        `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+         VALUES (?, 'assigned', ?, ?)`
+      ).run(incId, args.user_id ?? null, `Assigned to user #${args.assigned_to}`);
+    }
+
+    let glpiTicketId: string | null = null;
+    if (args.create_glpi && ticket) {
+      try {
+        ticket.priority = priority || 'HIGH';
+        const before = (db.prepare(`SELECT MAX(id) as m FROM action_logs WHERE alert_id=? AND integration='glpi'`).get(args.alertId) as any)?.m ?? 0;
+        await dispatchActions({ alertId: args.alertId, ticket, db, io });
+        const newRow = db.prepare(`SELECT payload, status FROM action_logs WHERE alert_id=? AND integration='glpi' AND id > ? ORDER BY id DESC LIMIT 1`).get(args.alertId, before) as any;
+        if (newRow?.status === 'success' && typeof newRow.payload === 'string') {
+          const m = newRow.payload.match(/Ticket\s*#?(\d+)/i);
+          if (m) glpiTicketId = m[1];
+        }
+        if (glpiTicketId) {
+          db.prepare('UPDATE incidents SET glpi_ticket_id = ? WHERE id = ?').run(glpiTicketId, incId);
+        }
+      } catch (err: any) { console.warn('[Incident GLPI dispatch] Error:', err?.message); }
+    }
+
+    io.emit('alert_updated', { id: args.alertId, status: 'ESCALATED' });
+    io.emit('incident_created', { id: incId });
+    return { id: incId, glpi_ticket_id: glpiTicketId };
+  }
+
+  app.post('/api/incidents', authenticate, async (req: any, res) => {
+    const { alert_id, title, severity, assigned_to, phase, note, create_glpi } = req.body || {};
+    if (!alert_id) return res.status(400).json({ error: 'alert_id required' });
+    try {
+      const r = await createIncidentFromAlert({
+        alertId:     alert_id,
+        title, severity,
+        assigned_to: typeof assigned_to === 'number' ? assigned_to : null,
+        phase, note,
+        create_glpi: !!create_glpi,
+        user_id:     req.user?.id ?? null,
+      });
+      writeAudit(req.user?.id, 'INCIDENT_CREATED', `Incident ${r.id} from alert ${alert_id}`);
+      res.json({ ok: true, id: r.id, glpi_ticket_id: r.glpi_ticket_id });
+    } catch (err: any) {
+      console.error('[Incident create] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Failed to create incident' });
+    }
+  });
+
+  app.get('/api/incidents', authenticate, (req: any, res) => {
+    const phase       = String(req.query.phase || '').trim();
+    const status      = String(req.query.status || '').trim();
+    const assignedTo  = req.query.assigned_to ? Number(req.query.assigned_to) : null;
+    const q           = String(req.query.q || '').trim();
+    const limit       = Math.min(Number(req.query.limit) || 50, 200);
+    const offset      = Math.max(0, Number(req.query.offset) || 0);
+
+    const where: string[] = [];
+    const params: any[]   = [];
+    if (phase)              { where.push('i.phase = ?');       params.push(phase); }
+    if (status)             { where.push('i.status = ?');      params.push(status); }
+    if (assignedTo != null) { where.push('i.assigned_to = ?'); params.push(assignedTo); }
+    if (q)                  { where.push('(i.title LIKE ? OR i.id LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const total = (db.prepare(`SELECT COUNT(*) as c FROM incidents i ${whereSql}`).get(...params) as any).c;
+    const rows  = db.prepare(`
+      SELECT i.*,
+             u.username AS assigned_to_username,
+             eu.username AS escalated_by_username,
+             (SELECT COUNT(*) FROM incident_alerts WHERE incident_id = i.id) AS alert_count,
+             (SELECT COUNT(*) FROM incident_actions WHERE incident_id = i.id) AS action_count,
+             (SELECT COUNT(*) FROM incident_actions WHERE incident_id = i.id AND status = 'pending') AS pending_actions,
+             (SELECT COUNT(*) FROM incident_actions WHERE incident_id = i.id AND status = 'executed') AS executed_actions,
+             (SELECT t.event_type || '|' || COALESCE(t.note, '') || '|' || t.created_at
+              FROM incident_timeline t WHERE t.incident_id = i.id
+              ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS last_event_raw
+      FROM incidents i
+      LEFT JOIN users u  ON u.id  = i.assigned_to
+      LEFT JOIN users eu ON eu.id = i.escalated_by
+      ${whereSql}
+      ORDER BY i.escalated_at DESC, i.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset).map((r: any) => {
+      let last_event_type = null, last_event_note = null, last_event_at = null;
+      if (r.last_event_raw) {
+        const [t, n, at] = String(r.last_event_raw).split('|');
+        last_event_type = t || null;
+        last_event_note = n || null;
+        last_event_at   = at || null;
+      }
+      const { last_event_raw, ...rest } = r;
+      return { ...rest, last_event_type, last_event_note, last_event_at };
+    });
+
+    // Status counts (for the dashboard cards) — independent of filters
+    const statusCounts = db.prepare(`
+      SELECT status, COUNT(*) as c FROM incidents GROUP BY status
+    `).all() as any[];
+    const counts = { OPEN: 0, IN_PROGRESS: 0, CONTAINED: 0, RESOLVED: 0, CLOSED: 0, RECLASSIFIED_FP: 0 };
+    for (const r of statusCounts) {
+      if ((counts as any)[r.status] !== undefined) (counts as any)[r.status] = r.c;
+    }
+    res.json({ rows, total, counts });
+  });
+
+  app.get('/api/incidents/:id', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const inc: any = db.prepare(`
+      SELECT i.*, u.username AS assigned_to_username, eu.username AS escalated_by_username
+      FROM incidents i
+      LEFT JOIN users u  ON u.id  = i.assigned_to
+      LEFT JOIN users eu ON eu.id = i.escalated_by
+      WHERE i.id = ?
+    `).get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    inc.alerts = db.prepare(`
+      SELECT a.id, a.timestamp, a.rule_id, a.description, a.severity, a.source_ip, a.dest_ip, a.agent_name, a.status, a.ai_analysis
+      FROM alerts a
+      INNER JOIN incident_alerts ia ON ia.alert_id = a.id
+      WHERE ia.incident_id = ?
+      ORDER BY a.timestamp DESC
+    `).all(id);
+
+    inc.timeline = db.prepare(`
+      SELECT t.*, u.username
+      FROM incident_timeline t
+      LEFT JOIN users u ON u.id = t.user_id
+      WHERE t.incident_id = ?
+      ORDER BY t.created_at ASC, t.id ASC
+    `).all(id);
+
+    inc.actions = db.prepare(`
+      SELECT a.*, c.username AS created_by_username, e.username AS executed_by_username
+      FROM incident_actions a
+      LEFT JOIN users c ON c.id = a.created_by
+      LEFT JOIN users e ON e.id = a.executed_by
+      WHERE a.incident_id = ?
+      ORDER BY a.order_index ASC, a.created_at ASC, a.id ASC
+    `).all(id);
+
+    res.json(inc);
+  });
+
+  // Action lifecycle (recommend → approve → execute)
+  app.post('/api/incidents/:id/actions', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { action_type, target, priority, description, source } = req.body || {};
+    if (!action_type || !description) return res.status(400).json({ error: 'action_type and description required' });
+    const inc = db.prepare('SELECT id FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+    const r = db.prepare(
+      `INSERT INTO incident_actions (incident_id, action_type, target, priority, status, source, description, created_by)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`
+    ).run(id, action_type, target || null, priority || 'MEDIUM', source || 'analyst', description, req.user?.id ?? null);
+    res.json({ ok: true, id: r.lastInsertRowid });
+  });
+
+  app.patch('/api/incidents/:id/actions/:actionId', authenticate, (req: any, res) => {
+    const { id, actionId } = req.params;
+    const { status: newStatus, notes, description, target, priority, action_type } = req.body || {};
+    const validStatuses = ['pending', 'approved', 'executed', 'failed', 'skipped'];
+    if (newStatus && !validStatuses.includes(newStatus)) return res.status(400).json({ error: `status must be one of ${validStatuses.join(', ')}` });
+    const action: any = db.prepare('SELECT * FROM incident_actions WHERE id = ? AND incident_id = ?').get(actionId, id);
+    if (!action) return res.status(404).json({ error: 'Action not found' });
+    const sets: string[] = [];
+    const params: any[]  = [];
+    if (newStatus) {
+      sets.push('status = ?'); params.push(newStatus);
+      if (newStatus === 'executed' || newStatus === 'failed') {
+        sets.push('executed_at = datetime(\'now\')');
+        sets.push('executed_by = ?'); params.push(req.user?.id ?? null);
+      }
+    }
+    if (notes       !== undefined) { sets.push('notes = ?');       params.push(notes); }
+    if (description !== undefined) { sets.push('description = ?'); params.push(description); }
+    if (target      !== undefined) { sets.push('target = ?');      params.push(target); }
+    if (priority    !== undefined) { sets.push('priority = ?');    params.push(priority); }
+    if (action_type !== undefined) { sets.push('action_type = ?'); params.push(action_type); }
+    if (sets.length === 0) return res.status(400).json({ error: 'no fields to update' });
+    params.push(actionId);
+    db.prepare(`UPDATE incident_actions SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    if (newStatus) {
+      db.prepare(
+        `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+         VALUES (?, 'note', ?, ?)`
+      ).run(id, req.user?.id ?? null, `Action "${action.description?.slice(0, 80) || action.action_type}" → ${newStatus}`);
+    }
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/incidents/:id/actions/:actionId', authenticate, (req: any, res) => {
+    const { id, actionId } = req.params;
+    const action: any = db.prepare('SELECT description, action_type FROM incident_actions WHERE id = ? AND incident_id = ?').get(actionId, id);
+    if (!action) return res.status(404).json({ error: 'Action not found' });
+    db.prepare('DELETE FROM incident_actions WHERE id = ? AND incident_id = ?').run(actionId, id);
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+       VALUES (?, 'note', ?, ?)`
+    ).run(id, req.user?.id ?? null, `Removed action "${(action.description || action.action_type).slice(0, 80)}"`);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/incidents/:id/actions/reorder', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { ordered_ids } = req.body || {};
+    if (!Array.isArray(ordered_ids)) return res.status(400).json({ error: 'ordered_ids (array) required' });
+    const upd = db.prepare('UPDATE incident_actions SET order_index = ? WHERE id = ? AND incident_id = ?');
+    const tx = db.transaction(() => {
+      ordered_ids.forEach((aid: number, idx: number) => upd.run(idx, aid, id));
+    });
+    tx();
+    res.json({ ok: true });
+  });
+
+  // Update incident metadata (report_body, title, severity, status)
+  app.patch('/api/incidents/:id', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { report_body, title, severity, status: newStatus } = req.body || {};
+    const validStatuses = ['OPEN', 'IN_PROGRESS', 'CONTAINED', 'RESOLVED', 'CLOSED', 'RECLASSIFIED_FP'];
+
+    const inc: any = db.prepare('SELECT status, assigned_to FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    const requesterRole = req.user?.role;
+    const isOwner = inc.assigned_to === req.user?.id;
+    const canEdit = ['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole) || (requesterRole === 'TIER2' && isOwner);
+    if (!canEdit) return res.status(403).json({ error: 'Not allowed to edit this incident' });
+
+    const sets: string[] = ['updated_at = datetime(\'now\')'];
+    const params: any[]  = [];
+    if (report_body !== undefined) { sets.push('report_body = ?'); params.push(report_body); }
+    if (title       !== undefined) { sets.push('title = ?');       params.push(title.slice(0, 200)); }
+    if (severity    !== undefined) { sets.push('severity = ?');    params.push(severity); }
+    if (newStatus   !== undefined) {
+      if (!validStatuses.includes(newStatus)) return res.status(400).json({ error: `status must be one of ${validStatuses.join(', ')}` });
+      sets.push('status = ?'); params.push(newStatus);
+      db.prepare(
+        `INSERT INTO incident_timeline (incident_id, event_type, status_from, status_to, user_id)
+         VALUES (?, 'status_change', ?, ?, ?)`
+      ).run(id, inc.status, newStatus, req.user?.id ?? null);
+    }
+    if (sets.length === 1) return res.status(400).json({ error: 'no fields to update' });
+    params.push(id);
+    db.prepare(`UPDATE incidents SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    if (newStatus) writeAudit(req.user?.id, 'INCIDENT_STATUS', `Incident ${id} status ${inc.status} → ${newStatus}`);
+    io.emit('incident_updated', { id });
+    res.json({ ok: true });
+  });
+
+  // Reclassify as False Positive
+  app.post('/api/incidents/:id/reclassify-fp', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { note } = req.body || {};
+    const inc: any = db.prepare('SELECT status, assigned_to FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    const requesterRole = req.user?.role;
+    const isOwner = inc.assigned_to === req.user?.id;
+    if (!['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole) && !(requesterRole === 'TIER2' && isOwner)) {
+      return res.status(403).json({ error: 'Only ADMIN, INCIDENT_LEAD, or assigned TIER2 can reclassify' });
+    }
+
+    db.prepare(
+      `UPDATE incidents SET status = 'RECLASSIFIED_FP', closed_by = ?, closed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`
+    ).run(req.user?.id ?? null, id);
+
+    // Push linked alerts back to the FP archive
+    const linked = db.prepare('SELECT alert_id FROM incident_alerts WHERE incident_id = ?').all(id) as any[];
+    for (const r of linked) {
+      db.prepare(
+        `UPDATE alerts SET status = 'FALSE_POSITIVE', fp_method = 'analyst',
+           fp_reason = COALESCE(fp_reason, 'Reclassified by analyst from incident ' || ?),
+           fp_confidence = COALESCE(NULLIF(fp_confidence, 0), 1.0),
+           filtered_at = datetime('now')
+         WHERE id = ?`
+      ).run(id, r.alert_id);
+    }
+
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, status_from, status_to, user_id, note)
+       VALUES (?, 'reclassified_fp', ?, 'RECLASSIFIED_FP', ?, ?)`
+    ).run(id, inc.status, req.user?.id ?? null, note || null);
+
+    writeAudit(req.user?.id, 'INCIDENT_RECLASSIFIED_FP', `Incident ${id} reclassified as FP (${linked.length} alert(s) returned to archive)`);
+    io.emit('incident_updated', { id });
+    res.json({ ok: true, status: 'RECLASSIFIED_FP', alerts_returned_to_archive: linked.length });
+  });
+
+  app.patch('/api/incidents/:id/assign', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { user_id, note } = req.body || {};
+    // null/undefined user_id → unassign
+    const targetUserId: number | null = (typeof user_id === 'number') ? user_id : (user_id === null ? null : NaN);
+    if (Number.isNaN(targetUserId)) return res.status(400).json({ error: 'user_id (number or null) required' });
+
+    const inc: any = db.prepare('SELECT assigned_to, phase, status FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    const requesterRole = req.user?.role;
+    const requesterId   = req.user?.id;
+    const isReassign    = inc.assigned_to !== null && targetUserId !== inc.assigned_to;
+    const isClaim       = inc.assigned_to === null && targetUserId !== null;
+    const isSelfClaim   = isClaim && targetUserId === requesterId;
+    const isUnassign    = inc.assigned_to !== null && targetUserId === null;
+
+    // Authorization rules:
+    //  - Anyone in ADMIN/INCIDENT_LEAD can assign/reassign/unassign freely
+    //  - TIER2 / ADMIN can claim an UNASSIGNED incident (self-assign or claim for self)
+    if (isReassign || isUnassign) {
+      if (!['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole)) {
+        return res.status(403).json({ error: 'Only ADMIN or INCIDENT_LEAD can reassign or unassign' });
+      }
+    } else if (isClaim && !isSelfClaim) {
+      if (!['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole)) {
+        return res.status(403).json({ error: 'Only ADMIN or INCIDENT_LEAD can assign others' });
+      }
+    } else if (isSelfClaim) {
+      if (!['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(requesterRole)) {
+        return res.status(403).json({ error: 'Only TIER2+ users can claim an incident' });
+      }
+    }
+
+    // Compute auto-status (OPEN ↔ IN_PROGRESS based on assignment, when phase ≤ analysis)
+    const newStatus = computeIncidentStatus(inc.phase, targetUserId, inc.status);
+    const statusChanged = newStatus !== inc.status;
+
+    db.prepare(`UPDATE incidents SET assigned_to = ?, status = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(targetUserId, newStatus, id);
+
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+       VALUES (?, 'assigned', ?, ?)`
+    ).run(
+      id, requesterId ?? null,
+      note || (isUnassign  ? `Unassigned (was user #${inc.assigned_to})` :
+               isSelfClaim ? `Claimed by ${req.user?.username || ('user #' + requesterId)}` :
+               isClaim     ? `Assigned to user #${targetUserId}` :
+                             `Reassigned (was user #${inc.assigned_to ?? 'unassigned'} → user #${targetUserId})`)
+    );
+
+    if (statusChanged) {
+      db.prepare(
+        `INSERT INTO incident_timeline (incident_id, event_type, status_from, status_to, user_id, note)
+         VALUES (?, 'status_change', ?, ?, ?, ?)`
+      ).run(id, inc.status, newStatus, requesterId ?? null,
+        targetUserId ? 'Auto-promoted to Investigating on assignment'
+                     : 'Auto-reverted to Open on unassignment');
+    }
+
+    writeAudit(req.user?.id, 'INCIDENT_ASSIGNED',
+      isUnassign ? `Incident ${id} unassigned (was user #${inc.assigned_to})` :
+                   `Incident ${id} assigned to user #${targetUserId}`);
+    io.emit('incident_updated', { id });
+    res.json({ ok: true, status: newStatus });
+  });
+
+  // Self-claim shortcut — any TIER2+ user can claim an unassigned incident
+  app.post('/api/incidents/:id/take', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const requesterRole = req.user?.role;
+    const requesterId   = req.user?.id;
+    if (!['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(requesterRole)) {
+      return res.status(403).json({ error: 'Only TIER2+ users can claim an incident' });
+    }
+    const inc: any = db.prepare('SELECT assigned_to, phase, status FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+    if (inc.assigned_to && inc.assigned_to !== requesterId) {
+      return res.status(409).json({ error: 'Incident is already assigned to someone else' });
+    }
+    const newStatus = computeIncidentStatus(inc.phase, requesterId, inc.status);
+    db.prepare(`UPDATE incidents SET assigned_to = ?, status = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(requesterId, newStatus, id);
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+       VALUES (?, 'assigned', ?, ?)`
+    ).run(id, requesterId, `Claimed by ${req.user?.username}`);
+    if (newStatus !== inc.status) {
+      db.prepare(
+        `INSERT INTO incident_timeline (incident_id, event_type, status_from, status_to, user_id, note)
+         VALUES (?, 'status_change', ?, ?, ?, 'Auto-promoted to Investigating on claim')`
+      ).run(id, inc.status, newStatus, requesterId);
+    }
+    writeAudit(requesterId, 'INCIDENT_CLAIMED', `Incident ${id} self-claimed`);
+    io.emit('incident_updated', { id });
+    res.json({ ok: true, status: newStatus, assigned_to: requesterId });
+  });
+
+  app.patch('/api/incidents/:id/phase', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { phase, note } = req.body || {};
+    if (!INCIDENT_PHASES.includes(phase)) return res.status(400).json({ error: `phase must be one of: ${INCIDENT_PHASES.join(', ')}` });
+
+    const inc: any = db.prepare('SELECT phase, status, assigned_to FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    const requesterRole = req.user?.role;
+    const isOwner = inc.assigned_to === req.user?.id;
+    if (!['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole) && !(requesterRole === 'TIER2' && isOwner)) {
+      return res.status(403).json({ error: 'Only ADMIN, INCIDENT_LEAD, or assigned TIER2 can move phase' });
+    }
+
+    const newStatus = computeIncidentStatus(phase, inc.assigned_to, inc.status);
+    db.prepare(`UPDATE incidents SET phase = ?, status = ?, updated_at = datetime('now') WHERE id = ?`).run(phase, newStatus, id);
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, phase_from, phase_to, status_from, status_to, user_id, note)
+       VALUES (?, 'phase_change', ?, ?, ?, ?, ?, ?)`
+    ).run(id, inc.phase, phase, inc.status, newStatus, req.user?.id ?? null, note || null);
+    writeAudit(req.user?.id, 'INCIDENT_PHASE', `Incident ${id} phase ${inc.phase} → ${phase}`);
+    io.emit('incident_updated', { id });
+    res.json({ ok: true, phase, status: newStatus });
+  });
+
+  app.post('/api/incidents/:id/close', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { note } = req.body || {};
+
+    const inc: any = db.prepare('SELECT status, assigned_to FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+    if (inc.status === 'CLOSED') return res.json({ ok: true, status: 'CLOSED' });
+
+    const requesterRole = req.user?.role;
+    const isOwner = inc.assigned_to === req.user?.id;
+    if (!['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole) && !(requesterRole === 'TIER2' && isOwner)) {
+      return res.status(403).json({ error: 'Only ADMIN, INCIDENT_LEAD, or assigned TIER2 can close' });
+    }
+
+    db.prepare(
+      `UPDATE incidents SET status = 'CLOSED', closed_by = ?, closed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`
+    ).run(req.user?.id ?? null, id);
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, status_from, status_to, user_id, note)
+       VALUES (?, 'closed', ?, 'CLOSED', ?, ?)`
+    ).run(id, inc.status, req.user?.id ?? null, note || null);
+    writeAudit(req.user?.id, 'INCIDENT_CLOSED', `Incident ${id} closed`);
+    io.emit('incident_updated', { id });
+    res.json({ ok: true, status: 'CLOSED' });
+  });
+
+  app.post('/api/incidents/:id/timeline', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { note } = req.body || {};
+    if (!note || typeof note !== 'string' || note.trim().length === 0) return res.status(400).json({ error: 'note required' });
+
+    const inc: any = db.prepare('SELECT id FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    db.prepare(
+      `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+       VALUES (?, 'note', ?, ?)`
+    ).run(id, req.user?.id ?? null, note.slice(0, 2000));
+    io.emit('incident_updated', { id });
+    res.json({ ok: true });
+  });
+
+  // ── Escalate alert: legacy endpoint, delegates to incident creation ────────
+  app.post('/api/alerts/:id/escalate', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const r = await createIncidentFromAlert({
+        alertId:     id,
+        assigned_to: null,
+        create_glpi: true,
+        user_id:     req.user?.id ?? null,
+      });
+      writeAudit(req.user?.id, 'ALERT_ESCALATED', `Alert ${id} escalated → incident ${r.id} (legacy)`);
+      res.json({ ok: true, status: 'ESCALATED', incident_id: r.id });
+    } catch (err: any) {
+      console.error('[Legacy escalate] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Escalation failed' });
+    }
   });
 
   // ── Confirm FP (analyst confirms FP verdict) ──────────────────────────────
   app.post('/api/alerts/:id/confirm-fp', authenticate, (req: any, res) => {
     const { id } = req.params;
-    db.prepare("UPDATE alerts SET status = 'FP_CONFIRMED', closed_at = datetime('now') WHERE id = ?").run(id);
+    db.prepare(
+      `UPDATE alerts SET status = 'FP_CONFIRMED', closed_at = datetime('now'),
+         fp_method = COALESCE(fp_method, 'analyst'),
+         fp_reason = COALESCE(fp_reason, 'Confirmed as false positive by analyst'),
+         fp_confidence = COALESCE(NULLIF(fp_confidence, 0), 1.0),
+         filtered_at = COALESCE(filtered_at, datetime('now'))
+       WHERE id = ?`
+    ).run(id);
     writeAudit(req.user?.id, 'FP_CONFIRMED', `Alert ${id} FP confirmed by analyst`);
     io.emit('alert_updated', { id, status: 'FP_CONFIRMED' });
     res.json({ ok: true, status: 'FP_CONFIRMED' });
@@ -2305,10 +3350,24 @@ async function startServer() {
     res.json({ status: 'ok' });
   });
 
+  app.patch('/api/playbooks/:id', authenticate, requireAdmin, (req: any, res) => {
+    const { tactic, title, steps } = req.body || {};
+    const updates: string[] = [];
+    const values: any[]     = [];
+    if (tactic !== undefined) { updates.push('tactic = ?'); values.push(tactic); }
+    if (title  !== undefined) { updates.push('title = ?');  values.push(title); }
+    if (steps  !== undefined) { updates.push('steps = ?');  values.push(steps); }
+    if (updates.length === 0) return res.status(400).json({ error: 'no fields to update' });
+    values.push(req.params.id);
+    db.prepare(`UPDATE playbooks SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    writeAudit(req.user?.id, 'PLAYBOOK_UPDATED', `Playbook #${req.params.id} updated`);
+    res.json({ ok: true });
+  });
+
   // ── Integrations ─────────────────────────────────────────────────────────
   app.get('/api/integrations', authenticate, (_req, res) => {
     const rows = db.prepare('SELECT * FROM integrations').all() as any[];
-    const result = rows.map(r => {
+    const result = rows.filter(r => r.name !== 'wazuh').map(r => {
       let cfg: any = {};
       try { cfg = JSON.parse(r.config || '{}'); } catch {}
       const stats = db.prepare(`
@@ -2356,13 +3415,19 @@ async function startServer() {
 
     if (name === 'email') {
       try {
-        await sendIncidentAlert('Test from BBS AISOC', 'This is a test notification from the BBS AISOC platform. If you received this, email integration is working correctly.');
+        await sendIncidentAlert('Test from BBS AISOC', 'This is a test notification from the BBS AISOC platform. If you received this, email integration is working correctly.', cfg);
         logAction.run(null, 'email', 'test', 'success', 'Test email', null);
         return res.json({ ok: true });
       } catch (err: any) {
         logAction.run(null, 'email', 'test', 'failed', 'Test email', err?.message);
         return res.json({ ok: false, error: err?.message });
       }
+    }
+    if (name === 'slack') {
+      if (!cfg.webhook_url) return res.json({ ok: false, error: 'Webhook URL is required' });
+      const result = await sendSlackWebhook(cfg.webhook_url, '🔔 *[BBS AISOC]* Test message — Slack integration is working correctly!');
+      logAction.run(null, 'slack', 'test', result.ok ? 'success' : 'failed', 'Test message', result.error || null);
+      return res.json(result);
     }
     if (name === 'telegram') {
       if (!cfg.bot_token || !cfg.chat_id) return res.json({ ok: false, error: 'Bot token and chat ID are required' });

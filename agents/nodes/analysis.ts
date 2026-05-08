@@ -60,6 +60,19 @@ MEMORY-DRIVEN FP RULES (THESE ARE AUTHORITATIVE — TREAT AS GROUND TRUTH):
 - Calibrate honestly: 0.75 means "likely FP but worth a second look", 0.90 means
   "very strong prior evidence, near-certain FP". Never assign > 0.92 from LLM alone.
 
+PRIORITY ASSIGNMENT — when uncertain, BIAS TOWARD LOWER PRIORITY:
+- Use CRITICAL only with multi-IOC, multi-host, or active exploitation evidence
+- Use HIGH only when description explicitly contains attack TTPs (credential access,
+  lateral movement, exfiltration, privilege escalation, C2)
+- Use MEDIUM or LOW by default for: routine traffic, scanner/monitoring activity,
+  isolated policy violations, single-host benign-looking events
+- LOW and MEDIUM priority alerts are AUTO-ARCHIVED to the FP archive; only HIGH and
+  CRITICAL reach a human analyst. Lower priority is reversible (analyst can escalate
+  from the archive); over-prioritization wastes scarce SOC time.
+- When memory hints (fp_default assets, similar past FPs, high IOC fp_ratio) suggest
+  noise but you can't fully commit to is_false_positive=true, drop priority to LOW
+  instead of MEDIUM/HIGH. The system will archive it and the memory loop will reinforce.
+
 ATTACK CATEGORY: Choose the single MITRE ATT&CK tactic that best matches the alert intent.
 
 KILL CHAIN STAGE: Map to the Lockheed Martin Kill Chain phase:

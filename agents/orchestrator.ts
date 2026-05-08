@@ -25,6 +25,9 @@ export interface OrchestrationOutput {
   remediation_steps:string;
   email_sent:       number;
   status:           string;
+  fp_method?:       string | null;
+  fp_reason?:       string | null;
+  fp_confidence?:   number | null;
 }
 
 /** Lightweight FP-scan result (Steps 0-3 only). */
@@ -42,6 +45,67 @@ export interface FpScanResult {
 
 interface RunOpts {
   modelAssignments?: ModelAssignments;
+}
+
+// ── FP-reduction helpers ────────────────────────────────────────────────────
+
+const HIGH_RISK_KEYWORDS = [
+  'exfiltration', 'lateral movement', 'credential access', 'privilege escalation',
+  'c2 beacon', 'pass-the-hash', 'ransomware', 'data theft', 'persistence',
+  'command and control', 'kerberoast', 'mimikatz',
+];
+
+/**
+ * Deterministic fast-FP path: if every extracted asset value matches an asset_context
+ * entry with fp_default=1 AND the description contains no high-risk attack keywords,
+ * classify as FP without spending an LLM call on triage.
+ */
+function assetFastFp(alert: any, assetCtx: any[]): { isFp: boolean; reason?: string } {
+  if (!assetCtx?.length) return { isFp: false };
+  const fpAssets = assetCtx.filter((a: any) => a.fp_default === 1);
+  if (fpAssets.length === 0) return { isFp: false };
+
+  const desc = String(alert.description || '').toLowerCase();
+  if (HIGH_RISK_KEYWORDS.some(k => desc.includes(k))) return { isFp: false };
+
+  const matchedValues = new Set(fpAssets.map((a: any) => String(a.value).toLowerCase()));
+  const allValues     = extractAssetValuesFromAlert(alert).map((v: any) => String(v).toLowerCase());
+  if (allValues.length === 0) return { isFp: false };
+  const allMatch = allValues.every(v => matchedValues.has(v));
+  if (!allMatch) return { isFp: false };
+
+  return {
+    isFp: true,
+    reason: `All sources are known FP-default assets (${fpAssets.map((a: any) => `${a.role}@${a.value}`).join(', ')}); no high-risk keywords in description`,
+  };
+}
+
+/**
+ * FP confidence aggregator. Combines pre-computed signals (no extra LLM calls).
+ * Returns score in [0, 1] and a breakdown for fp_reason.
+ */
+function aggregateFpScore(args: {
+  triageFpConfidence: number;
+  assetCtx: any[];
+  iocHits:  any[];
+  recallHits: any[];
+}): { score: number; breakdown: string } {
+  const { triageFpConfidence, assetCtx, iocHits, recallHits } = args;
+
+  const triageFp = Math.max(0, Math.min(1, triageFpConfidence || 0));
+  const assetFp  = assetCtx?.some((a: any) => a.fp_default === 1) ? 0.6 : 0;
+  const iocRatios = (iocHits || []).map((h: any) => {
+    const total = (h.fp_count || 0) + (h.tp_count || 0);
+    return total >= 3 ? (h.fp_count / total) : 0;
+  });
+  const iocFp     = iocRatios.length ? iocRatios.reduce((a, b) => a + b, 0) / iocRatios.length : 0;
+  const recallFps = (recallHits || []).filter((h: any) => h.outcome === 'FALSE_POSITIVE').map((h: any) => h.similarity ?? 0);
+  const recallFp  = recallFps.length ? Math.max(...recallFps) : 0;
+
+  const score = 0.45 * triageFp + 0.20 * assetFp + 0.15 * iocFp + 0.20 * recallFp;
+  const breakdown =
+    `triage=${triageFp.toFixed(2)} asset=${assetFp.toFixed(2)} ioc=${iocFp.toFixed(2)} recall=${recallFp.toFixed(2)} → score=${score.toFixed(2)}`;
+  return { score, breakdown };
 }
 
 /**
@@ -89,6 +153,29 @@ export async function runHubAndSwarm(
   if (recallHits.length > 0)   log(`Recall: ${recallHits.length} similar past incident(s)`);
   if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
   if (assetCtx.length > 0)     log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+
+  // ── 1.5 Asset fast-FP (deterministic, pre-LLM) ────────────────────────────
+  // If every asset value is known fp_default AND no high-risk keywords, archive without LLM cost.
+  const fastFp = assetFastFp(alert, assetCtx);
+  if (fastFp.isFp) {
+    log(`Asset fast-FP: ${fastFp.reason}`);
+    upsertIocs({}, alert.id, "Low", "FALSE_POSITIVE");
+    commitAsync({
+      alertId: alert.id, idempotencyKey: traceId,
+      alertDescription: alert.description ?? "",
+      triage: { is_false_positive: true, false_positive_reason: fastFp.reason, false_positive_confidence: 0.85 },
+      outcome: "FALSE_POSITIVE",
+      triggered_by: 'composer',
+    });
+    return composeOutput({
+      analysis: { is_false_positive: true, false_positive_reason: fastFp.reason, false_positive_confidence: 0.85 },
+      intel: null, knowledge: null, correlation: null,
+      ticket: null, responsePlan: null, validation: null,
+      ctx, fpShortCircuit: true,
+      fpMethodOverride: 'asset_fast',
+      fpReasonOverride: fastFp.reason,
+    });
+  }
 
   // Collect all FP signals — each is evidence for triage, not a verdict on its own
   const fpSimilar    = recallHits.find((h: any) => h.outcome === 'FALSE_POSITIVE' && h.similarity > 0.85);
@@ -200,8 +287,21 @@ export async function runHubAndSwarm(
     validation = r.validation;
   }
 
+  // ── 6.5 FP confidence aggregator — combine signals into one score ────────
+  const aggFp = aggregateFpScore({
+    triageFpConfidence: triage?.false_positive_confidence ?? 0,
+    assetCtx,
+    iocHits: iocPreflight,
+    recallHits,
+  });
+  log(`FP aggregator: ${aggFp.breakdown}`);
+
   // ── 7. Memory commits ────────────────────────────────────────────────────
-  const finalOutcome = triage?.is_false_positive ? "FALSE_POSITIVE"
+  // Priority gate: MEDIUM and LOW → noise (FP archive); only HIGH+ reach analyst
+  const isNoisePriority = !triage?.is_false_positive
+                       && (ticket?.priority === "LOW" || ticket?.priority === "MEDIUM");
+  const isAggregatedFp  = !triage?.is_false_positive && aggFp.score >= 0.55;
+  const finalOutcome = (triage?.is_false_positive || isAggregatedFp || isNoisePriority) ? "FALSE_POSITIVE"
                      : ticket?.priority === "CRITICAL" ? "ESCALATED"
                      : "TRIAGED";
   upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
@@ -222,6 +322,9 @@ export async function runHubAndSwarm(
     ioc_check: workerResults.ioc_check ?? null,
     ticket, responsePlan, validation,
     ctx, fpShortCircuit: false,
+    aggregatedFp:    isAggregatedFp,
+    aggregatedScore: aggFp.score,
+    aggregatedBreakdown: aggFp.breakdown,
   });
 }
 
@@ -380,9 +483,10 @@ export async function runInvestigation(
   // Re-run pre-flight for recall/ioc context needed by planner
   const queryText = `${alert.description ?? ""}`.slice(0, 1500);
   const assetValues = extractAssetValuesFromAlert(alert);
-  const [recallHits, iocPreflightValues] = await Promise.all([
+  const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
+    Promise.resolve(lookupAssetContext(assetValues)),
   ]);
   const iocPreflight = lookupIocs(iocPreflightValues);
 
@@ -448,8 +552,21 @@ export async function runInvestigation(
     validation = r.validation;
   }
 
+  // ── 6.5 FP confidence aggregator ─────────────────────────────────────────
+  const aggFp2 = aggregateFpScore({
+    triageFpConfidence: triage?.false_positive_confidence ?? 0,
+    assetCtx,
+    iocHits: iocPreflight,
+    recallHits,
+  });
+  log(`FP aggregator: ${aggFp2.breakdown}`);
+
   // ── 7. Memory commits ─────────────────────────────────────────────────
-  const finalOutcome = triage?.is_false_positive ? "FALSE_POSITIVE"
+  // Priority gate: MEDIUM and LOW → noise (FP archive); only HIGH+ reach analyst
+  const isNoisePriority2 = !triage?.is_false_positive
+                        && (ticket?.priority === "LOW" || ticket?.priority === "MEDIUM");
+  const isAggregatedFp2  = !triage?.is_false_positive && aggFp2.score >= 0.55;
+  const finalOutcome = (triage?.is_false_positive || isAggregatedFp2 || isNoisePriority2) ? "FALSE_POSITIVE"
                      : ticket?.priority === "CRITICAL" ? "ESCALATED"
                      : "TRIAGED";
   upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
@@ -470,6 +587,9 @@ export async function runInvestigation(
     ioc_check: workerResults.ioc_check ?? null,
     ticket, responsePlan, validation,
     ctx, fpShortCircuit: false,
+    aggregatedFp:    isAggregatedFp2,
+    aggregatedScore: aggFp2.score,
+    aggregatedBreakdown: aggFp2.breakdown,
   });
 }
 
@@ -540,6 +660,12 @@ function composeOutput(args: {
   ticket: any; responsePlan: any; validation: any;
   recall?: any; ioc_check?: any;
   ctx: RunContext; fpShortCircuit: boolean;
+  // FP-reduction extensions:
+  fpMethodOverride?:    string;        // e.g. 'asset_fast'
+  fpReasonOverride?:    string;
+  aggregatedFp?:        boolean;       // confidence aggregator passed threshold
+  aggregatedScore?:     number;
+  aggregatedBreakdown?: string;
 }): OrchestrationOutput {
   const { analysis, intel, knowledge, correlation, ticket, responsePlan, validation, ctx } = args;
 
@@ -568,12 +694,58 @@ function composeOutput(args: {
     },
   };
 
+  // Determine FP outcome. Defense-in-depth layers, in priority order:
+  //   1. Asset fast-FP override (deterministic, pre-LLM)
+  //   2. Memory short-circuit (similarity match against past FPs)
+  //   3. Triage agent verdict (is_false_positive=true)
+  //   4. Confidence aggregator (multi-signal ensemble)
+  //   5. Risk-score gate: triage-computed risk_score < 40 → noise (overrides LLM priority)
+  //   6. Priority gate: LOW or MEDIUM → noise (only HIGH+ reaches Investigation)
+  const triageRiskScore  = typeof analysis?.risk_score === 'number' ? analysis.risk_score : 100;
+  const isAgentFp        = !!analysis?.is_false_positive;
+  const isAggregatedFp   = !args.fpShortCircuit && !isAgentFp && !!args.aggregatedFp;
+  const isLowRiskScore   = !args.fpShortCircuit && !isAgentFp && !isAggregatedFp && triageRiskScore < 40;
+  const isNoisePriority  = !args.fpShortCircuit && !isAgentFp && !isAggregatedFp && !isLowRiskScore
+                         && (ticket?.priority === 'LOW' || ticket?.priority === 'MEDIUM');
+  const isFp             = args.fpShortCircuit || isAgentFp || isAggregatedFp || isLowRiskScore || isNoisePriority;
+
+  let fp_method: string | null = null;
+  let fp_reason: string | null = null;
+  let fp_confidence: number | null = null;
+  if (args.fpMethodOverride) {
+    fp_method     = args.fpMethodOverride;
+    fp_reason     = args.fpReasonOverride || 'Override';
+    fp_confidence = analysis?.false_positive_confidence ?? 0.85;
+  } else if (args.fpShortCircuit) {
+    fp_method = 'memory';
+    fp_reason = 'Similar to a previously confirmed false positive';
+    fp_confidence = 0.9;
+  } else if (isAgentFp) {
+    fp_method = 'triage';
+    fp_reason = analysis?.false_positive_reason || 'Triage agent classified as false positive';
+    fp_confidence = analysis?.false_positive_confidence ?? 0.75;
+  } else if (isAggregatedFp) {
+    fp_method = 'confidence_aggregated';
+    fp_reason = `Aggregated FP signals: ${args.aggregatedBreakdown ?? '(no breakdown)'}`;
+    fp_confidence = args.aggregatedScore ?? 0.55;
+  } else if (isLowRiskScore) {
+    fp_method = 'low_risk_score';
+    fp_reason = `Triage risk_score=${triageRiskScore} < 40 — auto-archived (overrides LLM priority assignment)`;
+    fp_confidence = 0.7;
+  } else if (isNoisePriority) {
+    fp_method = 'noise_priority';
+    fp_reason = `Triaged as ${ticket?.priority} priority — auto-archived (only HIGH+ reach analysts)`;
+    fp_confidence = 0.6;
+  }
+
   return {
     ai_analysis:       JSON.stringify(aiAnalysis),
     mitre_attack:      JSON.stringify(intel?.mitre_attack || []),
     remediation_steps: knowledge?.remediation_steps || "",
     email_sent:        ticket?.email_notification_sent ? 1 : 0,
-    status:            args.fpShortCircuit ? "FALSE_POSITIVE"
-                      : analysis?.is_false_positive ? "FALSE_POSITIVE" : "TRIAGED",
+    status:            isFp ? "FALSE_POSITIVE" : "TRIAGED",
+    fp_method,
+    fp_reason,
+    fp_confidence,
   };
 }

@@ -1,4 +1,90 @@
-export type UserRole = 'ADMIN' | 'ANALYST';
+export type UserRole = 'ADMIN' | 'TIER1' | 'TIER2' | 'INCIDENT_LEAD' | 'ANALYST';
+
+export type IncidentPhase = 'detection' | 'analysis' | 'containment' | 'eradication' | 'recovery' | 'post_incident';
+export type IncidentStatus = 'OPEN' | 'IN_PROGRESS' | 'CONTAINED' | 'RESOLVED' | 'CLOSED' | 'RECLASSIFIED_FP';
+
+export const INCIDENT_STATUS_LABELS: Record<IncidentStatus, string> = {
+  OPEN:            'Open',
+  IN_PROGRESS:     'Investigating',
+  CONTAINED:       'Contained',
+  RESOLVED:        'Resolved',
+  CLOSED:          'Closed',
+  RECLASSIFIED_FP: 'Reclassified FP',
+};
+
+export type IncidentActionStatus = 'pending' | 'approved' | 'executed' | 'failed' | 'skipped';
+export type IncidentActionSource = 'ai' | 'analyst' | 'playbook';
+
+export interface IncidentAction {
+  id:                     number;
+  incident_id:            string;
+  action_type:            string;
+  target:                 string | null;
+  priority:               string;
+  status:                 IncidentActionStatus;
+  source:                 IncidentActionSource;
+  description:            string;
+  notes:                  string | null;
+  order_index:            number;
+  created_by:             number | null;
+  created_by_username?:   string;
+  created_at:             string;
+  executed_at:            string | null;
+  executed_by:            number | null;
+  executed_by_username?:  string;
+}
+
+export const INCIDENT_PHASES: IncidentPhase[] = ['detection', 'analysis', 'containment', 'eradication', 'recovery', 'post_incident'];
+export const PHASE_LABELS: Record<IncidentPhase, string> = {
+  detection:     'Detection',
+  analysis:      'Analysis',
+  containment:   'Containment',
+  eradication:   'Eradication',
+  recovery:      'Recovery',
+  post_incident: 'Post-Incident',
+};
+
+export interface Incident {
+  id:                     number;
+  title:                  string;
+  severity:               string;
+  status:                 IncidentStatus;
+  phase:                  IncidentPhase;
+  assigned_to:            number | null;
+  assigned_to_username?:  string;
+  escalated_by:           number | null;
+  escalated_by_username?: string;
+  escalated_at:           string;
+  closed_at:              string | null;
+  glpi_ticket_id:         string | null;
+  analysis:               string | null;
+  action_plan:            string | null;
+  reason:                 string | null;
+  report_body?:           string | null;
+  alert_count?:           number;
+  action_count?:          number;
+  pending_actions?:       number;
+  executed_actions?:      number;
+  last_event_type?:       string | null;
+  last_event_note?:       string | null;
+  last_event_at?:         string | null;
+  alerts?:                Alert[];
+  timeline?:              IncidentTimelineEntry[];
+  actions?:               IncidentAction[];
+}
+
+export interface IncidentTimelineEntry {
+  id:          number;
+  event_type:  string;
+  phase_from?: string;
+  phase_to?:   string;
+  status_from?:string;
+  status_to?:  string;
+  user_id:     number | null;
+  username?:   string;
+  note?:       string;
+  created_at:  string;
+}
 
 export interface User {
   id: number;
@@ -57,7 +143,7 @@ export interface Integration {
   name:                string;
   enabled:             boolean;
   config:              Record<string, string>;
-  auto_send_threshold: 'CRITICAL' | 'HIGH' | 'NEVER';
+  auto_send_threshold: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'NEVER';
   updated_at:          string;
   stats_24h?:          { total: number; success: number; failed: number };
 }

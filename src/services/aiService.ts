@@ -321,6 +321,176 @@ export async function acceptFpSuggestion(value: string, type: string): Promise<{
   return res.json();
 }
 
+// ─── Incident Management ─────────────────────────────────────────────────────
+import type { Incident, IncidentAction, IncidentActionStatus } from '../types';
+
+export interface IncidentListResponse {
+  rows:   Incident[];
+  total:  number;
+  counts: Record<string, number>;
+}
+
+export async function listAnalysts(): Promise<{ id: number; username: string; role: string }[]> {
+  const res = await fetch('/api/users/analysts', { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getIncidents(opts: { phase?: string; status?: string; assigned_to?: number; q?: string; limit?: number; offset?: number } = {}): Promise<IncidentListResponse> {
+  const q = new URLSearchParams();
+  if (opts.phase)            q.set('phase',       opts.phase);
+  if (opts.status)           q.set('status',      opts.status);
+  if (opts.assigned_to)      q.set('assigned_to', String(opts.assigned_to));
+  if (opts.q)                q.set('q',           opts.q);
+  if (opts.limit)            q.set('limit',       String(opts.limit));
+  if (opts.offset)           q.set('offset',      String(opts.offset));
+  const res = await fetch(`/api/incidents?${q}`, { headers: authHeaders() });
+  if (!res.ok) return { rows: [], total: 0, counts: {} };
+  return res.json();
+}
+
+export async function reclassifyIncidentFp(id: string, note?: string): Promise<{ ok: boolean; alerts_returned_to_archive?: number; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/reclassify-fp`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ note }) });
+  return res.json();
+}
+
+export async function addIncidentAction(id: string, payload: { action_type: string; target?: string; priority?: string; description: string; source?: string }): Promise<{ ok: boolean; id?: number; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/actions`, { method: 'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+export async function updateIncidentAction(incidentId: string, actionId: number, payload: { status?: IncidentActionStatus; notes?: string; description?: string; target?: string; priority?: string; action_type?: string }): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/incidents/${incidentId}/actions/${actionId}`, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+export async function deleteIncidentAction(incidentId: string, actionId: number): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/incidents/${incidentId}/actions/${actionId}`, { method: 'DELETE', headers: authHeaders() });
+  return res.json();
+}
+
+export async function reorderIncidentActions(incidentId: string, ordered_ids: number[]): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/incidents/${incidentId}/actions/reorder`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ ordered_ids }) });
+  return res.json();
+}
+
+export async function updateIncident(id: string, payload: { report_body?: string; title?: string; severity?: string; status?: string }): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}`, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+export async function getIncident(id: string): Promise<Incident | null> {
+  const res = await fetch(`/api/incidents/${id}`, { headers: authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function createIncident(payload: { alert_id: string; title?: string; severity?: string; assigned_to: number | null; phase?: string; note?: string; create_glpi?: boolean }): Promise<{ ok: boolean; id?: string; glpi_ticket_id?: string | null; error?: string }> {
+  const res = await fetch('/api/incidents', { method: 'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+export async function assignIncident(id: string, user_id: number | null, note?: string): Promise<{ ok: boolean; status?: string; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/assign`, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ user_id, note }) });
+  return res.json();
+}
+
+export async function takeIncident(id: string): Promise<{ ok: boolean; status?: string; assigned_to?: number; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/take`, { method: 'POST', headers: authHeaders() });
+  return res.json();
+}
+
+export async function moveIncidentPhase(id: string, phase: string, note?: string): Promise<{ ok: boolean; phase?: string; status?: string; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/phase`, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ phase, note }) });
+  return res.json();
+}
+
+export async function closeIncident(id: string, note?: string): Promise<{ ok: boolean; status?: string; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/close`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ note }) });
+  return res.json();
+}
+
+export async function addIncidentNote(id: string, note: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/timeline`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ note }) });
+  return res.json();
+}
+
+// ─── Knowledge Base ──────────────────────────────────────────────────────────
+export interface Insight {
+  alert_id:        string;
+  summary:         string;
+  attack_pattern?: string;
+  threat_actor?:   string;
+  outcome:         string;
+  ttp_tags:        string[];
+  triggered_by?:   string;
+  created_at:      string;
+}
+
+export async function getInsights(opts: { q?: string; outcome?: string; limit?: number; offset?: number } = {}): Promise<{ rows: Insight[]; total: number }> {
+  const q = new URLSearchParams();
+  if (opts.q)       q.set('q',       opts.q);
+  if (opts.outcome) q.set('outcome', opts.outcome);
+  if (opts.limit)   q.set('limit',   String(opts.limit));
+  if (opts.offset)  q.set('offset',  String(opts.offset));
+  const res = await fetch(`/api/memory/insights?${q}`, { headers: authHeaders() });
+  if (!res.ok) return { rows: [], total: 0 };
+  return res.json();
+}
+
+export interface IocRow {
+  value:         string;
+  type:          string;
+  first_seen:    string;
+  last_seen:     string;
+  alert_count:   number;
+  threat_level:  string;
+  notes?:        string;
+  fp_count:      number;
+  tp_count:      number;
+  fp_ratio:      number | null;
+}
+
+export async function getIocs(opts: { q?: string; type?: string; limit?: number; offset?: number } = {}): Promise<{ rows: IocRow[]; total: number }> {
+  const q = new URLSearchParams();
+  if (opts.q)      q.set('q',      opts.q);
+  if (opts.type)   q.set('type',   opts.type);
+  if (opts.limit)  q.set('limit',  String(opts.limit));
+  if (opts.offset) q.set('offset', String(opts.offset));
+  const res = await fetch(`/api/memory/iocs/all?${q}`, { headers: authHeaders() });
+  if (!res.ok) return { rows: [], total: 0 };
+  return res.json();
+}
+
+export interface Playbook {
+  id:         number;
+  tactic:     string;
+  title:      string;
+  steps:      string;
+  created_at: string;
+}
+
+export async function getPlaybooks(): Promise<Playbook[]> {
+  const res = await fetch('/api/playbooks', { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function createPlaybook(payload: { tactic: string; title: string; steps: string }): Promise<{ id: number; error?: string }> {
+  const res = await fetch('/api/playbooks', { method: 'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+export async function updatePlaybook(id: number, payload: { tactic?: string; title?: string; steps?: string }): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/playbooks/${id}`, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+export async function deletePlaybook(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/playbooks/${id}`, { method: 'DELETE', headers: authHeaders() });
+  return res.json();
+}
+
 // ─── API Keys ────────────────────────────────────────────────────────────────
 export async function listApiKeys(): Promise<any[]> {
   const res = await fetch('/api/api-keys', { headers: authHeaders() });

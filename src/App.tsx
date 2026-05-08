@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook } from 'lucide-react';
+import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook, Hash } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel } from './services/aiService';
+import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
+import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from './types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
 import PageHeader from './components/ui/PageHeader';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from './features/alerts/alertUtils';
@@ -145,15 +147,37 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
     localStorage.setItem('soc_sidebar_expanded', String(expanded));
   }, [expanded]);
 
-  const menuItems = [
-    { id: 'dashboard',        icon: BarChart3,     label: 'Dashboard' },
-    { id: 'noise-filter',     icon: Filter,        label: 'Noise Filter' },
-    { id: 'fp-archive',       icon: XCircle,       label: 'FP Archive' },
-    { id: 'reports',          icon: FileText,      label: 'Reports' },
-    { id: 'response-actions', icon: Zap,           label: 'Response Actions' },
-    { id: 'investigation',    icon: AlertTriangle, label: 'Investigation' },
-    { id: 'integrations',     icon: Send,          label: 'Integrations' },
-    { id: 'settings',         icon: Settings,      label: 'Settings' },
+  const menuSections: Array<{ label: string; items: Array<{ id: string; icon: any; label: string }> }> = [
+    {
+      label: 'Operations',
+      items: [
+        { id: 'dashboard',        icon: BarChart3,     label: 'Dashboard' },
+        { id: 'noise-filter',     icon: Filter,        label: 'Noise Filter' },
+        { id: 'investigation',    icon: AlertTriangle, label: 'Alerts Queue' },
+        { id: 'fp-archive',       icon: XCircle,       label: 'FP Archive' },
+      ],
+    },
+    {
+      label: 'Response',
+      items: [
+        { id: 'incidents',        icon: AlertOctagon,  label: 'Incidents' },
+        { id: 'response-actions', icon: Zap,           label: 'Response Actions' },
+      ],
+    },
+    {
+      label: 'Memory',
+      items: [
+        { id: 'reports',          icon: FileText,      label: 'Reports' },
+        { id: 'knowledge',        icon: BookOpen,      label: 'Knowledge Base' },
+      ],
+    },
+    {
+      label: 'Config',
+      items: [
+        { id: 'integrations',     icon: Send,          label: 'Integrations' },
+        { id: 'settings',         icon: Settings,      label: 'Admin Ops' },
+      ],
+    },
   ];
 
   return (
@@ -170,22 +194,35 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
         </button>
       </div>
 
-      <nav className="flex-1 flex flex-col gap-1 px-2">
-        {menuItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setActiveTab(item.id)}
-            className={`flex items-center gap-3 py-2.5 rounded-xl transition-all ${
-              activeTab === item.id
-                ? 'text-white bg-gradient-to-r from-[var(--p1)] to-[var(--pd)] shadow-lg shadow-blue-500/20 font-semibold'
-                : 'text-[var(--t2)] hover:bg-[var(--sa)] hover:text-[var(--p1)]'
-            } ${expanded ? 'px-4' : 'px-3 justify-center'}`}
-          >
-            <item.icon className="w-[18px] h-[18px] shrink-0" />
-            <span className={`whitespace-nowrap text-[0.85rem] transition-all duration-300 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0'}`}>
-              {item.label}
-            </span>
-          </button>
+      <nav className="flex-1 flex flex-col gap-1 px-2 overflow-y-auto">
+        {menuSections.map((section, sIdx) => (
+          <div key={section.label} className={sIdx > 0 ? 'mt-3' : ''}>
+            {expanded ? (
+              <p className="px-3 pt-1 pb-1 text-[0.55rem] font-black uppercase tracking-[0.2em] text-[var(--t3)]">
+                {section.label}
+              </p>
+            ) : (
+              sIdx > 0 && <div className="mx-3 my-1 border-t border-[var(--b1)]" />
+            )}
+            <div className="flex flex-col gap-1">
+              {section.items.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  className={`flex items-center gap-3 py-2.5 rounded-xl transition-all ${
+                    activeTab === item.id
+                      ? 'text-white bg-gradient-to-r from-[var(--p1)] to-[var(--pd)] shadow-lg shadow-blue-500/20 font-semibold'
+                      : 'text-[var(--t2)] hover:bg-[var(--sa)] hover:text-[var(--p1)]'
+                  } ${expanded ? 'px-4' : 'px-3 justify-center'}`}
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0" />
+                  <span className={`whitespace-nowrap text-[0.85rem] transition-all duration-300 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0'}`}>
+                    {item.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 
@@ -1134,6 +1171,179 @@ const ConfidenceDonut = ({ value, size = 34 }: { value: number | null; size?: nu
       </svg>
       <div className="absolute inset-0 flex items-center justify-center text-[0.54rem] font-black tabular-nums" style={{ color }}>
         {pct == null ? '—' : `${pct}`}
+      </div>
+    </div>
+  );
+};
+
+const GlobalRiskDonut = ({ score, critical, high, resolvedHighCritical }: { score: number; critical: number; high: number; resolvedHighCritical: number }) => {
+  const size = 164;
+  const stroke = 14;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const v = Math.max(0, Math.min(100, Math.round(score)));
+  const off = c - (v / 100) * c;
+  const color = v >= 80 ? '#d93025' : v >= 60 ? '#f97316' : v >= 35 ? '#f29900' : '#1e8e3e';
+  const label = v >= 80 ? 'Critical' : v >= 60 ? 'High' : v >= 35 ? 'Elevated' : 'Stable';
+
+  return (
+    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-5 h-full flex flex-col">
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wider">Global Risk Score</p>
+          <p className="text-[0.68rem] text-[var(--t4)] mt-1">Weighted by unresolved high and critical alerts.</p>
+        </div>
+        <span className="px-2 py-1 rounded-full text-[0.6rem] font-black uppercase tracking-wider border" style={{ color, borderColor: `${color}55`, backgroundColor: `${color}15` }}>
+          {label}
+        </span>
+      </div>
+
+      <div className="flex items-center justify-center flex-1">
+        <div className="relative" style={{ width: size, height: size }}>
+          <svg width={size} height={size} className="-rotate-90">
+            <circle cx={size / 2} cy={size / 2} r={r} stroke="var(--s1)" strokeWidth={stroke} fill="none" />
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              stroke={color}
+              strokeWidth={stroke}
+              fill="none"
+              strokeLinecap="round"
+              strokeDasharray={c}
+              strokeDashoffset={off}
+              className="transition-all duration-700"
+            />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-[2.2rem] font-black leading-none" style={{ color }}>{v}</span>
+            <span className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-widest mt-1">risk / 100</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 pt-4 border-t border-[var(--b1)]">
+        <div className="text-center">
+          <p className="text-[1.1rem] font-black text-red-500 leading-none">{critical}</p>
+          <p className="text-[0.56rem] font-bold text-[var(--t3)] uppercase tracking-wider mt-1">Critical</p>
+        </div>
+        <div className="text-center">
+          <p className="text-[1.1rem] font-black text-orange-500 leading-none">{high}</p>
+          <p className="text-[0.56rem] font-bold text-[var(--t3)] uppercase tracking-wider mt-1">High</p>
+        </div>
+        <div className="text-center">
+          <p className="text-[1.1rem] font-black text-green-600 leading-none">{resolvedHighCritical}</p>
+          <p className="text-[0.56rem] font-bold text-[var(--t3)] uppercase tracking-wider mt-1">Solved</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+type RiskSeriesPoint = {
+  day: string;
+  label: string;
+  risk: number;
+  activeHighCritical: number;
+  solvedHighCritical: number;
+  totalAlerts: number;
+};
+
+type RiskChartGranularity = 'hours' | 'days' | 'months' | 'years';
+
+const PipelineRiskTimeSeries = ({
+  points,
+  granularity,
+  setGranularity,
+}: {
+  points: RiskSeriesPoint[];
+  granularity: RiskChartGranularity;
+  setGranularity: (value: RiskChartGranularity) => void;
+}) => {
+  const last = points[points.length - 1] || { risk: 0, activeHighCritical: 0, solvedHighCritical: 0, totalAlerts: 0 };
+  const series = [
+    { key: 'risk' as const, label: 'Risk score', color: '#d93025', value: `${Math.round(last.risk)}/100` },
+    { key: 'activeHighCritical' as const, label: 'Active high/critical', color: '#f97316', value: String(last.activeHighCritical) },
+    { key: 'solvedHighCritical' as const, label: 'Solved high/critical', color: '#1e8e3e', value: String(last.solvedHighCritical) },
+    { key: 'totalAlerts' as const, label: 'Total alerts', color: '#004a99', value: String(last.totalAlerts) },
+  ];
+
+  return (
+    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-5 h-full">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wider">Risk & Pipeline Over Time</p>
+          <p className="text-[0.68rem] text-[var(--t4)] mt-1">Risk is red; choose hourly, daily, monthly, or yearly buckets.</p>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <select
+            value={granularity}
+            onChange={(e) => setGranularity(e.target.value as RiskChartGranularity)}
+            className="rounded-lg border border-[var(--b2)] bg-[var(--s0)] px-2.5 py-1.5 text-[0.7rem] font-bold text-[var(--t6)] outline-none focus:border-[var(--p1)]"
+            title="Chart time bucket"
+          >
+            <option value="hours">Hours</option>
+            <option value="days">Days</option>
+            <option value="months">Months</option>
+            <option value="years">Years</option>
+          </select>
+          <div className="flex flex-wrap gap-2 justify-end">
+            {series.map(s => (
+              <div key={s.key} className="flex items-center gap-1.5 text-[0.62rem] font-bold text-[var(--t5)]">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                <span>{s.label}</span>
+                <span className="font-mono text-[var(--t3)]">{s.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="w-full h-[260px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={points} margin={{ top: 8, right: 18, bottom: 4, left: -8 }}>
+            <CartesianGrid stroke="var(--b1)" strokeDasharray="3 3" vertical={false} />
+            <XAxis
+              dataKey="label"
+              tick={{ fill: 'var(--t3)', fontSize: 11, fontFamily: 'monospace' }}
+              axisLine={{ stroke: 'var(--b1)' }}
+              tickLine={{ stroke: 'var(--b1)' }}
+              minTickGap={10}
+            />
+            <YAxis
+              yAxisId="risk"
+              domain={[0, 100]}
+              tick={{ fill: 'var(--t3)', fontSize: 11, fontFamily: 'monospace' }}
+              axisLine={{ stroke: 'var(--b1)' }}
+              tickLine={{ stroke: 'var(--b1)' }}
+              width={36}
+            />
+            <YAxis
+              yAxisId="count"
+              orientation="right"
+              allowDecimals={false}
+              tick={{ fill: 'var(--t3)', fontSize: 11, fontFamily: 'monospace' }}
+              axisLine={{ stroke: 'var(--b1)' }}
+              tickLine={{ stroke: 'var(--b1)' }}
+              width={34}
+            />
+            <Tooltip
+              contentStyle={{
+                background: 'var(--s0)',
+                border: '1px solid var(--b1)',
+                borderRadius: 8,
+                color: 'var(--t7)',
+                fontSize: 12,
+              }}
+              labelStyle={{ color: 'var(--t7)', fontWeight: 800 }}
+            />
+            <Legend wrapperStyle={{ fontSize: 11, color: 'var(--t5)', paddingTop: 8 }} />
+            <Line yAxisId="risk" type="monotone" dataKey="risk" name="Risk score" stroke="#d93025" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+            <Line yAxisId="count" type="monotone" dataKey="activeHighCritical" name="Active high/critical" stroke="#f97316" strokeWidth={2.4} dot={false} />
+            <Line yAxisId="count" type="monotone" dataKey="solvedHighCritical" name="Solved high/critical" stroke="#1e8e3e" strokeWidth={2.4} dot={false} />
+            <Line yAxisId="count" type="monotone" dataKey="totalAlerts" name="Total alerts" stroke="#004a99" strokeWidth={2.4} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
@@ -4026,7 +4236,7 @@ const ActionsTab = () => {
                     onChange={e => handleThresholdChange(intg.name, e.target.value)}
                     className={`text-[0.7rem] font-bold border rounded px-2 py-1 outline-none ${priColor[intg.auto_send_threshold] || priColor.NEVER} disabled:opacity-60`}
                   >
-                    {['CRITICAL','HIGH','NEVER'].map(v => <option key={v} value={v}>{v}</option>)}
+                    {['CRITICAL','HIGH','MEDIUM','LOW','NEVER'].map(v => <option key={v} value={v}>{v}</option>)}
                   </select>
                 </div>
               )}
@@ -4869,113 +5079,6 @@ const SettingsTab = () => {
   const [createSuccess, setCreateOk]  = useState('');
   const isAdmin = user?.role === 'ADMIN';
 
-  // Playbooks
-  const [playbooks, setPlaybooks]         = useState<any[]>([]);
-  const [showPBForm, setShowPBForm]       = useState(false);
-  const [pbForm, setPBForm]               = useState({ tactic: 'CREDENTIAL_ACCESS', title: '', steps: '' });
-  const [pbError, setPBError]             = useState('');
-
-  const fetchPlaybooks = () => {
-    if (!token) return;
-    fetch('/api/playbooks', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json()).then(data => { if (Array.isArray(data)) setPlaybooks(data); }).catch(() => {});
-  };
-
-  useEffect(() => { fetchPlaybooks(); }, [token]);
-
-  const handleCreatePlaybook = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPBError('');
-    if (!pbForm.title || !pbForm.steps) { setPBError('Title and steps are required.'); return; }
-    try {
-      const res  = await fetch('/api/playbooks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(pbForm) });
-      const data = await res.json();
-      if (data.error) { setPBError(data.error); return; }
-      fetchPlaybooks();
-      setShowPBForm(false);
-      setPBForm({ tactic: 'CREDENTIAL_ACCESS', title: '', steps: '' });
-      showToast('Playbook created successfully');
-    } catch { setPBError('Failed to create playbook.'); }
-  };
-
-  const handleDeletePlaybook = async (id: number) => {
-    await fetch(`/api/playbooks/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-    fetchPlaybooks();
-    showToast('Playbook deleted', 'info');
-  };
-
-  // API Keys
-  const [apiKeys,      setApiKeys]      = useState<any[]>([]);
-  const [newKeyName,   setNewKeyName]   = useState('');
-  const [createdKey,   setCreatedKey]   = useState<{ key: string; prefix: string } | null>(null);
-  const [keyCreating,  setKeyCreating]  = useState(false);
-  const [keyRevoke,    setKeyRevoke]    = useState<Record<number, boolean>>({});
-  const [keyUpdating,  setKeyUpdating]  = useState<Record<number, boolean>>({});
-  const [showKeyValue, setShowKeyValue] = useState(false);
-  const [expandedKey,  setExpandedKey]  = useState<number | null>(null);
-
-  const fetchApiKeys = () => listApiKeys().then(setApiKeys).catch(() => {});
-  useEffect(() => { if (isAdmin) fetchApiKeys(); }, [isAdmin]);
-
-  // Ingest config (wazuh global settings)
-  const [ingestCfg,    setIngestCfg]    = useState<Record<string, string>>({
-    ingest_enabled: 'true', min_severity: '7', max_alerts_per_min: '60',
-    dedup_window_minutes: '5', time_window_start: '', time_window_end: '', auto_orchestrate: 'true',
-  });
-  const [ingestSaving, setIngestSaving] = useState(false);
-
-  useEffect(() => {
-    if (!isAdmin) return;
-    getIntegrations().then(list => {
-      const w = list.find((i: any) => i.name === 'wazuh');
-      if (w?.config) setIngestCfg((prev) => ({ ...prev, ...w.config }));
-    }).catch(() => {});
-  }, [isAdmin]);
-
-  const handleSaveIngestCfg = async () => {
-    setIngestSaving(true);
-    try {
-      await updateIntegration('wazuh', { config: ingestCfg });
-      showToast('Ingest settings saved', 'success');
-    } catch { showToast('Failed to save settings', 'error'); }
-    finally { setIngestSaving(false); }
-  };
-
-  const handleToggleKeyPause = async (k: any) => {
-    setKeyUpdating(p => ({ ...p, [k.id]: true }));
-    try { await updateApiKey(k.id, { paused: !k.paused }); fetchApiKeys(); }
-    catch { showToast('Failed to update key', 'error'); }
-    finally { setKeyUpdating(p => ({ ...p, [k.id]: false })); }
-  };
-
-  const handleKeyMinSev = async (k: any, raw: string) => {
-    const v = raw.trim() === '' ? null : Number(raw);
-    if (v !== null && (isNaN(v) || v < 0 || v > 15)) return;
-    setKeyUpdating(p => ({ ...p, [k.id]: true }));
-    try { await updateApiKey(k.id, { min_severity_override: v }); fetchApiKeys(); }
-    catch { showToast('Failed to update key', 'error'); }
-    finally { setKeyUpdating(p => ({ ...p, [k.id]: false })); }
-  };
-
-  const handleCreateKey = async () => {
-    if (!newKeyName.trim()) return;
-    setKeyCreating(true);
-    try {
-      const r = await createApiKey(newKeyName.trim());
-      if (r.ok) { setCreatedKey({ key: r.key, prefix: r.prefix }); setNewKeyName(''); fetchApiKeys(); }
-      else showToast(r.error || 'Failed to create key', 'error');
-    } catch { showToast('Failed to create key', 'error'); }
-    finally { setKeyCreating(false); }
-  };
-
-  const handleRevokeKey = async (id: number) => {
-    if (!confirm('Revoke this key? Any Wazuh scripts using it will stop working immediately.')) return;
-    setKeyRevoke(p => ({ ...p, [id]: true }));
-    await revokeApiKey(id);
-    fetchApiKeys();
-    setKeyRevoke(p => ({ ...p, [id]: false }));
-  };
-
   const [pwForm, setPwForm]   = useState({ current: '', next: '', confirm: '' });
   const [pwError, setPwError] = useState('');
   const [pwOk, setPwOk]       = useState('');
@@ -5131,8 +5234,11 @@ const SettingsTab = () => {
                   className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
                 <select value={form.role} onChange={e => setForm({...form, role: e.target.value})}
                   className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
-                  <option value="ANALYST">ANALYST</option>
-                  <option value="ADMIN">ADMIN</option>
+                  <option value="TIER1">TIER1 — Alerts Queue triage</option>
+                  <option value="TIER2">TIER2 — Incident owner</option>
+                  <option value="INCIDENT_LEAD">INCIDENT_LEAD — Reassign + close</option>
+                  <option value="ADMIN">ADMIN — Full access</option>
+                  <option value="ANALYST">ANALYST (legacy alias for TIER1)</option>
                 </select>
               </div>
               <div className="flex gap-2">
@@ -5160,7 +5266,12 @@ const SettingsTab = () => {
                   <td className="p-4 font-semibold">{u.username}</td>
                   <td className="p-4 text-[var(--t4)]">{u.email || '—'}</td>
                   <td className="p-4">
-                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${u.role === 'ADMIN' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
+                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
+                      u.role === 'ADMIN'         ? 'bg-purple-100 text-purple-700' :
+                      u.role === 'INCIDENT_LEAD' ? 'bg-indigo-100 text-indigo-700' :
+                      u.role === 'TIER2'         ? 'bg-blue-100 text-blue-700'     :
+                      'bg-slate-100 text-slate-700'
+                    }`}>
                       {u.role}
                     </span>
                   </td>
@@ -5172,454 +5283,6 @@ const SettingsTab = () => {
       ) : (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-amber-800 text-sm font-semibold">
           User management is restricted to ADMIN role. Contact your SOC administrator.
-        </div>
-      )}
-
-      {/* Playbooks */}
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
-        <div className="p-4 border-b bg-[var(--s1)] flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-[var(--p1)]" />
-            <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">SOC Playbooks</h3>
-            <span className="text-[0.65rem] text-[var(--t3)]">({playbooks.length} total)</span>
-          </div>
-          {isAdmin && (
-            <button
-              onClick={() => setShowPBForm(!showPBForm)}
-              className="flex items-center gap-1.5 bg-[var(--p1)] text-[var(--t7)] px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
-            >
-              <Plus className="w-3 h-3" />
-              Add Playbook
-            </button>
-          )}
-        </div>
-
-        {showPBForm && isAdmin && (
-          <form onSubmit={handleCreatePlaybook} className="p-5 border-b bg-[var(--sa)] space-y-3">
-            {pbError && <p className="text-[#d93025] text-sm font-semibold">{pbError}</p>}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-[0.7rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">MITRE Tactic</label>
-                <select value={pbForm.tactic} onChange={e => setPBForm({...pbForm, tactic: e.target.value})} className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
-                  {TACTIC_OPTIONS.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-[0.7rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">Title</label>
-                <input required value={pbForm.title} onChange={e => setPBForm({...pbForm, title: e.target.value})} placeholder="e.g. Brute Force Response" className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
-              </div>
-            </div>
-            <div>
-              <label className="text-[0.7rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">Steps (one per line or numbered)</label>
-              <textarea required value={pbForm.steps} onChange={e => setPBForm({...pbForm, steps: e.target.value})} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account..." className="w-full border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] resize-none font-mono" />
-            </div>
-            <div className="flex gap-2">
-              <button type="submit" className="bg-[var(--p1)] text-[var(--t7)] px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
-              <button type="button" onClick={() => setShowPBForm(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
-            </div>
-          </form>
-        )}
-
-        <div className="divide-y divide-slate-100">
-          {playbooks.length === 0 ? (
-            <div className="p-6 text-center text-[var(--t3)] text-sm">No playbooks yet. Add one above.</div>
-          ) : playbooks.map(pb => (
-            <div key={pb.id} className="px-5 py-3 flex items-start justify-between gap-4 hover:bg-[var(--s1)]">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[0.6rem] font-black uppercase tracking-wide">{pb.tactic?.replace(/_/g, ' ')}</span>
-                  <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{pb.title}</p>
-                </div>
-                <p className="text-[0.72rem] text-[var(--t4)] line-clamp-2 whitespace-pre-line">{pb.steps}</p>
-              </div>
-              {isAdmin && (
-                <button onClick={() => handleDeletePlaybook(pb.id)} className="shrink-0 p-1 rounded hover:bg-red-50 text-[var(--t3)] hover:text-red-600 transition-colors">
-                  <Trash2 size={14} />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Alert Ingestion ──────────────────────────────────────────────── */}
-      {isAdmin && (
-        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
-          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Activity className="w-4 h-4 text-[var(--p1)]" />
-              <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">Alert Ingestion</h3>
-              <span className="text-[0.65rem] text-[var(--t3)]">Global controls for all alerts received via API key.</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide ${ingestCfg.ingest_enabled === 'false' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'}`}>
-                {ingestCfg.ingest_enabled === 'false' ? 'Paused' : 'Active'}
-              </span>
-            </div>
-          </div>
-          <div className="p-5 space-y-5">
-
-            {/* Global on/off */}
-            <div className="flex items-center justify-between py-2 border-b border-[var(--b2)]">
-              <div>
-                <p className="text-[0.82rem] font-bold text-[var(--t6)]">Receive alerts</p>
-                <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">When off, all ingest requests return HTTP 503 regardless of key.</p>
-              </div>
-              <button
-                onClick={() => setIngestCfg(c => ({ ...c, ingest_enabled: c.ingest_enabled === 'false' ? 'true' : 'false' }))}
-                className="shrink-0"
-                title="Toggle global ingestion"
-              >
-                {ingestCfg.ingest_enabled === 'false'
-                  ? <ToggleLeft size={32} className="text-[var(--t3)] hover:text-[var(--t5)] transition-colors" />
-                  : <ToggleRight size={32} className="text-[var(--p1)]" />}
-              </button>
-            </div>
-
-            {/* Settings grid */}
-            <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-
-              {/* Min severity */}
-              <div className="space-y-1.5">
-                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Min Severity Level</label>
-                <p className="text-[0.65rem] text-[var(--t3)]">Alerts below this Wazuh level (0–15) are silently dropped.</p>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range" min="0" max="15" step="1"
-                    value={ingestCfg.min_severity ?? '7'}
-                    onChange={e => setIngestCfg(c => ({ ...c, min_severity: e.target.value }))}
-                    className="flex-1 accent-[var(--p1)]"
-                  />
-                  <span className="w-8 text-center font-black text-[var(--t1)] text-[0.9rem] tabular-nums">{ingestCfg.min_severity ?? '7'}</span>
-                  <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase ${
-                    Number(ingestCfg.min_severity ?? 7) >= 12 ? 'bg-red-100 text-red-700' :
-                    Number(ingestCfg.min_severity ?? 7) >= 7  ? 'bg-orange-100 text-orange-700' :
-                    Number(ingestCfg.min_severity ?? 7) >= 4  ? 'bg-amber-100 text-amber-700' :
-                    'bg-green-100 text-green-700'
-                  }`}>
-                    {Number(ingestCfg.min_severity ?? 7) >= 12 ? 'Critical+' :
-                     Number(ingestCfg.min_severity ?? 7) >= 7  ? 'High+' :
-                     Number(ingestCfg.min_severity ?? 7) >= 4  ? 'Medium+' : 'All'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Rate limit */}
-              <div className="space-y-1.5">
-                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Rate Limit (alerts / min)</label>
-                <p className="text-[0.65rem] text-[var(--t3)]">Requests beyond this threshold return HTTP 429. Set 0 to disable.</p>
-                <input
-                  type="number" min="0" max="10000" step="10"
-                  value={ingestCfg.max_alerts_per_min ?? '60'}
-                  onChange={e => setIngestCfg(c => ({ ...c, max_alerts_per_min: e.target.value }))}
-                  className="w-full border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
-                />
-              </div>
-
-              {/* Dedup window */}
-              <div className="space-y-1.5">
-                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Deduplication Window (minutes)</label>
-                <p className="text-[0.65rem] text-[var(--t3)]">Identical alerts (same rule + source IP) within this window are dropped.</p>
-                <input
-                  type="number" min="0" max="1440" step="1"
-                  value={ingestCfg.dedup_window_minutes ?? '5'}
-                  onChange={e => setIngestCfg(c => ({ ...c, dedup_window_minutes: e.target.value }))}
-                  className="w-full border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
-                />
-              </div>
-
-              {/* Active hours */}
-              <div className="space-y-1.5">
-                <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Active Hours (24h, optional)</label>
-                <p className="text-[0.65rem] text-[var(--t3)]">Only accept alerts during this window. Leave empty to accept all hours.</p>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="time"
-                    value={ingestCfg.time_window_start ?? ''}
-                    onChange={e => setIngestCfg(c => ({ ...c, time_window_start: e.target.value }))}
-                    className="flex-1 border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
-                  />
-                  <span className="text-[var(--t3)] text-[0.72rem] font-bold shrink-0">to</span>
-                  <input
-                    type="time"
-                    value={ingestCfg.time_window_end ?? ''}
-                    onChange={e => setIngestCfg(c => ({ ...c, time_window_end: e.target.value }))}
-                    className="flex-1 border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
-                  />
-                  {(ingestCfg.time_window_start || ingestCfg.time_window_end) && (
-                    <button
-                      onClick={() => setIngestCfg(c => ({ ...c, time_window_start: '', time_window_end: '' }))}
-                      className="text-[var(--t3)] hover:text-[var(--t6)]" title="Clear"
-                    ><X size={13} /></button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Auto-orchestrate */}
-            <div className="flex items-center justify-between py-2 border-t border-[var(--b2)]">
-              <div>
-                <p className="text-[0.82rem] font-bold text-[var(--t6)]">Auto-orchestrate new alerts</p>
-                <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">Immediately run AI agents on every alert received via API.</p>
-              </div>
-              <button
-                onClick={() => setIngestCfg(c => ({ ...c, auto_orchestrate: c.auto_orchestrate === 'false' ? 'true' : 'false' }))}
-                className="shrink-0"
-              >
-                {ingestCfg.auto_orchestrate === 'false'
-                  ? <ToggleLeft size={32} className="text-[var(--t3)] hover:text-[var(--t5)] transition-colors" />
-                  : <ToggleRight size={32} className="text-[var(--p1)]" />}
-              </button>
-            </div>
-
-            {/* Save button */}
-            <div className="flex justify-end">
-              <button
-                onClick={handleSaveIngestCfg}
-                disabled={ingestSaving}
-                className="px-4 py-2 rounded bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {ingestSaving ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle size={13} />}
-                {ingestSaving ? 'Saving…' : 'Save Ingest Settings'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── API Keys ─────────────────────────────────────────────────────── */}
-      {isAdmin && (
-        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
-          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Key className="w-4 h-4 text-[var(--p1)]" />
-              <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">API Keys</h3>
-              <span className="text-[0.65rem] text-[var(--t3)]">Authenticate Wazuh and external forwarders to POST alerts to this platform.</span>
-            </div>
-          </div>
-          <div className="p-5 space-y-4">
-            {/* Ingest endpoint info */}
-            <div className="bg-[var(--s2)] border border-[var(--b2)] rounded-lg px-4 py-3 flex items-start gap-3">
-              <Webhook className="w-4 h-4 text-[var(--p1)] mt-0.5 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-[0.72rem] font-bold text-[var(--t6)] mb-1">Ingest endpoint</p>
-                <div className="flex gap-2 items-center">
-                  <code className="flex-1 text-[0.72rem] font-mono text-[var(--t5)] bg-[var(--s0)] border border-[var(--b2)] rounded px-2 py-1 truncate">
-                    POST {window.location.protocol}//{window.location.host}/api/ingest
-                  </code>
-                  <button onClick={() => { navigator.clipboard.writeText(`${window.location.protocol}//${window.location.host}/api/ingest`); showToast('URL copied'); }} className="shrink-0 px-2 py-1 rounded border border-[var(--b2)] hover:bg-[var(--s1)] transition-colors" title="Copy">
-                    <Copy size={12} className="text-[var(--t4)]" />
-                  </button>
-                </div>
-                <p className="text-[0.65rem] text-[var(--t3)] mt-1.5">
-                  Send alerts with header: <code className="font-mono bg-[var(--s1)] px-1 rounded">X-Api-Key: sk_aisoc_…</code>
-                </p>
-                <details className="mt-2 group">
-                  <summary className="cursor-pointer text-[0.65rem] font-bold text-[var(--p1)] hover:underline list-none flex items-center gap-1">
-                    <ChevronDown size={10} className="group-open:rotate-180 transition-transform" />Test curl command
-                  </summary>
-                  <div className="mt-2">
-                    {(() => {
-                      const cmd = `curl -sk -X POST ${window.location.protocol}//${window.location.host}/api/ingest \\\n  -H "Content-Type: application/json" \\\n  -H "X-Api-Key: YOUR_KEY_HERE" \\\n  -d '{"rule":{"id":"test-001","description":"API key connectivity test","level":3},"agent":{"name":"test-host"},"data":{"srcip":"192.168.1.100"}}'`;
-                      return (
-                        <>
-                          <div className="flex items-center justify-between mb-1">
-                            <p className="text-[0.6rem] text-[var(--t3)]">Replace <code className="font-mono bg-[var(--s1)] px-0.5">YOUR_KEY_HERE</code> with your key</p>
-                            <button onClick={() => { navigator.clipboard.writeText(cmd.replace(/\\\n  /g, ' \\\n  ')); showToast('Copied'); }} className="flex items-center gap-1 text-[0.6rem] text-[var(--p1)] hover:underline"><Copy size={8}/>Copy</button>
-                          </div>
-                          <pre className="bg-slate-900 text-slate-200 rounded p-2.5 text-[0.65rem] font-mono overflow-x-auto whitespace-pre leading-relaxed">{cmd}</pre>
-                          <p className="text-[0.6rem] text-[var(--t3)] mt-1">
-                            ✓ <code className="font-mono">{`{"status":"filtered",...}`}</code> = key valid, alert below min severity<br/>
-                            ✗ <code className="font-mono">{`{"error":"Invalid or revoked API key."}`}</code> = key rejected
-                          </p>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </details>
-              </div>
-            </div>
-
-            {/* Key creation row */}
-            <div className="flex gap-2">
-              <input
-                value={newKeyName}
-                onChange={e => setNewKeyName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleCreateKey()}
-                placeholder="Key name (e.g. wazuh-manager-prod)"
-                className="flex-1 border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono"
-              />
-              <button
-                onClick={handleCreateKey}
-                disabled={keyCreating || !newKeyName.trim()}
-                className="px-4 py-2 rounded bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
-              >
-                <Plus size={13} />{keyCreating ? 'Creating…' : 'Create Key'}
-              </button>
-            </div>
-
-            {/* Created key reveal — shown once */}
-            {createdKey && (() => {
-              const curlCmd = `curl -sk -X POST ${window.location.protocol}//${window.location.host}/api/ingest \\\n  -H "Content-Type: application/json" \\\n  -H "X-Api-Key: ${createdKey.key}" \\\n  -d '{"rule":{"id":"test-001","description":"API key connectivity test","level":3},"agent":{"name":"test-host"},"data":{"srcip":"192.168.1.100"}}'`;
-              return (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
-                  <p className="text-[0.72rem] font-black text-green-800 flex items-center gap-1.5">
-                    <CheckCircle size={13} /> API key created — copy it now, it won't be shown again
-                  </p>
-                  {/* Key value row */}
-                  <div className="flex gap-2">
-                    <input
-                      readOnly
-                      type={showKeyValue ? 'text' : 'password'}
-                      value={createdKey.key}
-                      className="flex-1 border border-green-300 rounded px-2 py-1.5 text-[0.75rem] font-mono bg-white text-green-900"
-                    />
-                    <button onClick={() => setShowKeyValue(v => !v)} className="px-2 py-1.5 rounded border border-green-300 text-green-700 text-[0.68rem] font-bold hover:bg-green-100 transition-colors">{showKeyValue ? 'Hide' : 'Show'}</button>
-                    <button onClick={() => { navigator.clipboard.writeText(createdKey.key); showToast('Key copied!', 'success'); }} className="px-2 py-1.5 rounded border border-green-300 hover:bg-green-100 transition-colors" title="Copy key"><Copy size={13} className="text-green-700" /></button>
-                    <button onClick={() => { setCreatedKey(null); setShowKeyValue(false); }} className="px-2 py-1.5 rounded border border-green-300 text-green-700 hover:bg-green-100 transition-colors"><X size={13} /></button>
-                  </div>
-                  {/* Test curl snippet */}
-                  <div className="border-t border-green-200 pt-3">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-wider">Test your key (run this in a terminal)</p>
-                      <button
-                        onClick={() => { navigator.clipboard.writeText(curlCmd.replace(/\\\n  /g, ' \\\n  ')); showToast('curl command copied!', 'success'); }}
-                        className="flex items-center gap-1 text-[0.62rem] text-green-700 hover:underline font-bold"
-                      ><Copy size={9} />Copy</button>
-                    </div>
-                    <pre className="bg-green-900 text-green-200 rounded p-3 text-[0.68rem] font-mono overflow-x-auto whitespace-pre leading-relaxed">{curlCmd}</pre>
-                    <p className="text-[0.62rem] text-green-700 mt-1.5">
-                      Expected response: <code className="font-mono bg-green-100 px-1 rounded">{`{"status":"filtered","reason":"severity 3 below min 7"}`}</code> — key works, alert filtered by severity setting.<br/>
-                      If you see <code className="font-mono bg-green-100 px-1 rounded">{`{"error":"Invalid or revoked API key."}`}</code> the key is wrong.
-                    </p>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Existing keys table */}
-            {apiKeys.length > 0 ? (
-              <div className="space-y-2">
-                {apiKeys.map((k: any) => (
-                  <div key={k.id} className={`border border-[var(--b2)] rounded-lg overflow-hidden ${k.revoked ? 'opacity-50' : ''}`}>
-                    {/* Main row */}
-                    <div className="flex items-center gap-3 px-4 py-2.5 bg-[var(--s1)] hover:bg-[var(--s2)] transition-colors">
-                      {/* Status dot */}
-                      <div className={`w-2 h-2 rounded-full shrink-0 ${k.revoked ? 'bg-red-400' : k.paused ? 'bg-amber-400' : 'bg-green-500'}`} />
-
-                      {/* Name + prefix */}
-                      <div className="flex-1 min-w-0">
-                        <span className="text-[0.82rem] font-bold text-[var(--t6)]">{k.name}</span>
-                        <span className="ml-2 font-mono text-[0.68rem] text-[var(--t3)]">{k.key_prefix}</span>
-                      </div>
-
-                      {/* Last used */}
-                      <span className="text-[0.68rem] text-[var(--t3)] hidden sm:block shrink-0">
-                        {k.last_used_at ? `Used ${timeAgo(new Date(k.last_used_at).getTime())}` : 'Never used'}
-                      </span>
-
-                      {/* Status badge */}
-                      <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide shrink-0 ${
-                        k.revoked ? 'bg-red-100 text-red-700' :
-                        k.paused  ? 'bg-amber-100 text-amber-700' :
-                        'bg-green-100 text-green-800'
-                      }`}>
-                        {k.revoked ? 'Revoked' : k.paused ? 'Paused' : 'Active'}
-                      </span>
-
-                      {/* Per-key pause toggle */}
-                      {!k.revoked && (
-                        <button
-                          onClick={() => handleToggleKeyPause(k)}
-                          disabled={keyUpdating[k.id]}
-                          title={k.paused ? 'Resume ingestion for this key' : 'Pause ingestion for this key'}
-                          className="shrink-0 disabled:opacity-40"
-                        >
-                          {k.paused
-                            ? <ToggleLeft size={24} className="text-amber-500 hover:text-amber-600 transition-colors" />
-                            : <ToggleRight size={24} className="text-green-600 hover:text-green-700 transition-colors" />}
-                        </button>
-                      )}
-
-                      {/* Configure button */}
-                      {!k.revoked && (
-                        <button
-                          onClick={() => setExpandedKey(expandedKey === k.id ? null : k.id)}
-                          className="shrink-0 text-[0.65rem] font-bold text-[var(--p1)] hover:underline"
-                        >
-                          {expandedKey === k.id ? 'Close' : 'Configure'}
-                        </button>
-                      )}
-
-                      {/* Revoke */}
-                      {!k.revoked && (
-                        <button
-                          disabled={keyRevoke[k.id]}
-                          onClick={() => handleRevokeKey(k.id)}
-                          className="shrink-0 text-[0.65rem] text-red-600 hover:underline font-semibold disabled:opacity-50"
-                        >Revoke</button>
-                      )}
-                    </div>
-
-                    {/* Expanded per-key config */}
-                    {expandedKey === k.id && !k.revoked && (
-                      <div className="px-4 py-3 border-t border-[var(--b2)] bg-[var(--s0)] space-y-3">
-                        <p className="text-[0.68rem] font-black text-[var(--t3)] uppercase tracking-widest">Per-key overrides</p>
-                        <div className="grid grid-cols-2 gap-4">
-                          {/* Per-key pause */}
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-[0.75rem] font-bold text-[var(--t6)]">Accept alerts</p>
-                              <p className="text-[0.62rem] text-[var(--t3)]">When off, this key returns HTTP 403.</p>
-                            </div>
-                            <button onClick={() => handleToggleKeyPause(k)} disabled={keyUpdating[k.id]} className="shrink-0">
-                              {k.paused
-                                ? <ToggleLeft size={28} className="text-amber-400 hover:text-amber-500 transition-colors" />
-                                : <ToggleRight size={28} className="text-[var(--p1)]" />}
-                            </button>
-                          </div>
-
-                          {/* Per-key min severity */}
-                          <div className="space-y-1">
-                            <label className="text-[0.68rem] font-black text-[var(--t3)] uppercase tracking-widest">
-                              Min Severity Override
-                            </label>
-                            <p className="text-[0.62rem] text-[var(--t3)]">
-                              Overrides global min ({ingestCfg.min_severity ?? '7'}). Leave blank to use global.
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number" min="0" max="15" step="1"
-                                placeholder={`Global: ${ingestCfg.min_severity ?? '7'}`}
-                                defaultValue={k.min_severity_override ?? ''}
-                                onBlur={e => handleKeyMinSev(k, e.target.value)}
-                                className="w-24 border border-[var(--b2)] rounded px-2 py-1 text-[0.72rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s1)]"
-                              />
-                              {k.min_severity_override != null && (
-                                <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase ${
-                                  k.min_severity_override >= 12 ? 'bg-red-100 text-red-700' :
-                                  k.min_severity_override >= 7  ? 'bg-orange-100 text-orange-700' :
-                                  k.min_severity_override >= 4  ? 'bg-amber-100 text-amber-700' :
-                                  'bg-green-100 text-green-700'
-                                }`}>
-                                  {k.min_severity_override >= 12 ? 'Critical+' :
-                                   k.min_severity_override >= 7  ? 'High+' :
-                                   k.min_severity_override >= 4  ? 'Medium+' : 'All'}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        <p className="text-[0.6rem] text-[var(--t3)] italic">Changes apply immediately — no restart needed.</p>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[0.78rem] text-[var(--t3)] text-center py-4">No API keys yet. Create one above to connect Wazuh.</p>
-            )}
-          </div>
         </div>
       )}
 
@@ -6206,6 +5869,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
   const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
   const [agentStats, setAgentStatsState] = useState<AgentStat[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [riskGranularity, setRiskGranularity] = useState<RiskChartGranularity>('days');
 
   const handleRefresh = () => {
     if (!onRefreshAlerts || refreshing) return;
@@ -6228,55 +5892,126 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     .slice(0, 6);
   const trendMax = trends ? Math.max(...trends.map(t => t.count), 1) : 1;
   const fallbackAgents = agentStats.filter(s => s.total_runs > 0 && (s.fallback_count / s.total_runs) > 0.2);
+  const resolvedStatuses = new Set(['CLOSED', 'FALSE_POSITIVE', 'FP_CONFIRMED', 'FILTERED']);
+  const fpStatuses = new Set(['FALSE_POSITIVE', 'FP_CONFIRMED', 'FILTERED']);
+  const incidentStatuses = new Set(['ANALYZING', 'TRIAGED', 'ESCALATED', 'INCIDENT']);
+  const activeAlerts = alerts.filter(a => !resolvedStatuses.has(a.status));
+  const activeCritical = activeAlerts.filter(a => a.severity >= 13).length;
+  const activeHigh = activeAlerts.filter(a => a.severity >= 10 && a.severity < 13).length;
+  const activeMedium = activeAlerts.filter(a => a.severity >= 7 && a.severity < 10).length;
+  const activeEscalated = activeAlerts.filter(a => a.status === 'ESCALATED' || a.status === 'INCIDENT').length;
+  const totalAlerts = alerts.length;
+  const fpFiltered = alerts.filter(a => fpStatuses.has(a.status) || parseAlertAi(a)?.phaseData?.analysis?.is_false_positive).length;
+  const activeIncidents = alerts.filter(a => incidentStatuses.has(a.status)).length;
+  const resolvedHighCritical = alerts.filter(a => resolvedStatuses.has(a.status) && a.severity >= 10).length;
+  const aiRiskPressure = activeAlerts.reduce((sum, alert) => {
+    const risk = getAlertRiskScore(alert);
+    if (risk == null) return sum;
+    if (risk >= 80) return sum + 8;
+    if (risk >= 60) return sum + 4;
+    return sum;
+  }, 0);
+  const globalRiskScore = Math.min(
+    100,
+    activeCritical * 18 +
+    activeHigh * 10 +
+    activeMedium * 3 +
+    activeEscalated * 8 +
+    aiRiskPressure
+  );
 
-  const funnelStages = funnel ? [
-    { label: 'Ingested',    value: funnel.ingested,               color: '#004a99' },
-    { label: 'New',         value: funnel.new,                    color: '#6b7280' },
-    { label: 'FP Filtered', value: funnel.fp_filtered,            color: '#f29900' },
-    { label: 'Awaiting',    value: funnel.awaiting_investigation, color: '#7c3aed' },
-    { label: 'Investigated',value: funnel.investigated,           color: '#1e8e3e' },
-    { label: 'Escalated',   value: funnel.escalated,              color: '#d93025' },
-    { label: 'Closed',      value: funnel.closed,                 color: '#374151' },
-  ] : [];
+  const riskSeriesConfig: Record<RiskChartGranularity, { count: number; label: (d: Date) => string; key: (d: Date) => string; shift: (d: Date, offset: number) => void; end: (d: Date) => void }> = {
+    hours: {
+      count: 24,
+      label: d => d.toLocaleTimeString([], { hour: '2-digit' }),
+      key: d => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${d.getHours()}`,
+      shift: (d, offset) => d.setHours(d.getHours() + offset),
+      end: d => d.setMinutes(59, 59, 999),
+    },
+    days: {
+      count: 30,
+      label: d => d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+      key: d => d.toISOString().split('T')[0],
+      shift: (d, offset) => d.setDate(d.getDate() + offset),
+      end: d => d.setHours(23, 59, 59, 999),
+    },
+    months: {
+      count: 12,
+      label: d => d.toLocaleDateString([], { month: 'short', year: '2-digit' }),
+      key: d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      shift: (d, offset) => d.setMonth(d.getMonth() + offset),
+      end: d => {
+        d.setTime(new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).getTime());
+      },
+    },
+    years: {
+      count: 5,
+      label: d => String(d.getFullYear()),
+      key: d => String(d.getFullYear()),
+      shift: (d, offset) => d.setFullYear(d.getFullYear() + offset),
+      end: d => {
+        d.setMonth(11, 31);
+        d.setHours(23, 59, 59, 999);
+      },
+    },
+  };
+  const riskSeriesConf = riskSeriesConfig[riskGranularity];
+  const riskSeriesPoints: RiskSeriesPoint[] = Array.from({ length: riskSeriesConf.count }, (_, idx) => {
+    const d = new Date();
+    riskSeriesConf.shift(d, -(riskSeriesConf.count - 1 - idx));
+    riskSeriesConf.end(d);
+    const day = riskSeriesConf.key(d);
+    const label = riskSeriesConf.label(d);
+
+    const alertsSoFar = alerts.filter(alert => {
+      const ts = new Date(alert.timestamp.replace(' ', 'T')).getTime();
+      return Number.isFinite(ts) && ts <= d.getTime();
+    });
+    const activeSoFar = alertsSoFar.filter(alert => {
+      if (!resolvedStatuses.has(alert.status)) return true;
+      const closedRaw = (alert as any).closed_at || (alert as any).filtered_at || (alert as any).updated_at;
+      if (!closedRaw) return false;
+      const closedTs = new Date(String(closedRaw).replace(' ', 'T')).getTime();
+      return Number.isFinite(closedTs) && closedTs > d.getTime();
+    });
+    const activeCrit = activeSoFar.filter(a => a.severity >= 13).length;
+    const activeHi = activeSoFar.filter(a => a.severity >= 10 && a.severity < 13).length;
+    const activeMed = activeSoFar.filter(a => a.severity >= 7 && a.severity < 10).length;
+    const escalated = activeSoFar.filter(a => a.status === 'ESCALATED' || a.status === 'INCIDENT').length;
+    const riskPressure = activeSoFar.reduce((sum, alert) => {
+      const risk = getAlertRiskScore(alert);
+      if (risk == null) return sum;
+      if (risk >= 80) return sum + 8;
+      if (risk >= 60) return sum + 4;
+      return sum;
+    }, 0);
+    const solvedHighCritical = alerts.filter(alert => {
+      if (!resolvedStatuses.has(alert.status) || alert.severity < 10) return false;
+      const closedRaw = (alert as any).closed_at || (alert as any).filtered_at || (alert as any).updated_at || alert.timestamp;
+      const closedTs = new Date(String(closedRaw).replace(' ', 'T')).getTime();
+      return Number.isFinite(closedTs) && closedTs <= d.getTime();
+    }).length;
+
+    return {
+      day,
+      label,
+      risk: Math.min(100, activeCrit * 18 + activeHi * 10 + activeMed * 3 + escalated * 8 + riskPressure),
+      activeHighCritical: activeCrit + activeHi,
+      solvedHighCritical,
+      totalAlerts: alertsSoFar.length,
+    };
+  });
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
       <PageHeader eyebrow="Overview" title="Aegis SOC Dashboard" description="Real-time alert pipeline, FP filtering efficiency, and system health." />
 
-      {/* Pipeline Funnel */}
-      {funnel && (
-        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-5">
-          <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wider mb-4">Alert Pipeline Funnel</p>
-          <div className="flex items-end gap-3">
-            {funnelStages.map((s, i) => {
-              const maxVal = Math.max(...funnelStages.map(x => x.value), 1);
-              const h = Math.max(8, (s.value / maxVal) * 120);
-              return (
-                <div key={s.label} className="flex-1 flex flex-col items-center gap-2">
-                  <span className="text-[1.1rem] font-black" style={{ color: s.color }}>{s.value}</span>
-                  <div className="w-full rounded-t" style={{ height: h, backgroundColor: s.color, opacity: 0.8 }} />
-                  <span className="text-[0.62rem] font-bold text-[var(--t3)] text-center">{s.label}</span>
-                  {i < funnelStages.length - 1 && <span className="hidden">→</span>}
-                </div>
-              );
-            })}
-          </div>
-          {funnel.avg_time_to_filter_sec != null && (
-            <div className="flex gap-6 mt-4 pt-3 border-t border-[var(--b1)]">
-              <span className="text-[0.65rem] text-[var(--t3)]">Avg filter: <b className="text-[var(--t7)]">{funnel.avg_time_to_filter_sec}s</b></span>
-              {funnel.avg_time_to_investigate_sec != null && <span className="text-[0.65rem] text-[var(--t3)]">Avg investigate: <b className="text-[var(--t7)]">{funnel.avg_time_to_investigate_sec}s</b></span>}
-              {funnel.avg_time_to_close_sec != null && <span className="text-[0.65rem] text-[var(--t3)]">Avg close: <b className="text-[var(--t7)]">{Math.round(funnel.avg_time_to_close_sec / 3600)}h</b></span>}
-            </div>
-          )}
-        </div>
-      )}
-
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: 'Total Alerts', value: alerts.length, sub: `${analyzed} processed`, icon: AlertTriangle, color: '#004a99' },
-          { label: 'FP Filtered', value: funnel?.fp_filtered ?? '—', sub: funnel ? `${((funnel.fp_filtered / Math.max(funnel.ingested, 1)) * 100).toFixed(0)}% FP rate` : '', icon: Filter, color: '#f29900' },
-          { label: 'Awaiting Investigation', value: funnel?.awaiting_investigation ?? '—', sub: 'passed noise filter', icon: Search, color: '#7c3aed' },
-          { label: 'Escalated', value: funnel?.escalated ?? '—', sub: 'active incidents', icon: Shield, color: '#d93025' },
+          { label: 'Total Alerts', value: totalAlerts, sub: `${analyzed} processed`, icon: AlertTriangle, color: '#004a99' },
+          { label: 'FP Filtered', value: fpFiltered, sub: `${totalAlerts ? Math.round((fpFiltered / totalAlerts) * 100) : 0}% of all alerts`, icon: Filter, color: '#f29900' },
+          { label: 'Active Incidents', value: activeIncidents, sub: 'open incident pipeline', icon: Search, color: '#7c3aed' },
+          { label: 'Escalated', value: activeEscalated, sub: 'incident queue depth', icon: Shield, color: '#d93025' },
         ].map(card => (
           <div key={card.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
             <div className="flex items-start justify-between gap-3">
@@ -6289,49 +6024,63 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
         ))}
       </div>
 
-      <div className="grid grid-cols-3 gap-5">
-        {/* Live Alert Stream — Raw Wazuh alerts only */}
-        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
-            <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM (WAZUH)</h3>
-            <div className="flex items-center gap-3">
-              <span className="text-[0.65rem] text-[var(--t2)] font-mono">{alerts.length} ALERTS</span>
-              <button
-                onClick={handleRefresh}
-                disabled={refreshing}
-                title="Refresh alert list"
-                className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
-              >
-                <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-                {refreshing ? 'Refreshing…' : 'Refresh'}
-              </button>
-            </div>
-          </div>
-          <div className="max-h-[400px] overflow-y-auto">
-            {alerts.length > 0 ? (
-              [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 30).map(alert => {
-                const sevLabel = alert.severity >= 13 ? 'CRIT' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MED' : 'LOW';
-                const sevColor = alert.severity >= 13 ? 'text-red-500 bg-red-50' : alert.severity >= 10 ? 'text-orange-500 bg-orange-50' : alert.severity >= 7 ? 'text-blue-500 bg-blue-50' : 'text-green-500 bg-green-50';
-                return (
-                  <div key={alert.id} onClick={() => onAlertClick(alert)} className="px-4 py-2.5 border-b border-[var(--b1)] cursor-pointer hover:bg-[var(--sa)] flex items-center gap-3">
-                    <span className="text-[0.58rem] text-[var(--t3)] font-mono shrink-0 w-14">{new Date(alert.timestamp.replace(' ', 'T')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black shrink-0 ${sevColor}`}>L{alert.severity} {sevLabel}</span>
-                    <p className="text-[0.72rem] text-[var(--t7)] truncate flex-1">{alert.description}</p>
-                    <span className="text-[0.6rem] text-[var(--t3)] font-mono shrink-0">{alert.source_ip || '—'}</span>
-                    <span className="text-[0.58rem] text-[var(--t2)] shrink-0 w-16 truncate text-right">{alert.agent_name}</span>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="h-32 flex items-center justify-center text-[var(--t3)] text-sm opacity-50">
-                <Activity className="w-8 h-8 animate-pulse mr-2" /> Waiting for Wazuh alerts...
-              </div>
-            )}
+      <div className="grid grid-cols-[minmax(0,2fr)_320px] gap-5 items-stretch">
+        <div className="space-y-3">
+          <PipelineRiskTimeSeries
+            points={riskSeriesPoints}
+            granularity={riskGranularity}
+            setGranularity={setRiskGranularity}
+          />
+        </div>
+        <GlobalRiskDonut
+          score={globalRiskScore}
+          critical={activeCritical}
+          high={activeHigh}
+          resolvedHighCritical={resolvedHighCritical}
+        />
+      </div>
+
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
+          <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM (WAZUH)</h3>
+          <div className="flex items-center gap-3">
+            <span className="text-[0.65rem] text-[var(--t2)] font-mono">{alerts.length} ALERTS</span>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              title="Refresh alert list"
+              className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
           </div>
         </div>
+        <div className="max-h-[320px] overflow-y-auto">
+          {alerts.length > 0 ? (
+            [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 30).map(alert => {
+              const sevLabel = alert.severity >= 13 ? 'CRIT' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MED' : 'LOW';
+              const sevColor = alert.severity >= 13 ? 'text-red-500 bg-red-50' : alert.severity >= 10 ? 'text-orange-500 bg-orange-50' : alert.severity >= 7 ? 'text-blue-500 bg-blue-50' : 'text-green-500 bg-green-50';
+              return (
+                <div key={alert.id} onClick={() => onAlertClick(alert)} className="px-4 py-2.5 border-b border-[var(--b1)] cursor-pointer hover:bg-[var(--sa)] flex items-center gap-3">
+                  <span className="text-[0.58rem] text-[var(--t3)] font-mono shrink-0 w-14">{new Date(alert.timestamp.replace(' ', 'T')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black shrink-0 ${sevColor}`}>L{alert.severity} {sevLabel}</span>
+                  <p className="text-[0.72rem] text-[var(--t7)] truncate flex-1">{alert.description}</p>
+                  <span className="text-[0.6rem] text-[var(--t3)] font-mono shrink-0">{alert.source_ip || '—'}</span>
+                  <span className="text-[0.58rem] text-[var(--t2)] shrink-0 w-16 truncate text-right">{alert.agent_name}</span>
+                </div>
+              );
+            })
+          ) : (
+            <div className="h-32 flex items-center justify-center text-[var(--t3)] text-sm opacity-50">
+              <Activity className="w-8 h-8 animate-pulse mr-2" /> Waiting for Wazuh alerts...
+            </div>
+          )}
+        </div>
+      </div>
 
-        {/* 7-Day Trend + Health */}
-        <div className="space-y-5">
+      <div className="grid grid-cols-3 gap-5">
+        <div className="col-span-2 space-y-5">
           {trends && (
             <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-4">
               <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wide mb-3">7-Day Volume</p>
@@ -6360,11 +6109,12 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
               )}
               <div className="flex gap-2 mt-2">
                 <button onClick={() => setActiveTab('noise-filter')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Noise Filter</button>
-                <button onClick={() => setActiveTab('investigation')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Investigation</button>
+                <button onClick={() => setActiveTab('investigation')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Incidents</button>
               </div>
             </div>
           </div>
         </div>
+        <div />
       </div>
 
       {/* Top Active Threats */}
@@ -6430,10 +6180,11 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
   const handleScanAll = async () => {
     setScanning(true);
     try {
-      const result = await fpScanBatch();
-      const fps = (result.results || []).filter((r: any) => r.is_fp);
+      const result: any = await fpScanBatch();
+      const fps  = (result.results || []).filter((r: any) => r.status === 'FALSE_POSITIVE');
+      const incs = (result.results || []).filter((r: any) => r.status === 'TRIAGED' || r.status === 'ESCALATED');
       setFpResults(fps);
-      toast(`Scanned ${result.scanned} alerts — ${fps.length} FP detected`, 'success');
+      toast(`Scanned ${result.scanned}: ${fps.length} → FP archive · ${incs.length} → Investigation`, 'success');
     } catch { toast('Batch scan failed', 'error'); }
     setScanning(false);
   };
@@ -6446,7 +6197,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
         setFpResults(prev => [...prev, { id: alertId, ...result }]);
         toast(`FP detected: ${result.fp_reason?.slice(0, 60)}`, 'success');
       } else {
-        toast('Not FP — moved to investigation queue', 'success');
+        toast('Not FP — moved to Incidents queue', 'success');
       }
     } catch { toast('Scan failed', 'error'); }
     setScanningId(null);
@@ -6461,7 +6212,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
   const handleOverrideFp = async (alertId: string) => {
     await overrideFp(alertId);
     setFpResults(prev => prev.filter(r => r.id !== alertId));
-    toast('Sent to investigation queue', 'success');
+    toast('Sent to Incidents queue', 'success');
   };
 
   const handleDirectScan = async () => {
@@ -6507,7 +6258,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
-      <PageHeader eyebrow="Pipeline Step 1" title="Noise Filter" description="Scan incoming alerts for false positives. Confirmed FPs go to the archive; clean alerts proceed to investigation." />
+      <PageHeader eyebrow="Pipeline Step 1" title="Noise Filter" description="Scan incoming alerts. Confirmed FPs are archived; real incidents (HIGH/CRITICAL) advance to the Incidents tab and trigger Telegram." />
 
       {/* Auto-Filter Toggle */}
       <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 flex items-center justify-between">
@@ -6516,15 +6267,15 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
             <Zap size={20} className={autoFilter ? 'text-green-600' : 'text-gray-400'} />
           </div>
           <div>
-            <p className="text-[0.82rem] font-black text-[var(--t7)]">Auto-Filter on Arrival</p>
+            <p className="text-[0.82rem] font-black text-[var(--t7)]">Auto-Investigate on Arrival</p>
             <p className="text-[0.65rem] text-[var(--t3)]">
               {autoFilter
-                ? 'Enabled — incoming Wazuh alerts are automatically scanned for FPs'
-                : 'Disabled — new alerts stay unscanned until you manually trigger a scan'}
+                ? 'Enabled — incoming Wazuh alerts run the full agent pipeline. FPs go to archive, real incidents fire Telegram/email/Slack.'
+                : 'Disabled — new alerts sit in NEW status until you investigate manually.'}
             </p>
           </div>
         </div>
-        <button onClick={() => { setAutoFilter(!autoFilter); toast(autoFilter ? 'Auto-filter disabled' : 'Auto-filter enabled — new alerts will be scanned automatically', 'success'); }}
+        <button onClick={() => { setAutoFilter(!autoFilter); toast(autoFilter ? 'Auto-investigate disabled' : 'Auto-investigate enabled — new alerts will run the full pipeline', 'success'); }}
           className={`relative w-14 h-7 rounded-full transition-colors ${autoFilter ? 'bg-green-500' : 'bg-gray-300'}`}>
           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${autoFilter ? 'translate-x-7' : 'translate-x-0.5'}`} />
         </button>
@@ -6794,6 +6545,8 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
 // ── FP Archive Tab ──────────────────────────────────────────────────────────
 const FpArchiveTab = () => {
   const toast = useToast();
+  const { user, token } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [data, setData] = useState<{ alerts: any[]; total: number }>({ alerts: [], total: 0 });
   const [page, setPage] = useState(1);
   const [methodFilter, setMethodFilter] = useState('');
@@ -6801,6 +6554,7 @@ const FpArchiveTab = () => {
   const [fpTimeline, setFpTimeline] = useState<any[]>([]);
   const [noisySources, setNoisySources] = useState<any[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const reload = useCallback(() => {
     getFpArchive({ page, pageSize: 25, method: methodFilter || undefined }).then(setData).catch(() => {});
@@ -6812,8 +6566,26 @@ const FpArchiveTab = () => {
 
   const handleReinvestigate = async (id: string) => {
     await overrideFp(id);
-    toast('Alert moved to investigation queue', 'success');
+    toast('Alert moved to Incidents queue', 'success');
     reload();
+  };
+
+  const handleClearArchive = async () => {
+    if (!confirm('Delete ALL alerts in the FP Archive?\n\nThis permanently removes both AI-flagged and analyst-confirmed FPs. The Incidents queue is NOT affected.\n\nProceed?')) return;
+    setClearing(true);
+    try {
+      const res = await fetch('/api/admin/clear-fp-archive', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await res.json();
+      toast(`Deleted ${d.deleted ?? 0} alerts from FP Archive`, 'success');
+      window.location.reload();
+    } catch (err: any) {
+      toast(err?.message || 'Failed to clear archive', 'error');
+    } finally {
+      setClearing(false);
+    }
   };
 
   const fpTimelineMax = fpTimeline.length ? Math.max(...fpTimeline.map(t => t.total_fp || 0), 1) : 1;
@@ -6857,13 +6629,25 @@ const FpArchiveTab = () => {
 
       {/* Filter + Table */}
       <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between gap-3">
-          <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Alerts ({data.total})</p>
-          <div className="flex gap-2">
-            {['', 'suppression', 'memory', 'triage'].map(m => (
+        <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Alerts ({data.total})</p>
+            {isAdmin && data.total > 0 && (
+              <button
+                onClick={handleClearArchive}
+                disabled={clearing}
+                className="px-3 py-1 rounded text-[0.62rem] font-bold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 disabled:opacity-50 flex items-center gap-1.5"
+                title="Permanently delete all FP archive entries (Incidents queue is not affected)"
+              >
+                <Trash2 size={11} />{clearing ? 'Clearing…' : 'Clear Archive'}
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {['', 'analyst', 'suppression', 'memory', 'triage', 'asset_fast', 'confidence_aggregated', 'low_risk_score', 'noise_priority', 'low_priority', 'severity_filter', 'time_window', 'legacy_filter'].map(m => (
               <button key={m} onClick={() => { setMethodFilter(m); setPage(1); }}
                 className={`px-3 py-1 rounded text-[0.62rem] font-bold ${methodFilter === m ? 'bg-[var(--p1)] text-white' : 'bg-[var(--sa)] text-[var(--t4)] hover:bg-[var(--s1)]'}`}>
-                {m || 'All'}
+                {m ? m.replace(/_/g, ' ') : 'All'}
               </button>
             ))}
           </div>
@@ -6876,10 +6660,20 @@ const FpArchiveTab = () => {
               <button onClick={() => setExpanded(expanded === a.id ? null : a.id)} className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-[var(--sa)]">
                 <ChevronRight size={14} className={`text-[var(--t3)] transition-transform ${expanded === a.id ? 'rotate-90' : ''}`} />
                 <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase ${
-                  a.fp_method === 'suppression' ? 'bg-blue-100 text-blue-700' :
-                  a.fp_method === 'memory' ? 'bg-green-100 text-green-700' :
-                  'bg-purple-100 text-purple-700'
-                }`}>{a.fp_method || '?'}</span>
+                  a.fp_method === 'suppression'           ? 'bg-blue-100 text-blue-700'      :
+                  a.fp_method === 'memory'                ? 'bg-green-100 text-green-700'    :
+                  a.fp_method === 'severity_filter'       ? 'bg-amber-100 text-amber-700'    :
+                  a.fp_method === 'time_window'           ? 'bg-cyan-100 text-cyan-700'      :
+                  a.fp_method === 'triage'                ? 'bg-purple-100 text-purple-700'  :
+                  a.fp_method === 'low_priority'          ? 'bg-pink-100 text-pink-700'      :
+                  a.fp_method === 'noise_priority'        ? 'bg-pink-100 text-pink-700'      :
+                  a.fp_method === 'low_risk_score'        ? 'bg-rose-100 text-rose-700'      :
+                  a.fp_method === 'asset_fast'            ? 'bg-teal-100 text-teal-700'      :
+                  a.fp_method === 'confidence_aggregated' ? 'bg-indigo-100 text-indigo-700'  :
+                  a.fp_method === 'analyst'               ? 'bg-slate-200 text-slate-700'    :
+                  a.fp_method === 'legacy_filter'         ? 'bg-yellow-100 text-yellow-700'  :
+                  'bg-gray-100 text-gray-700'
+                }`}>{(a.fp_method || '?').replace(/_/g, ' ')}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-[0.72rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
                   <p className="text-[0.58rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · {a.timestamp?.slice(0, 16)}</p>
@@ -6951,11 +6745,34 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
   setActiveTab: (t: string) => void;
 }) => {
   const toast = useToast();
+  const { user, token } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [investigating, setInvestigating] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
 
-  // Only show alerts that passed the noise filter or are already investigated
+  const handleClearQueue = async () => {
+    if (!confirm('Delete all alerts in the Incidents queue?\n\nThis permanently removes alerts with status TRIAGED, ESCALATED, CLOSED, or ANALYZING. The FP Archive is NOT affected.\n\nProceed?')) return;
+    setClearing(true);
+    try {
+      const res = await fetch('/api/admin/clear-investigation', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      toast(`Deleted ${data.deleted ?? 0} alerts from Incidents`, 'success');
+      // Force a page-data refresh
+      window.location.reload();
+    } catch (err: any) {
+      toast(err?.message || 'Failed to clear queue', 'error');
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  // Alerts Queue: alerts that passed FP filtering and need Tier-1 review.
+  // Once escalated, they move to the dedicated Incidents tab.
   const investigationAlerts = alerts.filter(a =>
-    ['FILTERED', 'TRIAGED', 'ESCALATED', 'CLOSED', 'ANALYZING'].includes(a.status)
+    ['TRIAGED', 'ANALYZING'].includes(a.status)
   );
 
   const handleInvestigate = async (alertId: string) => {
@@ -6968,11 +6785,53 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
     setInvestigating(null);
   };
 
-  const handleEscalate = async (alertId: string) => {
+  // ── Escalate-to-Incident modal state ─────────────────────────────────────
+  const [escAlert, setEscAlert]     = useState<Alert | null>(null);
+  const [analysts, setAnalysts]     = useState<{ id: number; username: string; role: string }[]>([]);
+  const [escForm, setEscForm]       = useState({ title: '', severity: 'HIGH', phase: 'analysis' as IncidentPhase, assigned_to: 0, note: '', create_glpi: true });
+  const [escSubmitting, setEscSubmitting] = useState(false);
+
+  const openEscalateModal = async (alert: Alert) => {
+    let title = alert.description || 'Untitled';
+    let severity: string = 'HIGH';
     try {
-      await escalateAlert(alertId);
-      toast('Alert escalated — GLPI ticket created', 'success');
-    } catch { toast('Escalation failed', 'error'); }
+      const j = JSON.parse(alert.ai_analysis || '{}');
+      title    = j?.ticket?.title || j?.phaseData?.ticket?.title || title;
+      severity = j?.ticket?.priority || j?.phaseData?.ticket?.priority || 'HIGH';
+    } catch {}
+    setEscAlert(alert);
+    // Default to UNASSIGNED — incident starts at status=OPEN until someone takes it
+    setEscForm({ title, severity, phase: 'analysis', assigned_to: 0, note: '', create_glpi: true });
+    try {
+      const list = await listAnalysts();
+      setAnalysts(list);
+    } catch { setAnalysts([]); }
+  };
+
+  const submitEscalation = async () => {
+    if (!escAlert) return;
+    setEscSubmitting(true);
+    try {
+      const r = await createIncident({
+        alert_id:    escAlert.id,
+        title:       escForm.title || undefined,
+        severity:    escForm.severity,
+        phase:       escForm.phase,
+        assigned_to: escForm.assigned_to || null,  // 0 = unassigned (incident starts OPEN)
+        note:        escForm.note || undefined,
+        create_glpi: escForm.create_glpi,
+      });
+      if (!r.ok || !r.id) { toast(r.error || 'Failed to create incident', 'error'); return; }
+      const assigneeText = escForm.assigned_to
+        ? `→ ${analysts.find(a => a.id === escForm.assigned_to)?.username || 'analyst'}`
+        : '(unassigned, status=Open)';
+      const glpiNote = r.glpi_ticket_id ? ` · GLPI #${r.glpi_ticket_id}` : '';
+      toast(`Incident ${r.id} created ${assigneeText}${glpiNote}`, 'success');
+      onAlertAction(escAlert.id, { status: 'ESCALATED' });
+      setEscAlert(null);
+      setSelectedAlert(null);
+    } catch (err: any) { toast(err?.message || 'Escalation failed', 'error'); }
+    finally { setEscSubmitting(false); }
   };
 
   const handleMarkFp = async (alertId: string) => {
@@ -7017,9 +6876,9 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
             )}
             {['TRIAGED', 'FILTERED'].includes(selectedAlert.status) && (
               <>
-                <button onClick={() => handleEscalate(selectedAlert.id)}
+                <button onClick={() => openEscalateModal(selectedAlert)}
                   className="px-4 py-2.5 rounded-lg bg-red-600 text-white text-[0.75rem] font-bold hover:bg-red-700 flex items-center gap-2">
-                  <Shield size={14} />Escalate
+                  <AlertOctagon size={14} />Escalate to Incident
                 </button>
                 <button onClick={() => handleMarkFp(selectedAlert.id)}
                   className="px-4 py-2.5 rounded-lg bg-amber-100 text-amber-800 text-[0.75rem] font-bold hover:bg-amber-200">
@@ -7036,17 +6895,27 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
   // No alert selected — show queue
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
-      <PageHeader eyebrow="Pipeline Step 2" title="Investigation" description="Alerts that passed the noise filter. Run the full agent swarm to generate action plans and reports." />
+      <PageHeader eyebrow="Tier-1 Triage" title="Alerts Queue" description="Alerts that passed FP filtering, awaiting Tier-1 analyst review. Click Escalate to promote a real threat into the Incidents tab with an assigned owner." />
 
       <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-[var(--s1)]">
-          <p className="text-[0.78rem] font-black text-[var(--t7)]">Investigation Queue ({investigationAlerts.length})</p>
+        <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+          <p className="text-[0.78rem] font-black text-[var(--t7)]">Alerts Queue ({investigationAlerts.length})</p>
+          {isAdmin && investigationAlerts.length > 0 && (
+            <button
+              onClick={handleClearQueue}
+              disabled={clearing}
+              className="px-3 py-1 rounded text-[0.65rem] font-bold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 disabled:opacity-50 flex items-center gap-1.5"
+              title="Permanently delete all alerts in this queue (FP Archive is not affected)"
+            >
+              <Trash2 size={11} />{clearing ? 'Clearing…' : 'Clear Queue'}
+            </button>
+          )}
         </div>
         <div className="divide-y divide-[var(--b1)]">
           {investigationAlerts.length === 0 ? (
             <div className="p-8 text-center text-[var(--t3)]">
-              <p className="text-[0.85rem] font-semibold mb-2">No alerts awaiting investigation</p>
-              <p className="text-[0.72rem]">Run the <button onClick={() => setActiveTab('noise-filter')} className="text-[var(--p1)] font-bold hover:underline">Noise Filter</button> first to process incoming alerts.</p>
+              <p className="text-[0.85rem] font-semibold mb-2">✅ No incidents need attention</p>
+              <p className="text-[0.72rem]">The FP-reduction pipeline is filtering noise to the <button onClick={() => setActiveTab('fp-archive')} className="text-[var(--p1)] font-bold hover:underline">FP Archive</button> — check there for archived items, or tune the <button onClick={() => setActiveTab('noise-filter')} className="text-[var(--p1)] font-bold hover:underline">Noise Filter</button>.</p>
             </div>
           ) : investigationAlerts.map(a => {
             const risk = getAlertRiskScore(a);
@@ -7073,6 +6942,99 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
           })}
         </div>
       </div>
+
+      {/* ── Escalate-to-Incident modal ──────────────────────────────────── */}
+      {escAlert && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--b1)] bg-[var(--s1)]">
+              <div className="flex items-center gap-2">
+                <AlertOctagon size={16} className="text-red-600" />
+                <p className="text-[0.85rem] font-black text-[var(--t7)]">Escalate to Incident</p>
+              </div>
+              <button onClick={() => setEscAlert(null)} className="text-[var(--t3)] hover:text-[var(--t6)]"><X size={16} /></button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[0.62rem] font-black text-[var(--t4)] uppercase tracking-widest block mb-1">Title</label>
+                <input value={escForm.title} onChange={e => setEscForm({ ...escForm, title: e.target.value })}
+                  className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[0.62rem] font-black text-[var(--t4)] uppercase tracking-widest block mb-1">Severity</label>
+                  <select value={escForm.severity} onChange={e => setEscForm({ ...escForm, severity: e.target.value })}
+                    className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]">
+                    {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[0.62rem] font-black text-[var(--t4)] uppercase tracking-widest block mb-1">Initial Phase</label>
+                  <select value={escForm.phase} onChange={e => setEscForm({ ...escForm, phase: e.target.value as IncidentPhase })}
+                    className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]">
+                    {INCIDENT_PHASES.map(p => <option key={p} value={p}>{PHASE_LABELS[p]}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[0.62rem] font-black text-[var(--t4)] uppercase tracking-widest block mb-1">Assign To</label>
+                <p className="text-[0.62rem] text-[var(--t3)] mb-1.5">
+                  If left unassigned, the incident starts as <span className="font-bold text-blue-700">Open</span> and any TIER2+ user can claim it.
+                  Assigning it directly auto-promotes it to <span className="font-bold text-orange-700">Investigating</span>.
+                </p>
+                <div className="border border-[var(--b2)] rounded divide-y divide-[var(--b1)] max-h-44 overflow-y-auto">
+                  <label className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-[var(--s1)] ${escForm.assigned_to === 0 ? 'bg-blue-50' : ''}`}>
+                    <input type="radio" name="assignee" checked={escForm.assigned_to === 0} onChange={() => setEscForm({ ...escForm, assigned_to: 0 })} />
+                    <span className="text-[0.78rem] font-semibold text-[var(--t6)] flex-1">— Leave unassigned —</span>
+                    <span className="px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest bg-blue-100 text-blue-700">Open</span>
+                  </label>
+                  {analysts.length === 0 ? (
+                    <p className="text-[0.72rem] text-[var(--t4)] px-3 py-2 italic">
+                      No TIER2 / INCIDENT_LEAD users available. Create one in Admin Ops → Users.
+                    </p>
+                  ) : (
+                    analysts.map(a => (
+                      <label key={a.id} className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-[var(--s1)] ${escForm.assigned_to === a.id ? 'bg-blue-50' : ''}`}>
+                        <input type="radio" name="assignee" checked={escForm.assigned_to === a.id} onChange={() => setEscForm({ ...escForm, assigned_to: a.id })} />
+                        <span className="text-[0.78rem] font-semibold text-[var(--t7)] flex-1">{a.username}</span>
+                        <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest ${
+                          a.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' :
+                          a.role === 'INCIDENT_LEAD' ? 'bg-indigo-100 text-indigo-700' :
+                          'bg-blue-100 text-blue-700'
+                        }`}>{a.role}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[0.62rem] font-black text-[var(--t4)] uppercase tracking-widest block mb-1">Escalation Note (optional)</label>
+                <textarea value={escForm.note} onChange={e => setEscForm({ ...escForm, note: e.target.value })} rows={2}
+                  placeholder="Why is this a real incident? Any context for the assignee?"
+                  className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-none" />
+              </div>
+
+              <label className="flex items-center gap-2 text-[0.78rem] text-[var(--t6)]">
+                <input type="checkbox" checked={escForm.create_glpi} onChange={e => setEscForm({ ...escForm, create_glpi: e.target.checked })} />
+                Also create GLPI ticket
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 px-5 py-3 border-t border-[var(--b1)] bg-[var(--s1)]">
+              <button onClick={() => setEscAlert(null)}
+                className="px-4 py-2 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.75rem] font-semibold hover:bg-[var(--s2)]">Cancel</button>
+              <button onClick={submitEscalation} disabled={escSubmitting}
+                className="px-4 py-2 rounded bg-red-600 text-white text-[0.75rem] font-bold hover:bg-red-700 disabled:opacity-50 flex items-center gap-1.5">
+                <AlertOctagon size={13} />{escSubmitting ? 'Escalating…' : 'Escalate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -7081,18 +7043,85 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
 // ── Integrations Tab (merge Notifications + Response Controls) ──────────────
 const IntegrationsTab = () => {
   const toast = useToast();
-  const { user } = useAuth();
-  const [activeSection, setActiveSection] = useState<'notifications' | 'firewalls' | 'logs'>('notifications');
+  const { user, token } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
+  const [activeSection, setActiveSection] = useState<'notifications' | 'firewalls' | 'logs' | 'ingest'>('notifications');
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [editConfig, setEditConfig] = useState<any>({});
 
+  // ── Alert Ingest state ──────────────────────────────────────────────────────
+  const [apiKeys,      setApiKeys]      = useState<any[]>([]);
+  const [newKeyName,   setNewKeyName]   = useState('');
+  const [createdKey,   setCreatedKey]   = useState<{ key: string; prefix: string } | null>(null);
+  const [keyCreating,  setKeyCreating]  = useState(false);
+  const [keyRevoke,    setKeyRevoke]    = useState<Record<number, boolean>>({});
+  const [keyUpdating,  setKeyUpdating]  = useState<Record<number, boolean>>({});
+  const [showKeyValue, setShowKeyValue] = useState(false);
+  const [expandedKey,  setExpandedKey]  = useState<number | null>(null);
+  const [ingestCfg,    setIngestCfg]    = useState<Record<string, string>>({
+    ingest_enabled: 'true', min_severity: '7', max_alerts_per_min: '60',
+    dedup_window_minutes: '5', time_window_start: '', time_window_end: '', auto_orchestrate: 'true',
+  });
+  const [ingestSaving, setIngestSaving] = useState(false);
+
+  const fetchApiKeys = () => listApiKeys().then(setApiKeys).catch(() => {});
+
   const reload = useCallback(() => {
-    getIntegrations().then(setIntegrations).catch(() => {});
+    getIntegrations().then(list => {
+      setIntegrations(list);
+      const w = list.find((i: any) => i.name === 'wazuh');
+      if (w?.config) setIngestCfg((prev) => ({ ...prev, ...w.config }));
+    }).catch(() => {});
     getActionLogs().then(setActionLogs).catch(() => {});
-  }, []);
+    if (isAdmin) fetchApiKeys();
+  }, [isAdmin]);
   useEffect(() => { reload(); }, [reload]);
+
+  const handleSaveIngestCfg = async () => {
+    setIngestSaving(true);
+    try {
+      await updateIntegration('wazuh', { config: ingestCfg });
+      toast('Ingest settings saved', 'success');
+    } catch { toast('Failed to save settings', 'error'); }
+    finally { setIngestSaving(false); }
+  };
+
+  const handleToggleKeyPause = async (k: any) => {
+    setKeyUpdating(p => ({ ...p, [k.id]: true }));
+    try { await updateApiKey(k.id, { paused: !k.paused }); fetchApiKeys(); }
+    catch { toast('Failed to update key', 'error'); }
+    finally { setKeyUpdating(p => ({ ...p, [k.id]: false })); }
+  };
+
+  const handleKeyMinSev = async (k: any, raw: string) => {
+    const v = raw.trim() === '' ? null : Number(raw);
+    if (v !== null && (isNaN(v) || v < 0 || v > 15)) return;
+    setKeyUpdating(p => ({ ...p, [k.id]: true }));
+    try { await updateApiKey(k.id, { min_severity_override: v }); fetchApiKeys(); }
+    catch { toast('Failed to update key', 'error'); }
+    finally { setKeyUpdating(p => ({ ...p, [k.id]: false })); }
+  };
+
+  const handleCreateKey = async () => {
+    if (!newKeyName.trim()) return;
+    setKeyCreating(true);
+    try {
+      const r = await createApiKey(newKeyName.trim());
+      if (r.ok) { setCreatedKey({ key: r.key, prefix: r.prefix }); setNewKeyName(''); fetchApiKeys(); }
+      else toast(r.error || 'Failed to create key', 'error');
+    } catch { toast('Failed to create key', 'error'); }
+    finally { setKeyCreating(false); }
+  };
+
+  const handleRevokeKey = async (id: number) => {
+    if (!confirm('Revoke this key? Any Wazuh scripts using it will stop working immediately.')) return;
+    setKeyRevoke(p => ({ ...p, [id]: true }));
+    await revokeApiKey(id);
+    fetchApiKeys();
+    setKeyRevoke(p => ({ ...p, [id]: false }));
+  };
 
   const handleToggle = async (name: string, enabled: boolean) => {
     await updateIntegration(name, { enabled: !enabled });
@@ -7116,13 +7145,14 @@ const IntegrationsTab = () => {
     <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
       <PageHeader eyebrow="External Systems" title="Integrations" description="GLPI ticketing, Telegram alerts, email notifications, and firewall controls." />
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         {[
           { id: 'notifications' as const, label: 'Notifications' },
           { id: 'firewalls' as const, label: 'Firewalls' },
           { id: 'logs' as const, label: 'Activity Log' },
+          ...(isAdmin ? [{ id: 'ingest' as const, label: 'Alert Ingest' }] : []),
         ].map(s => (
-          <button key={s.id} onClick={() => setActiveSection(s.id)}
+          <button key={s.id} onClick={() => setActiveSection(s.id as any)}
             className={`px-4 py-2 rounded-lg text-[0.75rem] font-bold transition-colors ${activeSection === s.id ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s0)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s1)]'}`}>
             {s.label}
           </button>
@@ -7132,43 +7162,96 @@ const IntegrationsTab = () => {
       {/* Notifications */}
       {activeSection === 'notifications' && (
         <div className="space-y-4">
-          {integrations.map(intg => (
-            <div key={intg.name} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
-              <div className="flex items-center gap-4 mb-3">
-                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${intg.enabled ? 'bg-green-100' : 'bg-gray-100'}`}>
-                  {intg.name === 'email' ? <Mail size={18} className="text-blue-600" /> :
-                   intg.name === 'telegram' ? <Send size={18} className="text-blue-500" /> :
-                   <ExternalLink size={18} className="text-purple-600" />}
-                </div>
-                <div className="flex-1">
-                  <p className="text-[0.85rem] font-black text-[var(--t7)] capitalize">{intg.name}</p>
-                  <p className="text-[0.62rem] text-[var(--t3)]">Threshold: {intg.auto_send_threshold} · 24h: {(intg as any).stats_24h?.success || 0} sent</p>
-                </div>
-                <button onClick={() => handleToggle(intg.name, intg.enabled)}
-                  className={`px-3 py-1.5 rounded-lg text-[0.68rem] font-bold ${intg.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {intg.enabled ? 'Enabled' : 'Disabled'}
-                </button>
-                <button onClick={() => handleTest(intg.name)} className="px-3 py-1.5 rounded-lg bg-[var(--sa)] text-[0.68rem] font-bold text-[var(--p1)] hover:bg-[var(--s1)]">Test</button>
-                <button onClick={() => { setEditing(editing === intg.name ? null : intg.name); setEditConfig(intg.config || {}); }}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--sa)] text-[0.68rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)]">
-                  {editing === intg.name ? 'Cancel' : 'Config'}
-                </button>
-              </div>
-              {editing === intg.name && (
-                <div className="bg-[var(--sa)] rounded-lg p-3 space-y-2 mt-2">
-                  {Object.keys(editConfig).map(k => (
-                    <div key={k} className="flex items-center gap-2">
-                      <label className="text-[0.62rem] font-bold text-[var(--t3)] w-28">{k}</label>
-                      <input value={editConfig[k] || ''} onChange={e => setEditConfig((c: any) => ({ ...c, [k]: e.target.value }))}
-                        type={k.includes('token') || k.includes('password') ? 'password' : 'text'}
-                        className="flex-1 px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem]" />
+          {integrations.map(intg => {
+            const cfg = intg.config as Record<string, string>;
+            const isEmailUnconfigured = intg.name === 'email' && !cfg?.smtp_host;
+            const isSlackUnconfigured = intg.name === 'slack' && !cfg?.webhook_url;
+            const unconfigured = isEmailUnconfigured || isSlackUnconfigured;
+
+            const INTG_META: Record<string, { icon: React.ReactNode; desc: string; color: string }> = {
+              email:    { icon: <Mail size={18} className="text-blue-600" />,      desc: 'Send alert emails via SMTP (Gmail, Outlook, custom)',    color: 'bg-blue-100' },
+              telegram: { icon: <Send size={18} className="text-sky-500" />,       desc: 'Push notifications to a Telegram bot channel',           color: 'bg-sky-100' },
+              glpi:     { icon: <ExternalLink size={18} className="text-violet-600" />, desc: 'Create GLPI helpdesk tickets for escalated incidents', color: 'bg-violet-100' },
+              slack:    { icon: <Hash size={18} className="text-green-600" />,     desc: 'Post alerts to a Slack channel via Incoming Webhook',    color: 'bg-green-100' },
+            };
+            const meta = INTG_META[intg.name] || { icon: <ExternalLink size={18} className="text-gray-500" />, desc: '', color: 'bg-gray-100' };
+
+            const FIELD_LABELS: Record<string, string> = {
+              smtp_host: 'SMTP Host', smtp_port: 'SMTP Port', smtp_user: 'Username',
+              smtp_pass: 'Password', from: 'From Address', to: 'To Address',
+              bot_token: 'Bot Token', chat_id: 'Chat ID',
+              url: 'GLPI URL', app_token: 'App Token', user_token: 'User Token',
+              webhook_url: 'Webhook URL',
+            };
+
+            return (
+              <div key={intg.name} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
+                <div className="flex items-center gap-4 mb-3">
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${intg.enabled && !unconfigured ? meta.color : 'bg-gray-100'}`}>
+                    {meta.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-[0.85rem] font-black text-[var(--t7)] capitalize">{intg.name}</p>
+                      {unconfigured && (
+                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[0.58rem] font-black uppercase tracking-wide">Not configured</span>
+                      )}
                     </div>
-                  ))}
-                  <button onClick={() => handleSaveConfig(intg.name)} className="px-4 py-1.5 rounded bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)]">Save</button>
+                    <p className="text-[0.62rem] text-[var(--t3)] truncate">{meta.desc}</p>
+                    <p className="text-[0.60rem] text-[var(--t4)] mt-0.5">Threshold: <span className="font-bold">{intg.auto_send_threshold}</span> · 24h sent: <span className="font-bold">{(intg as any).stats_24h?.success || 0}</span></p>
+                  </div>
+                  <button onClick={() => handleToggle(intg.name, intg.enabled)}
+                    className={`shrink-0 px-3 py-1.5 rounded-lg text-[0.68rem] font-bold transition-colors ${intg.enabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                    {intg.enabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                  <button onClick={() => handleTest(intg.name)} className="shrink-0 px-3 py-1.5 rounded-lg bg-[var(--sa)] text-[0.68rem] font-bold text-[var(--p1)] hover:bg-[var(--s1)]">Test</button>
+                  <button onClick={() => { setEditing(editing === intg.name ? null : intg.name); setEditConfig({ ...intg.config }); }}
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-[var(--sa)] text-[0.68rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)]">
+                    {editing === intg.name ? 'Cancel' : 'Config'}
+                  </button>
                 </div>
-              )}
-            </div>
-          ))}
+
+                {editing === intg.name && (
+                  <div className="bg-[var(--sa)] border border-[var(--b2)] rounded-lg p-4 space-y-3 mt-1">
+                    <p className="text-[0.65rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Configuration</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {Object.keys(editConfig).map(k => {
+                        const isSecret = k.includes('token') || k.includes('pass') || k.includes('password') || k.includes('secret');
+                        return (
+                          <div key={k} className="space-y-1">
+                            <label className="text-[0.65rem] font-black text-[var(--t4)] uppercase tracking-wider">
+                              {FIELD_LABELS[k] || k.replace(/_/g, ' ')}
+                            </label>
+                            <input
+                              value={editConfig[k] || ''}
+                              onChange={e => setEditConfig((c: any) => ({ ...c, [k]: e.target.value }))}
+                              type={isSecret ? 'password' : 'text'}
+                              placeholder={isSecret ? '••••••••' : undefined}
+                              className="w-full px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem] outline-none focus:border-[var(--p1)] font-mono"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {intg.name === 'email' && (
+                      <p className="text-[0.62rem] text-[var(--t3)]">
+                        Works with Gmail (use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="text-[var(--p1)] underline">App Password</a>), Outlook (smtp.office365.com:587), or any SMTP server.
+                      </p>
+                    )}
+                    {intg.name === 'slack' && (
+                      <p className="text-[0.62rem] text-[var(--t3)]">
+                        Create an Incoming Webhook in your Slack workspace under <span className="font-mono bg-[var(--s1)] px-1 rounded">App Directory → Incoming Webhooks</span> and paste the URL above.
+                      </p>
+                    )}
+                    <div className="flex gap-2 pt-1">
+                      <button onClick={() => handleSaveConfig(intg.name)} className="px-4 py-1.5 rounded bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)]">Save</button>
+                      <button onClick={() => setEditing(null)} className="px-4 py-1.5 rounded border border-[var(--b2)] text-[var(--t4)] text-[0.68rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -7195,6 +7278,365 @@ const IntegrationsTab = () => {
           </div>
         </div>
       )}
+
+      {/* ── Alert Ingest ────────────────────────────────────────────────────── */}
+      {activeSection === 'ingest' && isAdmin && (
+        <div className="space-y-5">
+
+          {/* Alert Ingestion card */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+            <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-[var(--p1)]" />
+                <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">Alert Ingestion</h3>
+                <span className="text-[0.65rem] text-[var(--t3)]">Global controls for all alerts received via API key.</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide ${ingestCfg.ingest_enabled === 'false' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'}`}>
+                  {ingestCfg.ingest_enabled === 'false' ? 'Paused' : 'Active'}
+                </span>
+              </div>
+            </div>
+            <div className="p-5 space-y-5">
+
+              {/* Global on/off */}
+              <div className="flex items-center justify-between py-2 border-b border-[var(--b2)]">
+                <div>
+                  <p className="text-[0.82rem] font-bold text-[var(--t6)]">Receive alerts</p>
+                  <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">When off, all ingest requests return HTTP 503 regardless of key.</p>
+                </div>
+                <button
+                  onClick={() => setIngestCfg(c => ({ ...c, ingest_enabled: c.ingest_enabled === 'false' ? 'true' : 'false' }))}
+                  className="shrink-0"
+                  title="Toggle global ingestion"
+                >
+                  {ingestCfg.ingest_enabled === 'false'
+                    ? <ToggleLeft size={32} className="text-[var(--t3)] hover:text-[var(--t5)] transition-colors" />
+                    : <ToggleRight size={32} className="text-[var(--p1)]" />}
+                </button>
+              </div>
+
+              {/* Settings grid */}
+              <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+
+                {/* Min severity */}
+                <div className="space-y-1.5">
+                  <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Min Severity Level</label>
+                  <p className="text-[0.65rem] text-[var(--t3)]">Alerts below this Wazuh level (0–15) are silently dropped.</p>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range" min="0" max="15" step="1"
+                      value={ingestCfg.min_severity ?? '7'}
+                      onChange={e => setIngestCfg(c => ({ ...c, min_severity: e.target.value }))}
+                      className="flex-1 accent-[var(--p1)]"
+                    />
+                    <span className="w-8 text-center font-black text-[var(--t1)] text-[0.9rem] tabular-nums">{ingestCfg.min_severity ?? '7'}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase ${
+                      Number(ingestCfg.min_severity ?? 7) >= 12 ? 'bg-red-100 text-red-700' :
+                      Number(ingestCfg.min_severity ?? 7) >= 7  ? 'bg-orange-100 text-orange-700' :
+                      Number(ingestCfg.min_severity ?? 7) >= 4  ? 'bg-amber-100 text-amber-700' :
+                      'bg-green-100 text-green-700'
+                    }`}>
+                      {Number(ingestCfg.min_severity ?? 7) >= 12 ? 'Critical+' :
+                       Number(ingestCfg.min_severity ?? 7) >= 7  ? 'High+' :
+                       Number(ingestCfg.min_severity ?? 7) >= 4  ? 'Medium+' : 'All'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Rate limit */}
+                <div className="space-y-1.5">
+                  <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Rate Limit (alerts / min)</label>
+                  <p className="text-[0.65rem] text-[var(--t3)]">Requests beyond this threshold return HTTP 429. Set 0 to disable.</p>
+                  <input
+                    type="number" min="0" max="10000" step="10"
+                    value={ingestCfg.max_alerts_per_min ?? '60'}
+                    onChange={e => setIngestCfg(c => ({ ...c, max_alerts_per_min: e.target.value }))}
+                    className="w-full border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                  />
+                </div>
+
+                {/* Dedup window */}
+                <div className="space-y-1.5">
+                  <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Deduplication Window (minutes)</label>
+                  <p className="text-[0.65rem] text-[var(--t3)]">Identical alerts (same rule + source IP) within this window are dropped.</p>
+                  <input
+                    type="number" min="0" max="1440" step="1"
+                    value={ingestCfg.dedup_window_minutes ?? '5'}
+                    onChange={e => setIngestCfg(c => ({ ...c, dedup_window_minutes: e.target.value }))}
+                    className="w-full border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                  />
+                </div>
+
+                {/* Active hours */}
+                <div className="space-y-1.5">
+                  <label className="text-[0.72rem] font-black text-[var(--t4)] uppercase tracking-widest">Active Hours (24h, optional)</label>
+                  <p className="text-[0.65rem] text-[var(--t3)]">Only accept alerts during this window. Leave empty to accept all hours.</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="time"
+                      value={ingestCfg.time_window_start ?? ''}
+                      onChange={e => setIngestCfg(c => ({ ...c, time_window_start: e.target.value }))}
+                      className="flex-1 border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                    />
+                    <span className="text-[var(--t3)] text-[0.72rem] font-bold shrink-0">to</span>
+                    <input
+                      type="time"
+                      value={ingestCfg.time_window_end ?? ''}
+                      onChange={e => setIngestCfg(c => ({ ...c, time_window_end: e.target.value }))}
+                      className="flex-1 border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono bg-[var(--s1)]"
+                    />
+                    {(ingestCfg.time_window_start || ingestCfg.time_window_end) && (
+                      <button
+                        onClick={() => setIngestCfg(c => ({ ...c, time_window_start: '', time_window_end: '' }))}
+                        className="text-[var(--t3)] hover:text-[var(--t6)]" title="Clear"
+                      ><X size={13} /></button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Auto-orchestrate */}
+              <div className="flex items-center justify-between py-2 border-t border-[var(--b2)]">
+                <div>
+                  <p className="text-[0.82rem] font-bold text-[var(--t6)]">Auto-orchestrate new alerts</p>
+                  <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">Immediately run AI agents on every alert received via API.</p>
+                </div>
+                <button
+                  onClick={() => setIngestCfg(c => ({ ...c, auto_orchestrate: c.auto_orchestrate === 'false' ? 'true' : 'false' }))}
+                  className="shrink-0"
+                >
+                  {ingestCfg.auto_orchestrate === 'false'
+                    ? <ToggleLeft size={32} className="text-[var(--t3)] hover:text-[var(--t5)] transition-colors" />
+                    : <ToggleRight size={32} className="text-[var(--p1)]" />}
+                </button>
+              </div>
+
+              {/* Save button */}
+              <div className="flex justify-end">
+                <button
+                  onClick={handleSaveIngestCfg}
+                  disabled={ingestSaving}
+                  className="px-4 py-2 rounded bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {ingestSaving ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle size={13} />}
+                  {ingestSaving ? 'Saving…' : 'Save Ingest Settings'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* API Keys card */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
+            <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Key className="w-4 h-4 text-[var(--p1)]" />
+                <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">API Keys</h3>
+                <span className="text-[0.65rem] text-[var(--t3)]">Authenticate Wazuh and external forwarders to POST alerts to this platform.</span>
+              </div>
+            </div>
+            <div className="p-5 space-y-4">
+              {/* Ingest endpoint info */}
+              <div className="bg-[var(--s2)] border border-[var(--b2)] rounded-lg px-4 py-3 flex items-start gap-3">
+                <Webhook className="w-4 h-4 text-[var(--p1)] mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.72rem] font-bold text-[var(--t6)] mb-1">Ingest endpoint</p>
+                  <div className="flex gap-2 items-center">
+                    <code className="flex-1 text-[0.72rem] font-mono text-[var(--t5)] bg-[var(--s0)] border border-[var(--b2)] rounded px-2 py-1 truncate">
+                      POST {window.location.protocol}//{window.location.host}/api/ingest
+                    </code>
+                    <button onClick={() => { navigator.clipboard.writeText(`${window.location.protocol}//${window.location.host}/api/ingest`); toast('URL copied'); }} className="shrink-0 px-2 py-1 rounded border border-[var(--b2)] hover:bg-[var(--s1)] transition-colors" title="Copy">
+                      <Copy size={12} className="text-[var(--t4)]" />
+                    </button>
+                  </div>
+                  <p className="text-[0.65rem] text-[var(--t3)] mt-1.5">
+                    Send alerts with header: <code className="font-mono bg-[var(--s1)] px-1 rounded">X-Api-Key: sk_aisoc_…</code>
+                  </p>
+                  <details className="mt-2 group">
+                    <summary className="cursor-pointer text-[0.65rem] font-bold text-[var(--p1)] hover:underline list-none flex items-center gap-1">
+                      <ChevronDown size={10} className="group-open:rotate-180 transition-transform" />Test curl command
+                    </summary>
+                    <div className="mt-2">
+                      {(() => {
+                        const cmd = `curl -sk -X POST ${window.location.protocol}//${window.location.host}/api/ingest \\\n  -H "Content-Type: application/json" \\\n  -H "X-Api-Key: YOUR_KEY_HERE" \\\n  -d '{"rule":{"id":"test-001","description":"API key connectivity test","level":3},"agent":{"name":"test-host"},"data":{"srcip":"192.168.1.100"}}'`;
+                        return (
+                          <>
+                            <div className="flex items-center justify-between mb-1">
+                              <p className="text-[0.6rem] text-[var(--t3)]">Replace <code className="font-mono bg-[var(--s1)] px-0.5">YOUR_KEY_HERE</code> with your key</p>
+                              <button onClick={() => { navigator.clipboard.writeText(cmd.replace(/\\\n  /g, ' \\\n  ')); toast('Copied'); }} className="flex items-center gap-1 text-[0.6rem] text-[var(--p1)] hover:underline"><Copy size={8}/>Copy</button>
+                            </div>
+                            <pre className="bg-slate-900 text-slate-200 rounded p-2.5 text-[0.65rem] font-mono overflow-x-auto whitespace-pre leading-relaxed">{cmd}</pre>
+                            <p className="text-[0.6rem] text-[var(--t3)] mt-1">
+                              ✓ <code className="font-mono">{`{"status":"filtered",...}`}</code> = key valid, alert below min severity<br/>
+                              ✗ <code className="font-mono">{`{"error":"Invalid or revoked API key."}`}</code> = key rejected
+                            </p>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </details>
+                </div>
+              </div>
+
+              {/* Key creation row */}
+              <div className="flex gap-2">
+                <input
+                  value={newKeyName}
+                  onChange={e => setNewKeyName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleCreateKey()}
+                  placeholder="Key name (e.g. wazuh-manager-prod)"
+                  className="flex-1 border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] font-mono"
+                />
+                <button
+                  onClick={handleCreateKey}
+                  disabled={keyCreating || !newKeyName.trim()}
+                  className="px-4 py-2 rounded bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Plus size={13} />{keyCreating ? 'Creating…' : 'Create Key'}
+                </button>
+              </div>
+
+              {/* Created key reveal — shown once */}
+              {createdKey && (() => {
+                const curlCmd = `curl -sk -X POST ${window.location.protocol}//${window.location.host}/api/ingest \\\n  -H "Content-Type: application/json" \\\n  -H "X-Api-Key: ${createdKey.key}" \\\n  -d '{"rule":{"id":"test-001","description":"API key connectivity test","level":3},"agent":{"name":"test-host"},"data":{"srcip":"192.168.1.100"}}'`;
+                return (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
+                    <p className="text-[0.72rem] font-black text-green-800 flex items-center gap-1.5">
+                      <CheckCircle size={13} /> API key created — copy it now, it won't be shown again
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        readOnly
+                        type={showKeyValue ? 'text' : 'password'}
+                        value={createdKey.key}
+                        className="flex-1 border border-green-300 rounded px-2 py-1.5 text-[0.75rem] font-mono bg-white text-green-900"
+                      />
+                      <button onClick={() => setShowKeyValue(v => !v)} className="px-2 py-1.5 rounded border border-green-300 text-green-700 text-[0.68rem] font-bold hover:bg-green-100 transition-colors">{showKeyValue ? 'Hide' : 'Show'}</button>
+                      <button onClick={() => { navigator.clipboard.writeText(createdKey.key); toast('Key copied!', 'success'); }} className="px-2 py-1.5 rounded border border-green-300 hover:bg-green-100 transition-colors" title="Copy key"><Copy size={13} className="text-green-700" /></button>
+                      <button onClick={() => { setCreatedKey(null); setShowKeyValue(false); }} className="px-2 py-1.5 rounded border border-green-300 text-green-700 hover:bg-green-100 transition-colors"><X size={13} /></button>
+                    </div>
+                    <div className="border-t border-green-200 pt-3">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-wider">Test your key (run this in a terminal)</p>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(curlCmd.replace(/\\\n  /g, ' \\\n  ')); toast('curl command copied!', 'success'); }}
+                          className="flex items-center gap-1 text-[0.62rem] text-green-700 hover:underline font-bold"
+                        ><Copy size={9} />Copy</button>
+                      </div>
+                      <pre className="bg-green-900 text-green-200 rounded p-3 text-[0.68rem] font-mono overflow-x-auto whitespace-pre leading-relaxed">{curlCmd}</pre>
+                      <p className="text-[0.62rem] text-green-700 mt-1.5">
+                        Expected response: <code className="font-mono bg-green-100 px-1 rounded">{`{"status":"filtered","reason":"severity 3 below min 7"}`}</code> — key works, alert filtered by severity setting.<br/>
+                        If you see <code className="font-mono bg-green-100 px-1 rounded">{`{"error":"Invalid or revoked API key."}`}</code> the key is wrong.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Existing keys */}
+              {apiKeys.length > 0 ? (
+                <div className="space-y-2">
+                  {apiKeys.map((k: any) => (
+                    <div key={k.id} className={`border border-[var(--b2)] rounded-lg overflow-hidden ${k.revoked ? 'opacity-50' : ''}`}>
+                      <div className="flex items-center gap-3 px-4 py-2.5 bg-[var(--s1)] hover:bg-[var(--s2)] transition-colors">
+                        <div className={`w-2 h-2 rounded-full shrink-0 ${k.revoked ? 'bg-red-400' : k.paused ? 'bg-amber-400' : 'bg-green-500'}`} />
+                        <div className="flex-1 min-w-0">
+                          <span className="text-[0.82rem] font-bold text-[var(--t6)]">{k.name}</span>
+                          <span className="ml-2 font-mono text-[0.68rem] text-[var(--t3)]">{k.key_prefix}</span>
+                        </div>
+                        <span className="text-[0.68rem] text-[var(--t3)] hidden sm:block shrink-0">
+                          {k.last_used_at ? `Used ${timeAgo(new Date(k.last_used_at).getTime())}` : 'Never used'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase tracking-wide shrink-0 ${
+                          k.revoked ? 'bg-red-100 text-red-700' :
+                          k.paused  ? 'bg-amber-100 text-amber-700' :
+                          'bg-green-100 text-green-800'
+                        }`}>
+                          {k.revoked ? 'Revoked' : k.paused ? 'Paused' : 'Active'}
+                        </span>
+                        {!k.revoked && (
+                          <button
+                            onClick={() => handleToggleKeyPause(k)}
+                            disabled={keyUpdating[k.id]}
+                            title={k.paused ? 'Resume ingestion for this key' : 'Pause ingestion for this key'}
+                            className="shrink-0 disabled:opacity-40"
+                          >
+                            {k.paused
+                              ? <ToggleLeft size={24} className="text-amber-500 hover:text-amber-600 transition-colors" />
+                              : <ToggleRight size={24} className="text-green-600 hover:text-green-700 transition-colors" />}
+                          </button>
+                        )}
+                        {!k.revoked && (
+                          <button
+                            onClick={() => setExpandedKey(expandedKey === k.id ? null : k.id)}
+                            className="shrink-0 text-[0.65rem] font-bold text-[var(--p1)] hover:underline"
+                          >
+                            {expandedKey === k.id ? 'Close' : 'Configure'}
+                          </button>
+                        )}
+                        {!k.revoked && (
+                          <button
+                            disabled={keyRevoke[k.id]}
+                            onClick={() => handleRevokeKey(k.id)}
+                            className="shrink-0 text-[0.65rem] text-red-600 hover:underline font-semibold disabled:opacity-50"
+                          >Revoke</button>
+                        )}
+                      </div>
+                      {expandedKey === k.id && !k.revoked && (
+                        <div className="px-4 py-3 border-t border-[var(--b2)] bg-[var(--s0)] space-y-3">
+                          <p className="text-[0.68rem] font-black text-[var(--t3)] uppercase tracking-widest">Per-key overrides</p>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-[0.75rem] font-bold text-[var(--t6)]">Accept alerts</p>
+                                <p className="text-[0.62rem] text-[var(--t3)]">When off, this key returns HTTP 403.</p>
+                              </div>
+                              <button onClick={() => handleToggleKeyPause(k)} disabled={keyUpdating[k.id]} className="shrink-0">
+                                {k.paused
+                                  ? <ToggleLeft size={28} className="text-amber-400 hover:text-amber-500 transition-colors" />
+                                  : <ToggleRight size={28} className="text-[var(--p1)]" />}
+                              </button>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[0.68rem] font-black text-[var(--t3)] uppercase tracking-widest">Min Severity Override</label>
+                              <p className="text-[0.62rem] text-[var(--t3)]">Overrides global min ({ingestCfg.min_severity ?? '7'}). Leave blank to use global.</p>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number" min="0" max="15" step="1"
+                                  placeholder={`Global: ${ingestCfg.min_severity ?? '7'}`}
+                                  defaultValue={k.min_severity_override ?? ''}
+                                  onBlur={e => handleKeyMinSev(k, e.target.value)}
+                                  className="w-24 border border-[var(--b2)] rounded px-2 py-1 text-[0.72rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s1)]"
+                                />
+                                {k.min_severity_override != null && (
+                                  <span className={`px-1.5 py-0.5 rounded text-[0.58rem] font-black uppercase ${
+                                    k.min_severity_override >= 12 ? 'bg-red-100 text-red-700' :
+                                    k.min_severity_override >= 7  ? 'bg-orange-100 text-orange-700' :
+                                    k.min_severity_override >= 4  ? 'bg-amber-100 text-amber-700' :
+                                    'bg-green-100 text-green-700'
+                                  }`}>
+                                    {k.min_severity_override >= 12 ? 'Critical+' :
+                                     k.min_severity_override >= 7  ? 'High+' :
+                                     k.min_severity_override >= 4  ? 'Medium+' : 'All'}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <p className="text-[0.6rem] text-[var(--t3)] italic">Changes apply immediately — no restart needed.</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[0.78rem] text-[var(--t3)] text-center py-4">No API keys yet. Create one above to connect Wazuh.</p>
+              )}
+            </div>
+          </div>
+
+        </div>
+      )}
     </div>
   );
 };
@@ -7203,7 +7645,7 @@ const IntegrationsTab = () => {
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => {
     const saved = localStorage.getItem('soc_active_tab');
-    const validTabs = ['dashboard', 'noise-filter', 'fp-archive', 'reports', 'response-actions', 'investigation', 'integrations', 'settings'];
+    const validTabs = ['dashboard', 'investigation', 'incidents', 'noise-filter', 'fp-archive', 'response-actions', 'reports', 'knowledge', 'integrations', 'settings'];
     return (saved && validTabs.includes(saved)) ? saved : 'dashboard';
   });
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -7212,7 +7654,27 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [autoFilter, setAutoFilter] = useState(() => localStorage.getItem('soc_auto_filter') === 'true');
   const autoFilterRef = useRef(autoFilter);
+  const prevStatusRef = useRef<Map<string, string>>(new Map());
   useEffect(() => { autoFilterRef.current = autoFilter; localStorage.setItem('soc_auto_filter', String(autoFilter)); }, [autoFilter]);
+
+  // Auto-filter is bound to backend wazuh.auto_orchestrate. Sync on mount + on flip.
+  const wazuhCfgRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    getIntegrations().then(list => {
+      const w = list.find((i: any) => i.name === 'wazuh');
+      if (w?.config) {
+        wazuhCfgRef.current = w.config;
+        setAutoFilter(w.config.auto_orchestrate !== 'false');
+      }
+    }).catch(() => {});
+  }, []);
+
+  const setAutoFilterSynced = useCallback((v: boolean) => {
+    setAutoFilter(v);
+    const next = { ...wazuhCfgRef.current, auto_orchestrate: v ? 'true' : 'false' };
+    wazuhCfgRef.current = next;
+    updateIntegration('wazuh', { config: next }).catch(() => {});
+  }, []);
 
   const showToast = useCallback((msg: string, type: ToastItem['type'] = 'success') => {
     const id = Math.random().toString(36).slice(2);
@@ -7263,30 +7725,40 @@ export default function App() {
     setSocket(newSocket);
 
     newSocket.on('new_alert', (data) => {
-      // Fetch the full alert list
+      // Backend's auto_orchestrate handles the full pipeline. Just refresh the list.
       fetch('/api/alerts?pageSize=100', {
         headers: { Authorization: `Bearer ${socToken}` }
       }).then(res => res.json())
         .then(raw => {
           const dataList = Array.isArray(raw) ? raw : raw?.alerts;
-          if (!Array.isArray(dataList)) return;
-          setAlerts(dataList);
-          const newAlert = dataList.find((a: any) => a.id === data.id);
-          if (newAlert && newAlert.status === 'NEW' && autoFilterRef.current) {
-            // Auto-filter enabled: run FP scan on arrival
-            fpScan(newAlert.id).then(() => {
-              // Re-fetch to get updated status
-              fetch('/api/alerts?pageSize=100', { headers: { Authorization: `Bearer ${socToken}` } })
-                .then(r => r.json())
-                .then(d => { const list = Array.isArray(d) ? d : d?.alerts; if (Array.isArray(list)) setAlerts(list); });
-            }).catch(() => {});
-          }
-          // If auto-filter is off, the alert stays as NEW for manual scanning
+          if (Array.isArray(dataList)) setAlerts(dataList);
         });
+      // Toast on arrival (auto path will show ANALYZING/TRIAGED/FP toasts via alert_updated)
+      if (autoFilterRef.current) {
+        showToast(`📥 New alert ALERT-${String(data.id).slice(0, 8).toUpperCase()} — auto-investigating…`, 'info');
+      }
     });
 
     newSocket.on('alert_updated', (data) => {
-      setAlerts(prev => Array.isArray(prev) ? prev.map(a => a.id === data.id ? { ...a, ...data } : a) : prev);
+      const prev = prevStatusRef.current.get(data.id);
+      const next = data.status;
+      if (next) prevStatusRef.current.set(data.id, next);
+
+      if (next && prev && prev !== next) {
+        const shortId = `ALERT-${String(data.id).slice(0, 8).toUpperCase()}`;
+        if (next === 'FALSE_POSITIVE' || next === 'FP_CONFIRMED' || next === 'FILTERED') {
+          showToast(`✅ ${shortId} — auto-archived as FP`, 'success');
+        } else if (next === 'TRIAGED' || next === 'ESCALATED' || next === 'INCIDENT') {
+          let priority = '';
+          try {
+            const ai = typeof data.ai_analysis === 'string' ? JSON.parse(data.ai_analysis) : data.ai_analysis;
+            priority = ai?.ticket?.priority || ai?.phaseData?.ticket?.priority || '';
+          } catch {}
+          showToast(`🚨 ${shortId} — ${priority ? priority + ' incident' : 'incident detected'}`, 'error');
+        }
+      }
+
+      setAlerts(prevAlerts => Array.isArray(prevAlerts) ? prevAlerts.map(a => a.id === data.id ? { ...a, ...data } : a) : prevAlerts);
     });
 
     return () => {
@@ -7328,7 +7800,7 @@ export default function App() {
             setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
             onAlertAction={handleAlertAction}
             autoFilter={autoFilter}
-            setAutoFilter={setAutoFilter}
+            setAutoFilter={setAutoFilterSynced}
             refreshAlerts={refreshAlerts}
           />
         </AuthProvider>
@@ -7337,6 +7809,1455 @@ export default function App() {
     </DarkModeProvider>
   );
 }
+
+// ─── Knowledge Base ────────────────────────────────────────────────────────
+const KnowledgeBaseTab = ({
+  alerts,
+  setActiveTab,
+  setSelectedAlert,
+}: {
+  alerts:           Alert[];
+  setActiveTab:     (t: string) => void;
+  setSelectedAlert: (a: Alert | null) => void;
+}) => {
+  const showToast = useToast();
+  const { user }  = useAuth();
+  const isAdmin   = user?.role === 'ADMIN';
+
+  type Section = 'playbooks' | 'incidents' | 'iocs';
+  const [section, setSection] = useState<Section>('playbooks');
+
+  // Stats / RAG status
+  const [ragStatus, setRagStatus] = useState<{ ok: boolean; model_count?: number } | null>(null);
+  useEffect(() => { testLocalLLM().then(setRagStatus).catch(() => setRagStatus({ ok: false })); }, []);
+
+  // ── Playbooks state ──────────────────────────────────────────────────────
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
+  const [pbSearch,  setPbSearch]  = useState('');
+  const [pbTactic,  setPbTactic]  = useState<string>('');
+  const [showPBForm, setShowPBForm] = useState(false);
+  const [pbForm, setPBForm] = useState({ tactic: 'CREDENTIAL_ACCESS', title: '', steps: '' });
+  const [pbError, setPBError] = useState('');
+  const [editingPB, setEditingPB] = useState<number | null>(null);
+  const [editPBForm, setEditPBForm] = useState({ tactic: '', title: '', steps: '' });
+
+  const fetchPlaybooks = () => getPlaybooks().then(setPlaybooks).catch(() => {});
+  useEffect(() => { fetchPlaybooks(); }, []);
+
+  const handleCreatePlaybook = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPBError('');
+    if (!pbForm.title || !pbForm.steps) { setPBError('Title and steps are required.'); return; }
+    try {
+      const r: any = await createPlaybook(pbForm);
+      if (r?.error) { setPBError(r.error); return; }
+      fetchPlaybooks();
+      setShowPBForm(false);
+      setPBForm({ tactic: 'CREDENTIAL_ACCESS', title: '', steps: '' });
+      showToast('Playbook created', 'success');
+    } catch { setPBError('Failed to create playbook.'); }
+  };
+
+  const handleDeletePlaybook = async (id: number) => {
+    if (!confirm('Delete this playbook?')) return;
+    await deletePlaybook(id);
+    fetchPlaybooks();
+    showToast('Playbook deleted', 'info');
+  };
+
+  const startEditPB = (pb: Playbook) => {
+    setEditingPB(pb.id);
+    setEditPBForm({ tactic: pb.tactic, title: pb.title, steps: pb.steps });
+  };
+
+  const saveEditPB = async (id: number) => {
+    if (!editPBForm.title || !editPBForm.steps) return;
+    await updatePlaybook(id, editPBForm);
+    setEditingPB(null);
+    fetchPlaybooks();
+    showToast('Playbook updated', 'success');
+  };
+
+  const filteredPlaybooks = React.useMemo(() => {
+    let res = playbooks;
+    if (pbTactic) res = res.filter(p => p.tactic === pbTactic);
+    if (pbSearch) {
+      const q = pbSearch.toLowerCase();
+      res = res.filter(p => p.title.toLowerCase().includes(q) || p.steps.toLowerCase().includes(q));
+    }
+    return res;
+  }, [playbooks, pbSearch, pbTactic]);
+
+  // ── Incidents state ──────────────────────────────────────────────────────
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [insightsTotal, setInsightsTotal] = useState(0);
+  const [insightSearch, setInsightSearch] = useState('');
+  const [insightOutcome, setInsightOutcome] = useState<string>('');
+  const [insightsLoading, setInsightsLoading] = useState(false);
+
+  const fetchInsights = useCallback(() => {
+    setInsightsLoading(true);
+    getInsights({ q: insightSearch || undefined, outcome: insightOutcome || undefined, limit: 100 })
+      .then(d => { setInsights(d.rows); setInsightsTotal(d.total); })
+      .catch(() => { setInsights([]); setInsightsTotal(0); })
+      .finally(() => setInsightsLoading(false));
+  }, [insightSearch, insightOutcome]);
+
+  useEffect(() => {
+    if (section !== 'incidents') return;
+    const t = setTimeout(fetchInsights, 200);
+    return () => clearTimeout(t);
+  }, [section, fetchInsights]);
+
+  // ── IOCs state ───────────────────────────────────────────────────────────
+  const [iocs, setIocs] = useState<IocRow[]>([]);
+  const [iocsTotal, setIocsTotal] = useState(0);
+  const [iocSearch, setIocSearch] = useState('');
+  const [iocType, setIocType]     = useState<string>('');
+  const [iocSort, setIocSort]     = useState<'alerts' | 'fp_ratio' | 'last_seen'>('alerts');
+
+  const fetchIocs = useCallback(() => {
+    getIocs({ q: iocSearch || undefined, type: iocType || undefined, limit: 200 })
+      .then(d => { setIocs(d.rows); setIocsTotal(d.total); })
+      .catch(() => { setIocs([]); setIocsTotal(0); });
+  }, [iocSearch, iocType]);
+
+  useEffect(() => {
+    if (section !== 'iocs') return;
+    const t = setTimeout(fetchIocs, 200);
+    return () => clearTimeout(t);
+  }, [section, fetchIocs]);
+
+  const sortedIocs = React.useMemo(() => {
+    const arr = [...iocs];
+    arr.sort((a, b) => {
+      if (iocSort === 'alerts')    return b.alert_count - a.alert_count;
+      if (iocSort === 'fp_ratio')  return (b.fp_ratio ?? -1) - (a.fp_ratio ?? -1);
+      if (iocSort === 'last_seen') return new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime();
+      return 0;
+    });
+    return arr;
+  }, [iocs, iocSort]);
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const outcomeColor: Record<string, string> = {
+    TRIAGED:        'bg-blue-100 text-blue-700 border border-blue-200',
+    FALSE_POSITIVE: 'bg-green-100 text-green-700 border border-green-200',
+    FP_CONFIRMED:   'bg-green-100 text-green-700 border border-green-200',
+    ESCALATED:      'bg-red-100 text-red-700 border border-red-200',
+    CLOSED:         'bg-gray-100 text-gray-700 border border-gray-200',
+    INCIDENT:       'bg-orange-100 text-orange-700 border border-orange-200',
+  };
+
+  const threatColor: Record<string, string> = {
+    HIGH:   'bg-red-100 text-red-700',
+    MEDIUM: 'bg-amber-100 text-amber-700',
+    LOW:    'bg-green-100 text-green-700',
+  };
+
+  const goToAlert = (alertId: string) => {
+    const alert = alerts.find(a => a.id === alertId);
+    if (alert) {
+      setSelectedAlert(alert);
+      setActiveTab('investigation');
+    } else {
+      showToast(`Alert ${alertId.slice(0, 8)} no longer in active list`, 'info');
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
+      <PageHeader
+        eyebrow="SOC Memory"
+        title="Knowledge Base"
+        description="Playbooks, RAG-indexed incidents, and IOC memory — auto-populated from agent investigations."
+      />
+
+      {/* ── Stats row ───────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-4 gap-3">
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
+          <BookOpen className="w-5 h-5 text-blue-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Playbooks</p>
+            <p className="text-[1.2rem] font-black text-[var(--t7)] tabular-nums">{playbooks.length}</p>
+          </div>
+        </div>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
+          <Database className="w-5 h-5 text-violet-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Indexed Incidents</p>
+            <p className="text-[1.2rem] font-black text-[var(--t7)] tabular-nums">{insightsTotal}</p>
+          </div>
+        </div>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
+          <Shield className="w-5 h-5 text-amber-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Tracked IOCs</p>
+            <p className="text-[1.2rem] font-black text-[var(--t7)] tabular-nums">{iocsTotal}</p>
+          </div>
+        </div>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
+          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${ragStatus?.ok ? 'bg-green-500' : 'bg-gray-400'}`} />
+          <div className="min-w-0">
+            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">RAG / Embeddings</p>
+            <p className="text-[0.78rem] font-bold text-[var(--t7)] truncate">
+              {ragStatus?.ok ? `Ollama · ${ragStatus.model_count ?? 0} models` : 'Offline (substring search)'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Sub-section tabs ────────────────────────────────────────────── */}
+      <div className="flex gap-2 border-b border-[var(--b1)]">
+        {([
+          { id: 'playbooks',  label: 'Playbooks',  count: playbooks.length },
+          { id: 'incidents',  label: 'Incidents',  count: insightsTotal },
+          { id: 'iocs',       label: 'IOC Memory', count: iocsTotal },
+        ] as const).map(s => (
+          <button
+            key={s.id}
+            onClick={() => setSection(s.id)}
+            className={`px-4 py-2 text-[0.78rem] font-bold transition-colors border-b-2 -mb-[1px] ${section === s.id ? 'border-[var(--p1)] text-[var(--p1)]' : 'border-transparent text-[var(--t4)] hover:text-[var(--t6)]'}`}
+          >
+            {s.label} <span className="text-[0.65rem] font-mono text-[var(--t3)] ml-1">({s.count})</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── Playbooks ───────────────────────────────────────────────────── */}
+      {section === 'playbooks' && (
+        <div className="space-y-3">
+          {/* Filter bar */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex-1 min-w-[240px] relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={pbSearch}
+                onChange={e => setPbSearch(e.target.value)}
+                placeholder="Search playbooks (title or steps)…"
+                className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
+              />
+            </div>
+            {isAdmin && (
+              <button
+                onClick={() => setShowPBForm(!showPBForm)}
+                className="flex items-center gap-1.5 bg-[var(--p1)] text-[var(--t7)] px-3 py-2 rounded-lg text-[0.75rem] font-bold hover:bg-[var(--pd)] whitespace-nowrap"
+              >
+                <Plus size={13} />Add Playbook
+              </button>
+            )}
+          </div>
+
+          {/* Tactic filter chips */}
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              onClick={() => setPbTactic('')}
+              className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors ${pbTactic === '' ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+            >All</button>
+            {TACTIC_OPTIONS.map(t => (
+              <button
+                key={t}
+                onClick={() => setPbTactic(pbTactic === t ? '' : t)}
+                className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors ${pbTactic === t ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'}`}
+              >{t.replace(/_/g, ' ')}</button>
+            ))}
+          </div>
+
+          {/* Create form */}
+          {showPBForm && isAdmin && (
+            <form onSubmit={handleCreatePlaybook} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 space-y-3">
+              {pbError && <p className="text-red-600 text-sm font-semibold">{pbError}</p>}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[0.65rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">MITRE Tactic</label>
+                  <select value={pbForm.tactic} onChange={e => setPBForm({ ...pbForm, tactic: e.target.value })} className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] bg-[var(--s0)]">
+                    {TACTIC_OPTIONS.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[0.65rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">Title</label>
+                  <input required value={pbForm.title} onChange={e => setPBForm({ ...pbForm, title: e.target.value })} placeholder="e.g. Brute Force Response" className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
+                </div>
+              </div>
+              <div>
+                <label className="text-[0.65rem] font-black text-[var(--t4)] uppercase tracking-wider block mb-1">Steps</label>
+                <textarea required value={pbForm.steps} onChange={e => setPBForm({ ...pbForm, steps: e.target.value })} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account…" className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] resize-none font-mono bg-[var(--s0)]" />
+              </div>
+              <div className="flex gap-2">
+                <button type="submit" className="bg-[var(--p1)] text-[var(--t7)] px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+                <button type="button" onClick={() => setShowPBForm(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {/* List */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden divide-y divide-[var(--b1)]">
+            {filteredPlaybooks.length === 0 ? (
+              <div className="p-8 text-center text-[var(--t3)] text-sm">
+                {playbooks.length === 0 ? 'No playbooks yet. Add one above.' : 'No playbooks match this filter.'}
+              </div>
+            ) : filteredPlaybooks.map(pb => (
+              <div key={pb.id} className="px-5 py-3 hover:bg-[var(--s1)]">
+                {editingPB === pb.id ? (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <select value={editPBForm.tactic} onChange={e => setEditPBForm({ ...editPBForm, tactic: e.target.value })} className="border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]">
+                        {TACTIC_OPTIONS.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                      </select>
+                      <input value={editPBForm.title} onChange={e => setEditPBForm({ ...editPBForm, title: e.target.value })} className="border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
+                    </div>
+                    <textarea value={editPBForm.steps} onChange={e => setEditPBForm({ ...editPBForm, steps: e.target.value })} rows={4} className="w-full border border-[var(--b2)] rounded px-2 py-1.5 text-[0.78rem] font-mono outline-none focus:border-[var(--p1)] resize-none bg-[var(--s0)]" />
+                    <div className="flex gap-2">
+                      <button onClick={() => saveEditPB(pb.id)} className="px-3 py-1 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold hover:bg-[var(--pd)]">Save</button>
+                      <button onClick={() => setEditingPB(null)} className="px-3 py-1 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.7rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[0.6rem] font-black uppercase tracking-wide">{pb.tactic?.replace(/_/g, ' ')}</span>
+                        <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{pb.title}</p>
+                      </div>
+                      <p className="text-[0.72rem] text-[var(--t4)] line-clamp-3 whitespace-pre-line">{pb.steps}</p>
+                    </div>
+                    {isAdmin && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button onClick={() => startEditPB(pb)} className="p-1.5 rounded hover:bg-[var(--s2)] text-[var(--t3)] hover:text-[var(--p1)]" title="Edit">
+                          <Settings size={13} />
+                        </button>
+                        <button onClick={() => handleDeletePlaybook(pb.id)} className="p-1.5 rounded hover:bg-red-50 text-[var(--t3)] hover:text-red-600" title="Delete">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Incidents ───────────────────────────────────────────────────── */}
+      {section === 'incidents' && (
+        <div className="space-y-3">
+          <div className={`rounded-lg px-3 py-2 text-[0.7rem] flex items-center gap-2 ${ragStatus?.ok ? 'bg-blue-50 text-blue-800 border border-blue-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+            <Database size={13} className="shrink-0" />
+            <span>
+              {ragStatus?.ok
+                ? <>Auto-indexed from agent investigations. Embeddings via Ollama <code className="font-mono bg-blue-100 px-1 rounded">nomic-embed-text</code>. Substring search runs on summaries below.</>
+                : <>Semantic indexing offline (Ollama unreachable). Substring search still works — past incidents remain browsable.</>}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex-1 min-w-[240px] relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={insightSearch}
+                onChange={e => setInsightSearch(e.target.value)}
+                placeholder="Search summary, attack pattern, threat actor…"
+                className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-1.5 flex-wrap">
+            {(['', 'TRIAGED', 'FALSE_POSITIVE', 'ESCALATED', 'CLOSED'] as const).map(o => (
+              <button
+                key={o || 'all'}
+                onClick={() => setInsightOutcome(o)}
+                className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors border ${insightOutcome === o
+                  ? (o === '' ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : (outcomeColor[o] || 'bg-[var(--p1)] text-white').replace('100', '600').replace('700', 'white'))
+                  : (o === '' ? 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]' : outcomeColor[o] || 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]')}`}
+              >{o || 'All'}</button>
+            ))}
+          </div>
+
+          {insightsLoading ? (
+            <div className="p-8 text-center text-[var(--t3)] text-sm">Loading…</div>
+          ) : insights.length === 0 ? (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-8 text-center text-[var(--t3)] text-sm">
+              {insightSearch || insightOutcome ? 'No incidents match this filter.' : 'No indexed incidents yet. Run an investigation to populate the knowledge base.'}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {insights.map((it, i) => (
+                <div key={`${it.alert_id}-${i}`} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 hover:border-[var(--p1)] transition-colors">
+                  <div className="flex items-start justify-between gap-3 mb-1.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`px-2 py-0.5 rounded text-[0.58rem] font-black uppercase tracking-widest ${outcomeColor[it.outcome] || 'bg-gray-100 text-gray-700'}`}>
+                        {it.outcome}
+                      </span>
+                      {it.attack_pattern && (
+                        <span className="text-[0.72rem] font-semibold text-[var(--t6)]">{it.attack_pattern}</span>
+                      )}
+                      {it.threat_actor && (
+                        <span className="text-[0.65rem] text-[var(--t3)]">· actor: <span className="font-mono">{it.threat_actor}</span></span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => goToAlert(it.alert_id)}
+                      className="shrink-0 px-2 py-0.5 rounded bg-[var(--s1)] hover:bg-[var(--s2)] text-[0.6rem] font-mono text-[var(--p1)] border border-[var(--b2)]"
+                      title="Open in Incidents"
+                    >ALERT-{it.alert_id.slice(0, 8).toUpperCase()}</button>
+                  </div>
+                  <p className="text-[0.72rem] text-[var(--t5)] line-clamp-2 whitespace-pre-line mb-1.5">{it.summary}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {(it.ttp_tags || []).slice(0, 6).map(tag => (
+                      <span key={tag} className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[0.55rem] font-mono">{tag}</span>
+                    ))}
+                    {it.triggered_by && (
+                      <span className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[var(--t4)] text-[0.55rem] uppercase tracking-wider font-bold border border-[var(--b2)]">{it.triggered_by}</span>
+                    )}
+                    <span className="text-[0.6rem] text-[var(--t3)] ml-auto">{timeAgo(new Date(it.created_at).getTime())}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── IOCs ────────────────────────────────────────────────────────── */}
+      {section === 'iocs' && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex-1 min-w-[240px] relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={iocSearch}
+                onChange={e => setIocSearch(e.target.value)}
+                placeholder="Search IOC value or notes…"
+                className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
+              />
+            </div>
+            <select
+              value={iocSort}
+              onChange={e => setIocSort(e.target.value as any)}
+              className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
+            >
+              <option value="alerts">Sort: Most alerts</option>
+              <option value="fp_ratio">Sort: Highest FP ratio</option>
+              <option value="last_seen">Sort: Recently seen</option>
+            </select>
+          </div>
+
+          <div className="flex gap-1.5 flex-wrap">
+            {(['', 'ip', 'domain', 'hash', 'user', 'url', 'file'] as const).map(t => (
+              <button
+                key={t || 'all'}
+                onClick={() => setIocType(t)}
+                className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors ${iocType === t ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+              >{t || 'All'}</button>
+            ))}
+          </div>
+
+          {sortedIocs.length === 0 ? (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-8 text-center text-[var(--t3)] text-sm">
+              {iocSearch || iocType ? 'No IOCs match this filter.' : 'No IOCs tracked yet. Investigations will populate this list.'}
+            </div>
+          ) : (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden divide-y divide-[var(--b1)]">
+              {sortedIocs.map(ioc => (
+                <div key={ioc.value} className="px-4 py-2.5 hover:bg-[var(--s1)] flex items-center gap-3">
+                  <span className="px-1.5 py-0.5 rounded bg-[var(--s2)] text-[var(--t4)] text-[0.55rem] font-black uppercase tracking-widest w-14 text-center shrink-0">{ioc.type}</span>
+                  <span className="font-mono text-[0.78rem] text-[var(--t7)] flex-1 truncate">{ioc.value}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest shrink-0 ${threatColor[ioc.threat_level] || 'bg-gray-100 text-gray-700'}`}>{ioc.threat_level || 'LOW'}</span>
+                  <span className="text-[0.65rem] text-[var(--t3)] shrink-0 w-16 text-right">{ioc.alert_count} alert{ioc.alert_count === 1 ? '' : 's'}</span>
+                  <div className="flex items-center gap-1.5 shrink-0 w-24">
+                    <span className="text-[0.55rem] text-[var(--t3)] uppercase font-bold">FP</span>
+                    <div className="w-12 h-1.5 rounded-full bg-[var(--s2)] overflow-hidden">
+                      <div
+                        className="h-full bg-red-400"
+                        style={{ width: ioc.fp_ratio != null ? `${Math.round(ioc.fp_ratio * 100)}%` : '0%' }}
+                      />
+                    </div>
+                    <span className="text-[0.55rem] font-mono text-[var(--t4)] tabular-nums w-7 text-right">
+                      {ioc.fp_ratio != null ? `${Math.round(ioc.fp_ratio * 100)}%` : '—'}
+                    </span>
+                  </div>
+                  <span className="text-[0.6rem] text-[var(--t3)] shrink-0 w-20 text-right">{timeAgo(new Date(ioc.last_seen).getTime())}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Incidents Tab — case-management workspace ───────────────────────────────
+const STATUS_LABELS: Record<string, string> = {
+  OPEN:            'Open',
+  IN_PROGRESS:     'Investigating',
+  CONTAINED:       'Contained',
+  RESOLVED:        'Resolved',
+  CLOSED:          'Closed',
+  RECLASSIFIED_FP: 'Reclassified FP',
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  OPEN:            'bg-blue-100 text-blue-700 border-blue-200',
+  IN_PROGRESS:     'bg-orange-100 text-orange-700 border-orange-200',
+  CONTAINED:       'bg-amber-100 text-amber-700 border-amber-200',
+  RESOLVED:        'bg-green-100 text-green-700 border-green-200',
+  CLOSED:          'bg-gray-200 text-gray-700 border-gray-300',
+  RECLASSIFIED_FP: 'bg-pink-100 text-pink-700 border-pink-200',
+};
+
+const SEV_COLORS: Record<string, string> = {
+  CRITICAL: 'bg-red-100 text-red-700 border-red-200',
+  HIGH:     'bg-orange-100 text-orange-700 border-orange-200',
+  MEDIUM:   'bg-amber-100 text-amber-700 border-amber-200',
+  LOW:      'bg-green-100 text-green-700 border-green-200',
+};
+
+const PHASE_COLORS: Record<string, string> = {
+  detection:     'bg-slate-100 text-slate-700',
+  analysis:      'bg-blue-100 text-blue-700',
+  containment:   'bg-orange-100 text-orange-700',
+  eradication:   'bg-red-100 text-red-700',
+  recovery:      'bg-amber-100 text-amber-700',
+  post_incident: 'bg-green-100 text-green-700',
+};
+
+const ACTION_TYPE_LABELS: Record<string, string> = {
+  block_ip:          'Block source IP',
+  isolate_host:      'Isolate host',
+  disable_user:      'Disable user',
+  reset_password:    'Reset password',
+  collect_forensics: 'Collect forensic evidence',
+  firewall_rule:     'Open firewall rule',
+  escalate:          'Escalate to lead',
+  other:             'Custom action',
+};
+
+const ACTION_STATUS_COLORS: Record<string, string> = {
+  pending:  'bg-blue-100 text-blue-700 border-blue-200',
+  approved: 'bg-violet-100 text-violet-700 border-violet-200',
+  executed: 'bg-green-100 text-green-700 border-green-200',
+  failed:   'bg-red-100 text-red-700 border-red-200',
+  skipped:  'bg-gray-200 text-gray-600 border-gray-300',
+};
+
+const SLA_THRESHOLDS: Record<string, { warn: number; breach: number }> = {
+  CRITICAL: { warn: 0.5, breach: 1   },
+  HIGH:     { warn: 2,   breach: 4   },
+  MEDIUM:   { warn: 12,  breach: 24  },
+  LOW:      { warn: 48,  breach: 96  },
+};
+
+function computeSla(severity: string, escalatedAt: string): { state: 'on_track' | 'watch' | 'at_risk' | 'breached'; label: string; color: string } {
+  const t = SLA_THRESHOLDS[severity] || SLA_THRESHOLDS.MEDIUM;
+  const hours = (Date.now() - new Date(escalatedAt).getTime()) / 3600000;
+  if (hours >= t.breach)      return { state: 'breached', label: 'Breached',  color: 'bg-red-500'    };
+  if (hours >= t.warn)        return { state: 'at_risk',  label: 'At risk',   color: 'bg-amber-500'  };
+  if (hours >= t.warn * 0.5)  return { state: 'watch',    label: 'Watch',     color: 'bg-blue-400'   };
+  return                              { state: 'on_track',label: 'On track',  color: 'bg-green-500'  };
+}
+
+function lastEventLabel(t?: string | null, n?: string | null): string {
+  if (!t) return '—';
+  if (t === 'created')         return 'Created';
+  if (t === 'phase_change')    return 'Phase changed';
+  if (t === 'assigned')        return 'Assigned';
+  if (t === 'closed')          return 'Closed';
+  if (t === 'status_change')   return 'Status changed';
+  if (t === 'reclassified_fp') return 'Reclassified as FP';
+  if (t === 'note' && n)       return `Note: ${n.slice(0, 40)}${n.length > 40 ? '…' : ''}`;
+  return t;
+}
+
+function extractAiResults(analysisJson: string | null) {
+  if (!analysisJson) return {} as any;
+  try {
+    const j = JSON.parse(analysisJson);
+    const a = j?.phaseData?.analysis || {};
+    const intel = j?.phaseData?.intel || {};
+    const corr  = j?.phaseData?.correlation || {};
+    const valid = j?.phaseData?.validation || {};
+    const ticket= j?.ticket || j?.phaseData?.ticket || {};
+    return {
+      summary:            j?.summary || a?.analysis_summary,
+      ticket_summary:     ticket?.report_body,
+      confidence:         a?.confidence,
+      risk_score:         a?.risk_score,
+      fp_confidence:      a?.false_positive_confidence,
+      attack_category:    a?.attack_category,
+      kill_chain_stage:   a?.kill_chain_stage,
+      recommended_action: a?.recommended_action,
+      mitre:              intel?.mitre_attack || [],
+      ttp_tags:           intel?.ttp_tags || [],
+      iocs:               a?.iocs,
+      correlation:        corr?.campaign_name,
+      correlation_summary:corr?.summary,
+      intel_summary:      intel?.intel_summary || j?.intel,
+      threat_actor:       intel?.threat_actor,
+      validation_status:  valid?.sla_status,
+      affected_systems:   ticket?.affected_systems,
+      business_impact:    ticket?.business_impact,
+    };
+  } catch { return {} as any; }
+}
+
+const PhaseStepper = ({ current }: { current: string }) => {
+  const idx = INCIDENT_PHASES.indexOf(current as IncidentPhase);
+  return (
+    <div className="flex items-center w-full">
+      {INCIDENT_PHASES.map((p, i) => (
+        <React.Fragment key={p}>
+          <div className="flex flex-col items-center min-w-0 flex-1">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[0.65rem] font-black border-2 ${
+              i < idx  ? 'bg-[var(--p1)] border-[var(--p1)] text-white' :
+              i === idx ? 'bg-white border-[var(--p1)] text-[var(--p1)] ring-4 ring-blue-100' :
+                          'bg-[var(--s1)] border-[var(--b2)] text-[var(--t3)]'
+            }`}>{i < idx ? '✓' : i + 1}</div>
+            <p className={`text-[0.55rem] font-black uppercase tracking-widest mt-1 truncate ${i === idx ? 'text-[var(--p1)]' : 'text-[var(--t3)]'}`}>
+              {PHASE_LABELS[p]}
+            </p>
+          </div>
+          {i < INCIDENT_PHASES.length - 1 && (
+            <div className={`h-1 flex-1 -mt-5 mx-1 rounded-full ${i < idx ? 'bg-[var(--p1)]' : 'bg-[var(--s2)]'}`} />
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
+// Editable action row (inline edit + delete + reorder)
+interface ActionRowProps {
+  action: IncidentAction;
+  index: number;
+  total: number;
+  isClosed: boolean;
+  onMoveUp:   () => void | Promise<void>;
+  onMoveDown: () => void | Promise<void>;
+  onDelete:   () => void | Promise<void>;
+  onSave:     (patch: { description?: string; target?: string; priority?: string; action_type?: string; notes?: string }) => void | Promise<void>;
+  onStatus:   (s: IncidentActionStatus) => void | Promise<void>;
+}
+const ActionRow: React.FC<ActionRowProps> = ({
+  action, index, total, isClosed,
+  onMoveUp, onMoveDown, onDelete, onSave, onStatus
+}) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({
+    description: action.description || '',
+    target:      action.target || '',
+    priority:    action.priority || 'MEDIUM',
+    action_type: action.action_type || 'other',
+    notes:       action.notes || '',
+  });
+  React.useEffect(() => {
+    setDraft({
+      description: action.description || '',
+      target:      action.target || '',
+      priority:    action.priority || 'MEDIUM',
+      action_type: action.action_type || 'other',
+      notes:       action.notes || '',
+    });
+  }, [action.id, action.description, action.target, action.priority, action.action_type, action.notes]);
+
+  if (editing) {
+    return (
+      <div className="px-3 py-2.5 bg-blue-50/40 border-l-2 border-blue-400">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[0.6rem] font-mono text-[var(--t3)]">#{index + 1}</span>
+          <select value={draft.action_type} onChange={e => setDraft({ ...draft, action_type: e.target.value })}
+            className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] flex-1">
+            {Object.entries(ACTION_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <select value={draft.priority} onChange={e => setDraft({ ...draft, priority: e.target.value })}
+            className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] w-24">
+            {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <input value={draft.target} onChange={e => setDraft({ ...draft, target: e.target.value })}
+          placeholder="Target (IP/host/user)" className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] font-mono mb-2" />
+        <textarea value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} rows={2}
+          className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] resize-none mb-2" />
+        <textarea value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} rows={2}
+          placeholder="Execution notes (optional)" className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] resize-none mb-2" />
+        <div className="flex gap-1.5">
+          <button onClick={async () => { await onSave(draft); setEditing(false); }}
+            className="px-3 py-1 rounded bg-[var(--p1)] text-white text-[0.65rem] font-bold">Save</button>
+          <button onClick={() => setEditing(false)} className="px-3 py-1 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.65rem] font-semibold">Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-3 py-2.5 group hover:bg-[var(--s1)]">
+      <div className="flex items-start gap-2">
+        {!isClosed && (
+          <div className="flex flex-col gap-0.5 shrink-0 pt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button onClick={onMoveUp}   disabled={index === 0}        className="text-[var(--t3)] hover:text-[var(--p1)] disabled:opacity-20 leading-none text-[0.65rem]" title="Move up">▲</button>
+            <button onClick={onMoveDown} disabled={index === total - 1} className="text-[var(--t3)] hover:text-[var(--p1)] disabled:opacity-20 leading-none text-[0.65rem]" title="Move down">▼</button>
+          </div>
+        )}
+        <span className="text-[0.6rem] font-mono text-[var(--t3)] shrink-0 pt-0.5">#{index + 1}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+            <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest border ${ACTION_STATUS_COLORS[action.status] || 'bg-gray-100 text-gray-700'}`}>{action.status}</span>
+            <span className="text-[0.6rem] font-mono text-[var(--t4)]">{ACTION_TYPE_LABELS[action.action_type] || action.action_type}</span>
+            <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase ${SEV_COLORS[action.priority] || 'bg-gray-100 text-gray-700'}`}>{action.priority}</span>
+            <span className="text-[0.55rem] uppercase font-bold text-[var(--t3)]">{action.source}</span>
+          </div>
+          <p className="text-[0.7rem] text-[var(--t6)] leading-snug">{action.description}</p>
+          {action.target && <p className="text-[0.6rem] text-[var(--t3)] font-mono mt-0.5">target: {action.target}</p>}
+          {action.notes  && <p className="text-[0.6rem] text-[var(--t4)] italic mt-0.5">"{action.notes}"</p>}
+          {!isClosed && (
+            <div className="flex gap-1 mt-2 flex-wrap">
+              {action.status === 'pending' && (
+                <>
+                  <button onClick={() => onStatus('executed')} className="px-2 py-0.5 rounded bg-green-100 text-green-700 hover:bg-green-200 text-[0.6rem] font-bold">✓ Executed</button>
+                  <button onClick={() => onStatus('failed')}   className="px-2 py-0.5 rounded bg-red-100 text-red-700 hover:bg-red-200 text-[0.6rem] font-bold">Failed</button>
+                  <button onClick={() => onStatus('skipped')}  className="px-2 py-0.5 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 text-[0.6rem] font-bold">Skip</button>
+                </>
+              )}
+              {action.status !== 'pending' && (
+                <button onClick={() => onStatus('pending')} className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 text-[0.6rem] font-bold">Reopen</button>
+              )}
+              <button onClick={() => setEditing(true)} className="px-2 py-0.5 rounded border border-[var(--b2)] text-[var(--t5)] hover:bg-[var(--s2)] text-[0.6rem] font-bold">Edit</button>
+              <button onClick={onDelete} className="px-2 py-0.5 rounded text-red-600 hover:bg-red-50 text-[0.6rem] font-bold">Delete</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
+  const toast = useToast();
+  const { user } = useAuth();
+  const isAdminOrLead = user?.role === 'ADMIN' || user?.role === 'INCIDENT_LEAD';
+
+  const [list, setList]               = useState<Incident[]>([]);
+  const [total, setTotal]             = useState(0);
+  const [counts, setCounts]           = useState<Record<string, number>>({});
+  const [search, setSearch]           = useState('');
+  const [phaseF, setPhaseF]           = useState<string>('');
+  const [statusF, setStatusF]         = useState<string>('');
+  const [sevF, setSevF]               = useState<string>('');
+  const [ownerF, setOwnerF]           = useState<number | ''>('');
+  const [slaF, setSlaF]               = useState<string>('');
+  const [analysts, setAnalysts]       = useState<{ id: number; username: string; role: string }[]>([]);
+
+  const [activeId, setActiveId]       = useState<string | null>(null);
+  const [detail, setDetail]           = useState<Incident | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+
+  const [showReassign, setShowReassign] = useState(false);
+  const [reassignTo, setReassignTo]     = useState<number>(0);
+  const [showAddAction, setShowAddAction] = useState(false);
+  const [newAction, setNewAction]       = useState({ action_type: 'other', target: '', priority: 'MEDIUM', description: '' });
+  const [showReclassify, setShowReclassify] = useState(false);
+  const [reclassifyNote, setReclassifyNote] = useState('');
+  const [reportDraft, setReportDraft]   = useState('');
+  const [reportEditing, setReportEditing] = useState(false);
+  const [reportSaving, setReportSaving]   = useState(false);
+  const [noteText, setNoteText]         = useState('');
+
+  const fetchList = useCallback(() => {
+    getIncidents({
+      q: search || undefined,
+      phase: phaseF || undefined,
+      status: statusF || undefined,
+      assigned_to: ownerF ? Number(ownerF) : undefined,
+      limit: 100,
+    }).then(d => { setList(d.rows); setTotal(d.total); setCounts(d.counts || {}); }).catch(() => {});
+  }, [search, phaseF, statusF, ownerF]);
+
+  useEffect(() => { fetchList(); }, [fetchList]);
+  useEffect(() => { listAnalysts().then(setAnalysts).catch(() => {}); }, []);
+
+  const fetchDetail = useCallback((id: string) => {
+    setLoadingDetail(true);
+    getIncident(id).then(d => {
+      setDetail(d);
+      setReportDraft(d?.report_body || '');
+    }).finally(() => setLoadingDetail(false));
+  }, []);
+
+  useEffect(() => {
+    if (activeId) fetchDetail(activeId);
+    else { setDetail(null); setReportEditing(false); }
+  }, [activeId, fetchDetail]);
+
+  const filteredList = React.useMemo(() => {
+    let out = list;
+    if (sevF) out = out.filter(i => i.severity === sevF);
+    if (slaF) out = out.filter(i => computeSla(i.severity, i.escalated_at).state === slaF);
+    return out;
+  }, [list, sevF, slaF]);
+
+  // ── Detail view ──────────────────────────────────────────────────────────
+  if (activeId && detail) {
+    const isOwner = detail.assigned_to === user?.id;
+    const canEdit      = isAdminOrLead || (user?.role === 'TIER2' && isOwner);
+    const canReassign  = isAdminOrLead;
+    const isClosed     = detail.status === 'CLOSED' || detail.status === 'RECLASSIFIED_FP' || detail.status === 'RESOLVED';
+    const currentIdx   = INCIDENT_PHASES.indexOf(detail.phase as IncidentPhase);
+    const nextPhase    = currentIdx >= 0 && currentIdx < INCIDENT_PHASES.length - 1 ? INCIDENT_PHASES[currentIdx + 1] : null;
+
+    const ai  = extractAiResults(detail.analysis);
+    const sla = computeSla(detail.severity, detail.escalated_at);
+    const actions = detail.actions || [];
+
+    const handleNextPhase = async () => {
+      if (!nextPhase) return;
+      const r = await moveIncidentPhase(detail.id, nextPhase);
+      if (r.ok) { toast(`Phase → ${PHASE_LABELS[nextPhase as IncidentPhase]}`, 'success'); fetchDetail(detail.id); fetchList(); }
+      else toast(r.error || 'Failed to advance phase', 'error');
+    };
+    const handleStatusChange = async (newStatus: string) => {
+      if (newStatus === detail.status) return;
+      if (newStatus === 'RECLASSIFIED_FP') { setShowReclassify(true); return; }
+      const r = await updateIncident(detail.id, { status: newStatus });
+      if (r.ok) { toast(`Status → ${STATUS_LABELS[newStatus] || newStatus}`, 'success'); fetchDetail(detail.id); fetchList(); }
+      else toast(r.error || 'Failed', 'error');
+    };
+    const handleReclassifyFp = async () => {
+      const r = await reclassifyIncidentFp(detail.id, reclassifyNote || undefined);
+      if (r.ok) {
+        toast(`Reclassified — ${r.alerts_returned_to_archive ?? 0} alert(s) returned to FP archive`, 'success');
+        setShowReclassify(false); setReclassifyNote('');
+        fetchDetail(detail.id); fetchList();
+      } else toast(r.error || 'Failed to reclassify', 'error');
+    };
+    const handleAddNote = async () => {
+      if (!noteText.trim()) return;
+      const r = await addIncidentNote(detail.id, noteText.trim());
+      if (r.ok) { toast('Note added', 'success'); setNoteText(''); fetchDetail(detail.id); }
+      else toast(r.error || 'Failed', 'error');
+    };
+    const handleReassign = async () => {
+      const r = await assignIncident(detail.id, reassignTo || null);
+      if (r.ok) {
+        toast(reassignTo ? 'Reassigned' : 'Unassigned', 'success');
+        setShowReassign(false); fetchDetail(detail.id); fetchList();
+      } else toast(r.error || 'Failed', 'error');
+    };
+    const handleTake = async () => {
+      const r = await takeIncident(detail.id);
+      if (r.ok) { toast(`Claimed — status → Investigating`, 'success'); fetchDetail(detail.id); fetchList(); }
+      else toast(r.error || 'Failed to claim', 'error');
+    };
+    const handleAddAction = async () => {
+      if (!newAction.description.trim()) return;
+      const r = await addIncidentAction(detail.id, newAction);
+      if (r.ok) {
+        toast('Action added', 'success');
+        setShowAddAction(false);
+        setNewAction({ action_type: 'other', target: '', priority: 'MEDIUM', description: '' });
+        fetchDetail(detail.id);
+      } else toast(r.error || 'Failed', 'error');
+    };
+    const handleActionStatus = async (a: IncidentAction, status: IncidentActionStatus) => {
+      const r = await updateIncidentAction(detail.id, a.id, { status });
+      if (r.ok) { toast(`Action → ${status}`, 'success'); fetchDetail(detail.id); }
+      else toast(r.error || 'Failed', 'error');
+    };
+    const handleActionEdit = async (a: IncidentAction, patch: any) => {
+      const r = await updateIncidentAction(detail.id, a.id, patch);
+      if (r.ok) { toast('Action saved', 'success'); fetchDetail(detail.id); }
+      else toast(r.error || 'Failed', 'error');
+    };
+    const handleActionDelete = async (a: IncidentAction) => {
+      if (!confirm('Delete this action?')) return;
+      const r = await deleteIncidentAction(detail.id, a.id);
+      if (r.ok) { toast('Action deleted', 'info'); fetchDetail(detail.id); }
+      else toast(r.error || 'Failed', 'error');
+    };
+    const handleReorder = async (from: number, to: number) => {
+      if (to < 0 || to >= actions.length) return;
+      const arr = [...actions];
+      const [moved] = arr.splice(from, 1);
+      arr.splice(to, 0, moved);
+      // Optimistic update
+      setDetail({ ...detail, actions: arr });
+      await reorderIncidentActions(detail.id, arr.map(a => a.id));
+      fetchDetail(detail.id);
+    };
+    const handleSaveReport = async () => {
+      setReportSaving(true);
+      const r = await updateIncident(detail.id, { report_body: reportDraft });
+      setReportSaving(false);
+      if (r.ok) { toast('Report saved', 'success'); setReportEditing(false); fetchDetail(detail.id); }
+      else toast(r.error || 'Failed', 'error');
+    };
+
+    return (
+      <div className="overflow-y-auto h-full bg-[var(--s3)]">
+        <div className="max-w-7xl mx-auto p-5 space-y-4">
+
+          {/* Top bar */}
+          <div className="flex items-center justify-between">
+            <button onClick={() => setActiveId(null)} className="text-[var(--t4)] hover:text-[var(--p1)] flex items-center gap-1 text-[0.78rem] font-bold">
+              <ChevronRight size={14} className="rotate-180" />Back to Incidents
+            </button>
+            <div className="flex items-center gap-2">
+              <code className="text-[0.7rem] font-mono bg-[var(--s1)] text-[var(--t5)] px-2 py-1 rounded">{detail.id}</code>
+              <span className={`px-2 py-1 rounded text-[0.6rem] font-black uppercase tracking-widest border ${SEV_COLORS[detail.severity] || 'bg-gray-100 text-gray-700'}`}>{detail.severity}</span>
+              <span className={`px-3 py-1 rounded-lg text-[0.65rem] font-black uppercase tracking-widest border ${STATUS_COLORS[detail.status] || 'bg-gray-100 text-gray-700'}`}>
+                {STATUS_LABELS[detail.status] || detail.status}
+              </span>
+            </div>
+          </div>
+
+          {/* Title */}
+          <h2 className="text-[1.25rem] font-black text-[var(--t7)]">{detail.title}</h2>
+
+          {/* Phase stepper */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-3">Incident Response Lifecycle (NIST 800-61)</p>
+            <PhaseStepper current={detail.phase} />
+          </div>
+
+          {/* Two-column body */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
+
+            {/* Left column — main case content */}
+            <div className="space-y-4">
+
+              {/* AI Summary */}
+              {(ai.summary || ai.ticket_summary) && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                    <Activity size={13} className="text-violet-600" />
+                    <p className="text-[0.72rem] font-black text-[var(--t7)]">AI Summary</p>
+                  </div>
+                  <div className="p-4 text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">
+                    {ai.summary}
+                    {ai.recommended_action && (
+                      <div className="mt-3 bg-blue-50 border border-blue-200 rounded p-2">
+                        <p className="text-[0.55rem] font-black text-blue-800 uppercase tracking-widest mb-0.5">Recommended Next Step</p>
+                        <p className="font-mono font-bold text-blue-900 text-[0.72rem]">{ai.recommended_action}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Threat Intelligence */}
+              {(ai.intel_summary || (ai.mitre && ai.mitre.length > 0) || ai.threat_actor) && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                    <Shield size={13} className="text-red-600" />
+                    <p className="text-[0.72rem] font-black text-[var(--t7)]">Threat Intelligence</p>
+                  </div>
+                  <div className="p-4 space-y-3 text-[0.72rem]">
+                    {ai.intel_summary && (
+                      <p className="text-[var(--t6)] leading-relaxed">{ai.intel_summary}</p>
+                    )}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div>
+                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Attack Category</p>
+                        <p className="font-mono text-[var(--t6)]">{ai.attack_category || '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Kill Chain</p>
+                        <p className="font-mono text-[var(--t6)]">{ai.kill_chain_stage || '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Threat Actor</p>
+                        <p className="font-mono text-[var(--t6)]">{ai.threat_actor || '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Campaign</p>
+                        <p className="font-mono text-[var(--t6)]">{ai.correlation || '—'}</p>
+                      </div>
+                    </div>
+                    {ai.mitre && ai.mitre.length > 0 && (
+                      <div>
+                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">MITRE ATT&CK</p>
+                        <div className="flex gap-1 flex-wrap">
+                          {ai.mitre.slice(0, 16).map((t: any, i: number) => (
+                            <span key={i} className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[0.58rem] font-mono">{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {ai.iocs && (() => {
+                      const flat: { type: string; value: string }[] = [];
+                      for (const k of ['ips','domains','users','hosts','hashes','urls','files'] as const) {
+                        for (const v of (ai.iocs?.[k] || []) as string[]) flat.push({ type: k, value: v });
+                      }
+                      if (flat.length === 0) return null;
+                      return (
+                        <div>
+                          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Key Indicators ({flat.length})</p>
+                          <div className="flex gap-1 flex-wrap">
+                            {flat.slice(0, 14).map((i, idx) => (
+                              <span key={idx} className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[var(--t6)] text-[0.58rem] font-mono border border-[var(--b2)]">
+                                <span className="text-[var(--t3)]">{i.type}:</span> {i.value}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Response Actions */}
+              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Zap size={13} className="text-amber-600" />
+                    <p className="text-[0.72rem] font-black text-[var(--t7)]">
+                      Response Actions
+                      <span className="ml-2 text-[0.62rem] font-mono text-[var(--t3)]">
+                        ({actions.filter(a => a.status === 'executed').length}/{actions.length} executed)
+                      </span>
+                    </p>
+                  </div>
+                  {!isClosed && canEdit && (
+                    <button onClick={() => setShowAddAction(s => !s)} className="text-[0.62rem] font-bold text-[var(--p1)] hover:underline">
+                      {showAddAction ? 'Cancel' : '+ Add action'}
+                    </button>
+                  )}
+                </div>
+
+                {showAddAction && (
+                  <div className="px-4 py-3 bg-[var(--sa)] border-b border-[var(--b1)] space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <select value={newAction.action_type} onChange={e => setNewAction({ ...newAction, action_type: e.target.value })}
+                        className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)]">
+                        {Object.entries(ACTION_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                      <select value={newAction.priority} onChange={e => setNewAction({ ...newAction, priority: e.target.value })}
+                        className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)]">
+                        {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </div>
+                    <input value={newAction.target} onChange={e => setNewAction({ ...newAction, target: e.target.value })} placeholder="Target (IP / host / user) — optional"
+                      className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] font-mono" />
+                    <textarea value={newAction.description} onChange={e => setNewAction({ ...newAction, description: e.target.value })} rows={2} placeholder="Action description…"
+                      className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] resize-none" />
+                    <div className="flex justify-end">
+                      <button onClick={handleAddAction} disabled={!newAction.description.trim()}
+                        className="px-3 py-1 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50">Add</button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="divide-y divide-[var(--b1)]">
+                  {actions.length === 0 ? (
+                    <div className="p-6 text-center text-[var(--t3)] text-[0.7rem]">
+                      No response actions yet.
+                      {!isClosed && canEdit && <> Click <span className="font-bold text-[var(--p1)]">+ Add action</span> to start.</>}
+                    </div>
+                  ) : actions.map((a, i) => (
+                    <ActionRow
+                      key={a.id}
+                      action={a}
+                      index={i}
+                      total={actions.length}
+                      isClosed={isClosed || !canEdit}
+                      onMoveUp={()   => handleReorder(i, i - 1)}
+                      onMoveDown={() => handleReorder(i, i + 1)}
+                      onDelete={()   => handleActionDelete(a)}
+                      onSave={(p)    => handleActionEdit(a, p)}
+                      onStatus={(s)  => handleActionStatus(a, s)}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Linked alerts */}
+              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)]">
+                  <p className="text-[0.72rem] font-black text-[var(--t7)]">Linked Alerts ({detail.alerts?.length || 0})</p>
+                </div>
+                <div className="divide-y divide-[var(--b1)]">
+                  {(detail.alerts || []).map(a => (
+                    <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 hover:bg-[var(--s1)]">
+                      <code className="font-mono text-[0.6rem] text-[var(--t3)]">ALERT-{a.id.slice(0, 8).toUpperCase()}</code>
+                      <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase ${a.severity >= 12 ? 'bg-red-100 text-red-700' : a.severity >= 7 ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>sev {a.severity}</span>
+                      <span className="text-[0.7rem] text-[var(--t6)] flex-1 truncate">{a.description}</span>
+                      <span className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source_ip || '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Editable Incident Report */}
+              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileText size={13} className="text-[var(--p1)]" />
+                    <p className="text-[0.72rem] font-black text-[var(--t7)]">Incident Report</p>
+                  </div>
+                  {!isClosed && canEdit && !reportEditing && (
+                    <button onClick={() => setReportEditing(true)} className="text-[0.62rem] font-bold text-[var(--p1)] hover:underline">Edit</button>
+                  )}
+                </div>
+                <div className="p-4">
+                  {reportEditing ? (
+                    <>
+                      <textarea value={reportDraft} onChange={e => setReportDraft(e.target.value)} rows={10}
+                        placeholder="Write or refine the incident report…"
+                        className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed" />
+                      <div className="flex gap-2 mt-2">
+                        <button onClick={handleSaveReport} disabled={reportSaving}
+                          className="px-3 py-1.5 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50">{reportSaving ? 'Saving…' : 'Save'}</button>
+                        <button onClick={() => { setReportEditing(false); setReportDraft(detail.report_body || ''); }}
+                          className="px-3 py-1.5 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.7rem] font-semibold">Cancel</button>
+                      </div>
+                    </>
+                  ) : detail.report_body ? (
+                    <p className="text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">{detail.report_body}</p>
+                  ) : (
+                    <p className="text-[0.72rem] text-[var(--t3)] italic">No report body yet. {canEdit && !isClosed && <button onClick={() => setReportEditing(true)} className="text-[var(--p1)] font-bold hover:underline">Write one</button>}</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Activity / Comments */}
+              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)]">
+                  <p className="text-[0.72rem] font-black text-[var(--t7)]">Activity ({detail.timeline?.length || 0})</p>
+                </div>
+                {!isClosed && (
+                  <div className="px-4 py-3 bg-[var(--sa)] border-b border-[var(--b1)] flex gap-2">
+                    <textarea value={noteText} onChange={e => setNoteText(e.target.value)} rows={2} placeholder="Add a comment…"
+                      className="flex-1 border border-[var(--b2)] rounded px-3 py-2 text-[0.72rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-none" />
+                    <button onClick={handleAddNote} disabled={!noteText.trim()}
+                      className="px-3 py-1.5 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50 self-start">Comment</button>
+                  </div>
+                )}
+                <div className="divide-y divide-[var(--b1)] max-h-96 overflow-y-auto">
+                  {(detail.timeline || []).slice().reverse().map(t => (
+                    <div key={t.id} className="px-4 py-2.5 flex items-start gap-3">
+                      <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+                        t.event_type === 'created'         ? 'bg-blue-500' :
+                        t.event_type === 'phase_change'    ? 'bg-orange-500' :
+                        t.event_type === 'assigned'        ? 'bg-purple-500' :
+                        t.event_type === 'closed'          ? 'bg-gray-500' :
+                        t.event_type === 'reclassified_fp' ? 'bg-pink-500' :
+                        t.event_type === 'status_change'   ? 'bg-indigo-500' :
+                        'bg-green-500'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[0.7rem] text-[var(--t6)]">
+                          <span className="font-bold">{t.username || 'system'}</span>
+                          {t.event_type === 'phase_change'    && <> moved phase <span className="font-mono text-[var(--t4)]">{t.phase_from} → {t.phase_to}</span></>}
+                          {t.event_type === 'status_change'   && <> changed status <span className="font-mono text-[var(--t4)]">{t.status_from} → {t.status_to}</span></>}
+                          {t.event_type === 'assigned'        && <> reassigned the incident</>}
+                          {t.event_type === 'closed'          && <> closed the incident</>}
+                          {t.event_type === 'reclassified_fp' && <> reclassified as false positive</>}
+                          {t.event_type === 'created'         && <> created the incident</>}
+                          {t.event_type === 'note'            && <> added a comment</>}
+                        </p>
+                        {t.note && <p className="text-[0.65rem] text-[var(--t4)] italic mt-0.5">"{t.note}"</p>}
+                      </div>
+                      <span className="text-[0.6rem] text-[var(--t3)] shrink-0">{timeAgo(new Date(t.created_at).getTime())}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Right sidebar — metadata + quick actions */}
+            <div className="space-y-4">
+              {/* Status / details card */}
+              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-3">
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Details</p>
+
+                <div>
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Status</p>
+                  <select value={detail.status} disabled={!canEdit || isClosed}
+                    onChange={e => handleStatusChange(e.target.value)}
+                    className={`w-full border rounded px-2 py-1.5 text-[0.72rem] font-bold ${STATUS_COLORS[detail.status]?.replace('border-', 'border ') || 'border-[var(--b2)]'} disabled:opacity-70`}>
+                    {(['OPEN','IN_PROGRESS','CONTAINED','RESOLVED','CLOSED','RECLASSIFIED_FP'] as const).map(s =>
+                      <option key={s} value={s}>{STATUS_LABELS[s]}</option>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Phase</p>
+                  <span className={`inline-block px-2 py-0.5 rounded text-[0.6rem] font-black uppercase ${PHASE_COLORS[detail.phase] || 'bg-gray-100 text-gray-700'}`}>
+                    {PHASE_LABELS[detail.phase as IncidentPhase] || detail.phase}
+                  </span>
+                </div>
+
+                <div>
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Severity</p>
+                  <span className={`inline-block px-2 py-0.5 rounded text-[0.6rem] font-black uppercase border ${SEV_COLORS[detail.severity] || 'bg-gray-100 text-gray-700'}`}>
+                    {detail.severity}
+                  </span>
+                </div>
+
+                <div>
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Assignee</p>
+                  {detail.assigned_to_username ? (
+                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.assigned_to_username}</p>
+                  ) : (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-[0.72rem] font-bold text-amber-700">Unassigned</p>
+                      {!isClosed && ['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
+                        <button onClick={handleTake}
+                          className="px-2 py-0.5 rounded bg-blue-600 text-white text-[0.6rem] font-bold hover:bg-blue-700 flex items-center gap-1">
+                          <UserPlus size={10} />Take it
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Reporter</p>
+                  <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.escalated_by_username || 'unknown'}</p>
+                </div>
+
+                <div>
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">SLA</p>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${sla.color}`} />
+                    <span className="text-[0.72rem] font-bold text-[var(--t6)]">{sla.label}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Risk</p>
+                    <p className="text-[0.85rem] font-black text-[var(--t7)]">{ai.risk_score ?? '—'}<span className="text-[0.55rem] text-[var(--t3)]"> /100</span></p>
+                  </div>
+                  <div>
+                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">AI Conf.</p>
+                    <p className="text-[0.85rem] font-black text-[var(--t7)]">{ai.confidence != null ? `${Math.round(ai.confidence * 100)}%` : '—'}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[var(--b1)]">
+                  <div>
+                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Alerts</p>
+                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.alerts?.length ?? 0}</p>
+                  </div>
+                  <div>
+                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Actions</p>
+                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{actions.length}</p>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-[var(--b1)] space-y-1">
+                  <div className="flex justify-between text-[0.65rem]">
+                    <span className="text-[var(--t3)]">Escalated</span>
+                    <span className="font-bold text-[var(--t6)]">{timeAgo(new Date(detail.escalated_at).getTime())}</span>
+                  </div>
+                  <div className="flex justify-between text-[0.65rem]">
+                    <span className="text-[var(--t3)]">GLPI</span>
+                    <span className="font-mono text-[var(--t6)]">{detail.glpi_ticket_id ? `#${detail.glpi_ticket_id}` : '—'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick actions */}
+              {!isClosed && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-2">
+                  <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Quick Actions</p>
+                  {!detail.assigned_to && ['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
+                    <button onClick={handleTake}
+                      className="w-full px-3 py-2 rounded bg-blue-600 text-white text-[0.7rem] font-bold hover:bg-blue-700 flex items-center gap-2">
+                      <UserPlus size={12} />Take it (claim and start investigating)
+                    </button>
+                  )}
+                  {nextPhase && canEdit && detail.assigned_to && (
+                    <button onClick={handleNextPhase}
+                      className="w-full px-3 py-2 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold hover:bg-[var(--pd)] flex items-center gap-2">
+                      <ChevronRight size={12} />Move to {PHASE_LABELS[nextPhase as IncidentPhase]}
+                    </button>
+                  )}
+                  {canReassign && (
+                    <button onClick={() => { setReassignTo(detail.assigned_to || 0); setShowReassign(s => !s); }}
+                      className="w-full px-3 py-2 rounded border border-[var(--b2)] text-[var(--t6)] text-[0.7rem] font-bold hover:bg-[var(--s1)] flex items-center gap-2">
+                      <UserPlus size={12} />Reassign
+                    </button>
+                  )}
+                  {canEdit && (
+                    <button onClick={() => setShowReclassify(s => !s)}
+                      className="w-full px-3 py-2 rounded bg-pink-100 text-pink-800 text-[0.7rem] font-bold hover:bg-pink-200 flex items-center gap-2">
+                      <ThumbsDown size={12} />Reclassify as FP
+                    </button>
+                  )}
+                  {canEdit && (
+                    <button onClick={async () => {
+                      if (!confirm('Close this incident as Resolved?')) return;
+                      const r = await closeIncident(detail.id);
+                      if (r.ok) { toast('Incident closed', 'success'); fetchDetail(detail.id); fetchList(); }
+                      else toast(r.error || 'Failed to close', 'error');
+                    }}
+                      className="w-full px-3 py-2 rounded bg-amber-100 text-amber-800 text-[0.7rem] font-bold hover:bg-amber-200">
+                      Close as Resolved
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Reassign popover */}
+              {showReassign && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2">
+                  <p className="text-[0.6rem] font-black text-[var(--t6)] uppercase tracking-widest">Reassign / Unassign</p>
+                  <select value={reassignTo} onChange={e => setReassignTo(Number(e.target.value))}
+                    className="w-full border border-[var(--b2)] rounded px-2 py-1.5 text-[0.7rem] bg-[var(--s0)]">
+                    <option value={0}>— Unassign (back to Open) —</option>
+                    {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
+                  </select>
+                  <div className="flex gap-1.5">
+                    <button onClick={handleReassign} className="flex-1 px-2 py-1 rounded bg-[var(--p1)] text-white text-[0.65rem] font-bold">Confirm</button>
+                    <button onClick={() => setShowReassign(false)} className="flex-1 px-2 py-1 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.65rem] font-semibold">Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Reclassify popover */}
+              {showReclassify && (
+                <div className="bg-pink-50 border border-pink-200 rounded-xl p-3 space-y-2">
+                  <p className="text-[0.6rem] font-black text-pink-800 uppercase tracking-widest">Reclassify as FP</p>
+                  <p className="text-[0.65rem] text-pink-900">Returns {detail.alerts?.length ?? 0} alert(s) to the FP archive.</p>
+                  <textarea value={reclassifyNote} onChange={e => setReclassifyNote(e.target.value)} rows={2}
+                    placeholder="Why? (optional)"
+                    className="w-full border border-pink-300 rounded px-2 py-1 text-[0.65rem] bg-white resize-none" />
+                  <div className="flex gap-1.5">
+                    <button onClick={handleReclassifyFp} className="flex-1 px-2 py-1 rounded bg-pink-600 text-white text-[0.65rem] font-bold hover:bg-pink-700">Confirm</button>
+                    <button onClick={() => { setShowReclassify(false); setReclassifyNote(''); }} className="flex-1 px-2 py-1 rounded border border-pink-300 text-pink-800 text-[0.65rem] font-semibold">Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activeId && loadingDetail) {
+    return <div className="p-6"><p className="text-[0.78rem] text-[var(--t3)]">Loading incident…</p></div>;
+  }
+
+  // ── List view ───────────────────────────────────────────────────────────
+  const STATUS_CARDS: { key: string; label: string; tint: string; icon: any }[] = [
+    { key: 'OPEN',            label: 'Open',           tint: 'border-blue-200 bg-blue-50',     icon: AlertOctagon },
+    { key: 'IN_PROGRESS',     label: 'Investigating',  tint: 'border-orange-200 bg-orange-50', icon: Activity },
+    { key: 'CONTAINED',       label: 'Contained',      tint: 'border-amber-200 bg-amber-50',   icon: Shield },
+    { key: 'RESOLVED',        label: 'Resolved',       tint: 'border-green-200 bg-green-50',   icon: CheckCircle },
+    { key: 'RECLASSIFIED_FP', label: 'False Positive', tint: 'border-pink-200 bg-pink-50',     icon: ThumbsDown },
+  ];
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
+      <PageHeader eyebrow="Incident Response" title="Incidents"
+        description="Case-management workspace for formally escalated incidents. Each incident has an owner, a NIST 800-61 phase, response actions, and a full audit trail." />
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {STATUS_CARDS.map(c => {
+          const active = statusF === c.key;
+          const Ico = c.icon;
+          return (
+            <button key={c.key} onClick={() => setStatusF(active ? '' : c.key)}
+              className={`text-left rounded-lg p-3 border-2 transition-colors ${active ? 'border-[var(--p1)] bg-blue-50' : `${c.tint} hover:border-[var(--p1)]`}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <Ico size={13} className="text-[var(--t5)]" />
+                <p className="text-[0.55rem] font-black text-[var(--t4)] uppercase tracking-widest">{c.label}</p>
+              </div>
+              <p className="text-[1.4rem] font-black text-[var(--t7)] tabular-nums leading-none">{counts[c.key] ?? 0}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex-1 min-w-[240px] relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by title or ID…"
+            className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
+        </div>
+        <select value={ownerF} onChange={e => setOwnerF(e.target.value === '' ? '' : Number(e.target.value))}
+          className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] bg-[var(--s0)]">
+          <option value="">All owners</option>
+          {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
+        </select>
+        <select value={sevF} onChange={e => setSevF(e.target.value)}
+          className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] bg-[var(--s0)]">
+          <option value="">All severities</option>
+          {['CRITICAL','HIGH','MEDIUM','LOW'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={slaF} onChange={e => setSlaF(e.target.value)}
+          className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] bg-[var(--s0)]">
+          <option value="">All SLA states</option>
+          <option value="on_track">On Track</option>
+          <option value="watch">Watch</option>
+          <option value="at_risk">At Risk</option>
+          <option value="breached">Breached</option>
+        </select>
+      </div>
+
+      <div className="flex gap-1.5 flex-wrap">
+        <button onClick={() => setPhaseF('')}
+          className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider ${phaseF === '' ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)]'}`}>All phases</button>
+        {INCIDENT_PHASES.map(p => (
+          <button key={p} onClick={() => setPhaseF(phaseF === p ? '' : p)}
+            className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider ${phaseF === p ? 'bg-[var(--p1)] text-white' : PHASE_COLORS[p] || 'bg-[var(--s1)]'}`}>
+            {PHASE_LABELS[p]}
+          </button>
+        ))}
+      </div>
+
+      {filteredList.length === 0 ? (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-10 text-center">
+          <AlertOctagon size={32} className="mx-auto text-[var(--t3)] mb-2" />
+          <p className="text-[0.85rem] font-semibold text-[var(--t6)]">No incidents match this filter</p>
+          <p className="text-[0.72rem] text-[var(--t3)] mt-1">
+            Escalate an alert from the <button onClick={() => setActiveTab('investigation')} className="text-[var(--p1)] font-bold hover:underline">Alerts Queue</button> to create one.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filteredList.map(inc => {
+            const sla = computeSla(inc.severity, inc.escalated_at);
+            return (
+              <button key={inc.id} onClick={() => setActiveId(inc.id)}
+                className="w-full bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 text-left hover:border-[var(--p1)] transition-colors">
+                <div className="flex items-start gap-3 mb-2">
+                  <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest border shrink-0 ${SEV_COLORS[inc.severity] || 'bg-gray-100 text-gray-700'}`}>{inc.severity}</span>
+                  <code className="text-[0.62rem] font-mono bg-[var(--s1)] text-[var(--t4)] px-1.5 py-0.5 rounded shrink-0">{inc.id}</code>
+                  <p className="text-[0.82rem] font-semibold text-[var(--t7)] flex-1 truncate">{inc.title}</p>
+                  <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest border shrink-0 ${STATUS_COLORS[inc.status] || 'bg-gray-100 text-gray-700'}`}>
+                    {STATUS_LABELS[inc.status] || inc.status}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 text-[0.65rem] text-[var(--t3)] flex-wrap">
+                  <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase ${PHASE_COLORS[inc.phase] || 'bg-gray-100 text-gray-700'}`}>{PHASE_LABELS[inc.phase as IncidentPhase] || inc.phase}</span>
+                  <span className="flex items-center gap-1"><span className={`w-1.5 h-1.5 rounded-full ${sla.color}`} />{sla.label}</span>
+                  <span>{inc.alert_count || 0} alert{inc.alert_count === 1 ? '' : 's'}</span>
+                  {(inc.action_count || 0) > 0 && (
+                    <span>{inc.executed_actions || 0}/{inc.action_count} actions</span>
+                  )}
+                  {inc.assigned_to_username && <span>→ <span className="font-semibold text-[var(--t5)]">{inc.assigned_to_username}</span></span>}
+                  {inc.glpi_ticket_id && <span>· GLPI #{inc.glpi_ticket_id}</span>}
+                  <span className="text-[var(--t4)]">· {lastEventLabel(inc.last_event_type, inc.last_event_note)}</span>
+                  <span className="ml-auto">{timeAgo(new Date(inc.escalated_at).getTime())}</span>
+                </div>
+              </button>
+            );
+          })}
+          {total > filteredList.length && (
+            <p className="text-center text-[0.7rem] text-[var(--t3)] pt-2">Showing {filteredList.length} of {total}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const ReportsTab = ({
   alerts,
@@ -7634,7 +9555,7 @@ const ReportsTab = ({
                             className={`font-mono text-[0.62rem] font-bold px-1.5 py-0.5 rounded border transition-colors ${severityChipColor(
                               alertObj.severity >= 12 ? 'CRITICAL' : alertObj.severity >= 7 ? 'HIGH' : alertObj.severity >= 4 ? 'MEDIUM' : 'LOW'
                             )}`}
-                            title="Open in Investigation"
+                            title="Open in Incidents"
                           >
                             #{rep.alert_id?.substring(0, 8).toUpperCase()}
                           </button>
@@ -7698,8 +9619,10 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
           {activeTab === 'noise-filter'   && <NoiseFilterTab alerts={alerts} setActiveTab={setActiveTab} autoFilter={autoFilter} setAutoFilter={setAutoFilter} />}
           {activeTab === 'fp-archive'       && <FpArchiveTab />}
           {activeTab === 'reports'          && <ReportsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
+          {activeTab === 'knowledge'        && <KnowledgeBaseTab setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} alerts={alerts} />}
           {activeTab === 'response-actions' && <ResponseActionsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
           {activeTab === 'investigation'    && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
+          {activeTab === 'incidents'        && <IncidentsTab setActiveTab={setActiveTab} />}
           {activeTab === 'integrations'     && <IntegrationsTab />}
           {activeTab === 'settings'       && <SettingsTab />}
         </main>
