@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook, Hash } from 'lucide-react';
+import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from './types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary } from './types';
@@ -253,6 +253,16 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 
 const Header = () => {
   const { user, logout } = useAuth();
+  const [wazuhStatus, setWazuhStatus] = useState<'healthy' | 'degraded' | 'offline'>('offline');
+  useEffect(() => {
+    getIntegrations().then(list => {
+      const w = list.find((i: any) => i.name === 'wazuh');
+      setWazuhStatus(w?.enabled ? 'healthy' : 'offline');
+    }).catch(() => setWazuhStatus('offline'));
+  }, []);
+  const statusColors = { healthy: 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]', degraded: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]', offline: 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' };
+  const statusTextColors = { healthy: 'text-green-700', degraded: 'text-amber-700', offline: 'text-red-700' };
+  const statusLabels = { healthy: 'Wazuh: Healthy', degraded: 'Wazuh: Degraded', offline: 'Wazuh: Offline' };
   return (
     <header className="h-[60px] bg-[var(--s0)] border-b border-[var(--b1)] text-[var(--t1)] flex items-center justify-between px-6 z-[100] sticky top-0 transition-all">
       <div className="flex items-center gap-3">
@@ -270,8 +280,8 @@ const Header = () => {
 
       <div className="flex items-center gap-4">
         <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--s1)] border border-[var(--b2)]">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-          <span className="text-[0.7rem] font-black uppercase tracking-wider text-green-700">Wazuh: Healthy</span>
+          <div className={`w-2 h-2 rounded-full animate-pulse ${statusColors[wazuhStatus]}`} />
+          <span className={`text-[0.7rem] font-black uppercase tracking-wider ${statusTextColors[wazuhStatus]}`}>{statusLabels[wazuhStatus]}</span>
         </div>
         
         <div className="h-6 w-px bg-[var(--b2)]" />
@@ -1191,7 +1201,7 @@ const GlobalRiskDonut = ({ score, critical, high, resolvedHighCritical }: { scor
       <div className="flex items-start justify-between gap-3 mb-4">
         <div>
           <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wider">Global Risk Score</p>
-          <p className="text-[0.68rem] text-[var(--t4)] mt-1">Weighted by unresolved high and critical alerts.</p>
+          <p className="text-[0.68rem] text-[var(--t4)] mt-1">Driven by active severity and reduced as incidents move to contained, resolved, or closed.</p>
         </div>
         <span className="px-2 py-1 rounded-full text-[0.6rem] font-black uppercase tracking-wider border" style={{ color, borderColor: `${color}55`, backgroundColor: `${color}15` }}>
           {label}
@@ -2315,7 +2325,7 @@ const AlertDetail = ({
                   getAlertRuns(alert.id).then(setRuns).catch(() => {}).finally(() => setRunsLoading(false));
                 }
               }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[var(--p1)] text-[var(--t7)] border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.72rem] font-bold transition-colors border ${showHistory ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] border-[var(--b2)]'}`}
             >
               {runsLoading ? <div className="w-3 h-3 rounded-full border-2 border-current/40 border-t-current animate-spin" /> : <Clock size={13} />}
               History {runs.length > 0 ? `(${runs.length})` : ''}
@@ -2856,7 +2866,7 @@ const AlertDetail = ({
           <button
             type="button"
             onClick={() => setConfirmAction({ status: 'CLOSED', label: 'Close Incident', message: 'Close this incident? This marks the alert as resolved.', cls: 'bg-[#1e8e3e] hover:bg-green-700' })}
-            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
+            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white font-bold text-[0.8rem] hover:bg-[var(--pd)] transition-colors shadow-sm"
           >
             Close Incident
           </button>
@@ -3286,7 +3296,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
         title="Multi-Agent SOC Research Overview"
         description="Wazuh alert ingestion, LangGraph orchestration, evidence generation, and analyst feedback in one evaluation surface."
         right={(
-          <button onClick={() => setActiveTab('alerts')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
+          <button onClick={() => setActiveTab('investigation')} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors">
             <AlertTriangle size={14} />
             Open Investigation
           </button>
@@ -3318,10 +3328,10 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
               const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
               const confidence = stat?.avg_confidence;
               return (
-                <button key={agent.phase} onClick={() => setActiveTab('agents')} className="text-left group">
+                <button key={agent.phase} onClick={() => setActiveTab('settings')} className="text-left group">
                   <div className={`min-h-[146px] border rounded-lg p-3 transition-colors ${fallbackPct > 20 ? 'border-amber-200 bg-amber-50/50' : 'border-[var(--b2)] bg-[var(--s0)] group-hover:bg-[var(--sa)]'}`}>
                     <div className="flex items-center justify-between mb-3">
-                      <span className="w-6 h-6 rounded bg-[var(--p1)] text-[var(--t7)] flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
+                      <span className="w-6 h-6 rounded bg-[var(--p1)] text-white flex items-center justify-center text-[0.65rem] font-black">{i + 1}</span>
                       <span className="text-[0.58rem] text-[var(--t3)] font-mono">{stat?.total_runs || 0} runs</span>
                     </div>
                     <p className="text-[0.72rem] font-black text-[var(--t7)] leading-tight">{agent.short}</p>
@@ -3368,7 +3378,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
         <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
           <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
             <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Highest-Risk Research Samples</p>
-            <button onClick={() => setActiveTab('alerts')} className="text-[0.68rem] font-bold text-[var(--p1)] hover:underline">View queue</button>
+            <button onClick={() => setActiveTab('investigation')} className="text-[0.68rem] font-bold text-[var(--p1)] hover:underline">View queue</button>
           </div>
           <div className="divide-y divide-slate-100">
             {topCritical.length ? topCritical.map(alert => {
@@ -3561,791 +3571,6 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
           </div>
         </div>
       </div>
-    </div>
-  );
-};
-
-const AlertsTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, setActiveTab }: {
-  alerts: Alert[];
-  selectedAlert: Alert | null;
-  setSelectedAlert: (a: Alert | null) => void;
-  onAlertAction: (id: string, update: any) => void;
-  setActiveTab: (t: string) => void;
-}) => {
-  const [filterOpen, setFilterOpen]     = useState(false);
-  const [filterSeverity, setFilterSev]  = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
-  const [quickFilter, setQuickFilter]   = useState<'ALL' | 'ACTIONABLE' | 'HIGH_RISK' | 'ANALYZING'>('ALL');
-  const [searchQuery, setSearchQuery]   = useState('');
-  const [filteredAlerts, setFiltered]   = useState<Alert[]>(alerts);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === '/' && document.activeElement !== searchInputRef.current) {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-      }
-      if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
-        setSearchQuery('');
-        searchInputRef.current?.blur();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    let result = alerts;
-    if (filterSeverity) {
-      const ranges: Record<string, [number, number]> = {
-        CRITICAL: [13, 999], HIGH: [10, 12], MEDIUM: [7, 9], LOW: [0, 6],
-      };
-      const [lo, hi] = ranges[filterSeverity] || [0, 999];
-      result = result.filter(a => a.severity >= lo && a.severity <= hi);
-    }
-    if (filterStatus) {
-      result = result.filter(a => a.status === filterStatus);
-    }
-    if (quickFilter === 'ACTIONABLE') {
-      result = result.filter(a => ['NEW', 'ANALYZING', 'TRIAGED', 'ESCALATED'].includes(a.status));
-    }
-    if (quickFilter === 'HIGH_RISK') {
-      result = result.filter(a => {
-        const score = getAlertRiskScore(a);
-        return (score != null ? score >= 80 : a.severity >= 12) && a.status !== 'FALSE_POSITIVE' && a.status !== 'CLOSED';
-      });
-    }
-    if (quickFilter === 'ANALYZING') {
-      result = result.filter(a => a.status === 'ANALYZING');
-    }
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(a =>
-        a.description?.toLowerCase().includes(q) ||
-        a.source_ip?.includes(q) ||
-        a.dest_ip?.includes(q) ||
-        a.user?.toLowerCase().includes(q) ||
-        a.hostname?.toLowerCase().includes(q) ||
-        a.agent_name?.toLowerCase().includes(q) ||
-        a.rule_id?.includes(q) ||
-        a.id?.toLowerCase().includes(q)
-      );
-    }
-    const ts = (t: string) => new Date(t.replace(' ', 'T')).getTime();
-    result = [...result].sort((a, b) => ts(b.timestamp) - ts(a.timestamp));
-    setFiltered(result);
-  }, [alerts, filterSeverity, filterStatus, quickFilter, searchQuery]);
-
-  const hasFilters = !!filterSeverity || !!filterStatus || quickFilter !== 'ALL';
-  const clearFilters = () => { setFilterSev(''); setFilterStatus(''); setQuickFilter('ALL'); };
-
-  const handleBulkAIClean = () => {
-    const fps = alerts.filter(a => {
-      if (a.status === 'FALSE_POSITIVE' || a.status === 'CLOSED') return false;
-      let aiData: any = null;
-      try { aiData = JSON.parse(a.ai_analysis || ''); } catch(e) {}
-      return aiData?.phaseData?.analysis?.is_false_positive;
-    });
-    fps.forEach(a => onAlertAction(a.id, { status: 'FALSE_POSITIVE' }));
-  };
-
-  const highRiskCount = alerts.filter(a => {
-    if (a.status === 'CLOSED' || a.status === 'FALSE_POSITIVE') return false;
-    let aiData: any = null;
-    try { aiData = JSON.parse(a.ai_analysis || ''); } catch(e) {}
-    const risk = aiData?.phaseData?.analysis?.risk_score;
-    return risk && risk >= 80;
-  }).length;
-
-  const totalAutoTriagedFP = alerts.filter(a => {
-    let aiData: any = null;
-    try { aiData = JSON.parse(a.ai_analysis || ''); } catch(e) {}
-    return aiData?.phaseData?.analysis?.is_false_positive;
-  }).length;
-  
-  const activeCount = alerts.filter(a => a.status === 'ANALYZING').length;
-  const actionableCount = alerts.filter(a => ['NEW', 'ANALYZING', 'TRIAGED', 'ESCALATED'].includes(a.status)).length;
-
-  const filterButtonClass = (active: boolean, tone: 'green' | 'red' | 'blue' = 'blue') =>
-    `w-full text-left ${active ? (
-      tone === 'green' ? 'ring-2 ring-green-300 bg-green-100' :
-      tone === 'red' ? 'ring-2 ring-red-300 bg-red-100' :
-      'ring-2 ring-blue-300 bg-blue-100'
-    ) : ''} rounded-lg transition-all cursor-pointer`;
-
-  return (
-    <div className="flex flex-col h-full bg-[var(--s2)]">
-      {/* Analyst HUD */}
-      <div className="bg-[var(--s0)] border-b border-[var(--b1)] px-6 pt-2 pb-3 shrink-0 shadow-sm z-10 relative">
-        <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Queue Intelligence</p>
-      <div className="flex gap-6">
-        <div
-          onClick={() => setQuickFilter(quickFilter === 'ACTIONABLE' ? 'ALL' : 'ACTIONABLE')}
-          className={filterButtonClass(quickFilter === 'ACTIONABLE', 'green')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setQuickFilter(quickFilter === 'ACTIONABLE' ? 'ALL' : 'ACTIONABLE');
-            }
-          }}
-        >
-        <div className="flex-1 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
-          <div>
-            <p className="text-[0.65rem] font-black text-green-700 uppercase tracking-widest mb-0.5">Noise Reduction</p>
-            <p className="text-[0.8rem] font-bold text-green-900">{actionableCount} actionable alerts · {totalAutoTriagedFP} AI false positives</p>
-          </div>
-          <button onClick={(e) => { e.stopPropagation(); handleBulkAIClean(); }} className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-[0.7rem] font-bold transition-colors shadow-sm">
-            Clean All ({totalAutoTriagedFP})
-          </button>
-        </div>
-        </div>
-        <div
-          onClick={() => setQuickFilter(quickFilter === 'HIGH_RISK' ? 'ALL' : 'HIGH_RISK')}
-          className={filterButtonClass(quickFilter === 'HIGH_RISK', 'red')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setQuickFilter(quickFilter === 'HIGH_RISK' ? 'ALL' : 'HIGH_RISK');
-            }
-          }}
-        >
-        <div className="flex-1 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
-          <p className="text-[0.65rem] font-black text-red-700 uppercase tracking-widest mb-0.5">High-Priority Focus</p>
-          <p className="text-[0.8rem] font-bold text-red-900">{highRiskCount} Alerts require immediate containment</p>
-        </div>
-        </div>
-        <div
-          onClick={() => setQuickFilter(quickFilter === 'ANALYZING' ? 'ALL' : 'ANALYZING')}
-          className={filterButtonClass(quickFilter === 'ANALYZING')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setQuickFilter(quickFilter === 'ANALYZING' ? 'ALL' : 'ANALYZING');
-            }
-          }}
-        >
-        <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex flex-col justify-center">
-          <p className="text-[0.65rem] font-black text-blue-700 uppercase tracking-widest mb-0.5">Agent Status</p>
-          <p className="text-[0.8rem] font-bold text-blue-900">{activeCount > 0 ? `Agents processing ${activeCount} alerts` : 'Agents standing by'}</p>
-        </div>
-        </div>
-      </div>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden">
-        <section className="w-[340px] border-r border-[var(--b1)] bg-[var(--s0)] flex flex-col overflow-hidden shrink-0 shadow-sm z-0">
-          <div className="p-3 border-b border-[var(--b1)] bg-[var(--s1)] flex flex-col gap-2">
-            <div className="flex justify-between items-center relative">
-              <span className="font-bold text-[0.8rem] text-[var(--p1)]">ALERT QUEUE ({filteredAlerts.length})</span>
-              <button
-                onClick={() => setFilterOpen(!filterOpen)}
-                className={`flex items-center gap-1 text-[0.65rem] font-black uppercase tracking-wider px-2 py-1 rounded transition-colors ${
-                  hasFilters ? 'bg-[var(--p1)] text-[var(--t7)]' : 'text-[var(--p1)] hover:bg-[var(--sa)]'
-                }`}
-              >
-                <Filter className="w-3 h-3" />
-                {hasFilters ? 'Filtered ●' : 'Filter'}
-              </button>
-
-              {filterOpen && (
-                <div className="absolute top-full right-0 mt-1 z-20 w-56 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-xl p-4 space-y-3">
-                  <div>
-                    <label className="text-[0.6rem] font-black text-[var(--t2)] uppercase tracking-wider block mb-1">Severity</label>
-                    <select
-                      value={filterSeverity}
-                      onChange={e => setFilterSev(e.target.value)}
-                      className="w-full text-[0.8rem] border border-[var(--b1)] rounded px-2 py-1.5 outline-none focus:border-[var(--p1)]"
-                    >
-                      <option value="">All</option>
-                      <option value="CRITICAL">Critical (13+)</option>
-                      <option value="HIGH">High (10-12)</option>
-                      <option value="MEDIUM">Medium (7-9)</option>
-                      <option value="LOW">Low (&lt;7)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[0.6rem] font-black text-[var(--t2)] uppercase tracking-wider block mb-1">Status</label>
-                    <select
-                      value={filterStatus}
-                      onChange={e => setFilterStatus(e.target.value)}
-                      className="w-full text-[0.8rem] border border-[var(--b1)] rounded px-2 py-1.5 outline-none focus:border-[var(--p1)]"
-                    >
-                      <option value="">All</option>
-                      {['NEW','ANALYZING','TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED'].map(s => (
-                        <option key={s} value={s}>{s.replace('_', ' ')}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {hasFilters && (
-                    <button
-                      onClick={clearFilters}
-                      className="w-full text-[0.7rem] font-bold text-[#d93025] hover:bg-red-50 py-1.5 rounded transition-colors uppercase tracking-wider"
-                    >
-                      Clear Filters
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search ID, IP, user, host, rule… (/ to focus)"
-                className="w-full bg-[var(--s0)] border border-[var(--b2)] rounded px-8 py-1.5 text-[0.75rem] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
-              />
-            </div>
-            <div className="flex items-center gap-2 text-[0.58rem] font-bold text-[var(--t3)] uppercase tracking-wide">
-              <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[var(--p1)]" />Completed agent phase</span>
-              <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" />Running</span>
-              <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[var(--s2)]" />Pending</span>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {filteredAlerts.length > 0 ? (
-              filteredAlerts.map(alert => (
-                <AlertRow
-                  key={alert.id}
-                  alert={alert}
-                  onClick={() => setSelectedAlert(alert)}
-                  isSelected={selectedAlert?.id === alert.id}
-                />
-              ))
-            ) : (
-              <div className="p-10 text-center text-[var(--t3)] text-sm">No alerts match the current filters.</div>
-            )}
-          </div>
-        </section>
-        <section className="flex-1 overflow-hidden">
-          {selectedAlert ? (
-            <AlertDetail
-              alert={selectedAlert}
-              onClose={() => setSelectedAlert(null)}
-              onAction={onAlertAction}
-              returnTab="alerts"
-              setActiveTab={setActiveTab}
-              allAlerts={alerts}
-              onAlertSelect={setSelectedAlert}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full text-[var(--t3)] flex-col gap-4">
-              <Shield className="w-16 h-16 opacity-10" />
-              <p className="font-semibold text-sm">Select an alert from the queue to start investigation</p>
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-};
-
-const MitreIntelligence = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a: Alert) => void }) => {
-  const mitreCounts: Record<string, { count: number; alerts: Alert[] }> = {};
-  const iocRows: Array<{ type: string; value: string; alert: Alert; confidence: number | null; threat: string }> = [];
-  const mispRows: Array<{ alert: Alert; level: string; hits: number; actors: string[]; families: string[]; events: any[] }> = [];
-
-  alerts.forEach(alert => {
-    const ai = parseAlertAi(alert);
-    parseMitreTags(alert).forEach(tag => {
-      if (!mitreCounts[tag]) mitreCounts[tag] = { count: 0, alerts: [] };
-      mitreCounts[tag].count += 1;
-      mitreCounts[tag].alerts.push(alert);
-    });
-
-    const iocs = ai?.iocs || ai?.phaseData?.analysis?.iocs || {};
-    ['ips','users','hosts','domains','hashes','files','processes'].forEach(type => {
-      const values = Array.isArray(iocs[type]) ? iocs[type] : [];
-      values.forEach((value: string) => {
-        if (!value) return;
-        iocRows.push({
-          type,
-          value: String(value),
-          alert,
-          confidence: getConfidenceValues(ai)[0] ?? null,
-          threat: ai?.phaseData?.intel?.campaign_family || ai?.phaseData?.analysis?.attack_category || 'Unattributed',
-        });
-      });
-    });
-
-    const misp = ai?.phaseData?.intel?.misp;
-    if (misp) {
-      const events = Array.isArray(misp.events) ? misp.events : [];
-      const actors = Array.isArray(misp.threat_actors) ? misp.threat_actors : [];
-      const families = Array.isArray(misp.malware_families) ? misp.malware_families : [];
-      const hits = typeof misp.hit_count === 'number' ? misp.hit_count : events.length;
-      if (hits > 0 || actors.length > 0 || families.length > 0) {
-        mispRows.push({ alert, level: misp.threat_level || 'Undefined', hits, actors, families, events });
-      }
-    }
-  });
-
-  const topMitre = Object.entries(mitreCounts).sort(([, a], [, b]) => b.count - a.count).slice(0, 12);
-  const uniqueIocs = new Map<string, typeof iocRows[number]>();
-  iocRows.forEach(row => {
-    const key = `${row.type}:${row.value}`;
-    if (!uniqueIocs.has(key)) uniqueIocs.set(key, row);
-  });
-  const iocs = Array.from(uniqueIocs.values()).slice(0, 80);
-  const maxMitre = Math.max(...topMitre.map(([, v]) => v.count), 1);
-  const typeTone: Record<string, string> = {
-    ips: 'bg-red-50 text-red-700 border-red-200',
-    users: 'bg-blue-50 text-blue-700 border-blue-200',
-    hosts: 'bg-green-50 text-green-700 border-green-200',
-    domains: 'bg-purple-50 text-purple-700 border-purple-200',
-    hashes: 'bg-[var(--s1)] text-[var(--t6)] border-[var(--b2)]',
-    files: 'bg-amber-50 text-amber-700 border-amber-200',
-    processes: 'bg-cyan-50 text-cyan-700 border-cyan-200',
-  };
-
-  return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      <PageHeader
-        eyebrow="Evidence Map"
-        title="MITRE & Threat Intelligence"
-        description="A research view of techniques, indicators, MISP enrichment, and the alerts that produced them."
-        right={(
-          <div className="grid grid-cols-3 gap-2 text-right">
-            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
-              <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Techniques</p>
-              <p className="text-lg font-black text-[var(--p1)]">{topMitre.length}</p>
-            </div>
-            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
-              <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Unique IOCs</p>
-              <p className="text-lg font-black text-[var(--p1)]">{uniqueIocs.size}</p>
-            </div>
-            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2">
-              <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">MISP Hits</p>
-              <p className="text-lg font-black text-[var(--p1)]">{mispRows.reduce((a, b) => a + b.hits, 0)}</p>
-            </div>
-          </div>
-        )}
-      />
-
-      <div className="grid grid-cols-5 gap-5">
-        <div className="col-span-2 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-[var(--s1)]">
-            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Top MITRE Techniques</p>
-          </div>
-          <div className="p-5 space-y-3">
-            {topMitre.length ? topMitre.map(([tech, data]) => (
-              <button key={tech} onClick={() => onAlertClick(data.alerts[0])} className="w-full text-left group">
-                <div className="flex items-center gap-3">
-                  <span className="w-20 font-mono text-[0.78rem] font-black text-[var(--p1)]">{tech}</span>
-                  <div className="flex-1 h-2 bg-[var(--s1)] rounded-full overflow-hidden">
-                    <div className="h-full bg-[var(--p1)] group-hover:bg-[#0066cc]" style={{ width: `${Math.max(8, (data.count / maxMitre) * 100)}%` }} />
-                  </div>
-                  <span className="w-16 text-right text-[0.68rem] font-bold text-[var(--t4)]">{data.count} alerts</span>
-                </div>
-              </button>
-            )) : <div className="p-8 text-center text-[var(--t3)] text-sm">Run agents to generate MITRE mappings.</div>}
-          </div>
-        </div>
-
-        <div className="col-span-3 bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
-            <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">IOC Inventory</p>
-            <span className="text-[0.65rem] text-[var(--t3)]">first 80 unique indicators</span>
-          </div>
-          {iocs.length ? (
-            <div className="max-h-[360px] overflow-y-auto">
-              <table className="w-full text-left text-[0.76rem]">
-                <thead className="sticky top-0 bg-[var(--s1)] border-b border-[var(--b3)] text-[0.6rem] text-[var(--t3)] uppercase tracking-wider">
-                  <tr>
-                    <th className="px-4 py-2">Type</th>
-                    <th className="px-4 py-2">Indicator</th>
-                    <th className="px-4 py-2">Threat Context</th>
-                    <th className="px-4 py-2">Alert</th>
-                    <th className="px-4 py-2">Conf</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {iocs.map(row => (
-                    <tr key={`${row.type}:${row.value}`} className="hover:bg-[var(--s1)]">
-                      <td className="px-4 py-2"><span className={`px-2 py-0.5 rounded border text-[0.6rem] font-black uppercase ${typeTone[row.type] || 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]'}`}>{row.type}</span></td>
-                      <td className="px-4 py-2 font-mono text-[var(--t7)] max-w-[220px] truncate" title={row.value}>{row.value}</td>
-                      <td className="px-4 py-2 text-[var(--t5)] max-w-[180px] truncate">{row.threat}</td>
-                      <td className="px-4 py-2"><button onClick={() => onAlertClick(row.alert)} className="font-mono text-[var(--p1)] hover:underline">{row.alert.id.substring(0, 8).toUpperCase()}</button></td>
-                      <td className="px-4 py-2 text-[var(--t4)]">{row.confidence == null ? '—' : `${row.confidence}%`}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : <div className="p-10 text-center text-[var(--t3)] text-sm">No extracted IOCs yet.</div>}
-        </div>
-      </div>
-
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b bg-[var(--s1)]">
-          <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">MISP Enrichment Evidence</p>
-        </div>
-        {mispRows.length ? (
-          <div className="divide-y divide-slate-100">
-            {mispRows.slice(0, 20).map(row => (
-              <button key={row.alert.id} onClick={() => onAlertClick(row.alert)} className="w-full px-5 py-3 text-left hover:bg-[var(--s1)] flex items-center gap-4">
-                <span className={`px-2 py-0.5 rounded text-[0.62rem] font-black uppercase ${
-                  row.level === 'High' ? 'bg-red-100 text-red-800' :
-                  row.level === 'Medium' ? 'bg-orange-100 text-orange-800' :
-                  row.level === 'Low' ? 'bg-amber-100 text-amber-800' :
-                  'bg-[var(--s1)] text-[var(--t5)]'
-                }`}>{row.level}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{row.alert.description}</p>
-                  <p className="text-[0.68rem] text-[var(--t4)] truncate">
-                    {row.hits} hits · {[...row.actors, ...row.families].filter(Boolean).join(' · ') || 'No actor or family label'}
-                  </p>
-                </div>
-                <span className="font-mono text-[0.65rem] text-[var(--p1)]">{row.alert.id.substring(0, 8).toUpperCase()}</span>
-              </button>
-            ))}
-          </div>
-        ) : <div className="p-10 text-center text-[var(--t3)] text-sm">No MISP hits found in analyzed alerts.</div>}
-      </div>
-    </div>
-  );
-};
-
-const ActionsTab = () => {
-  const showToast = useToast();
-  const { user }  = useAuth();
-  const isAdmin   = user?.role === 'ADMIN';
-
-  const [integrations, setIntegrations] = useState<Integration[]>([]);
-  const [actionLogs,   setActionLogs]   = useState<ActionLog[]>([]);
-  const [actionStats,  setActionStats]  = useState<any>(null);
-  const [testing,      setTesting]      = useState<Record<string, boolean>>({});
-  const [saving,       setSaving]       = useState<Record<string, boolean>>({});
-  const [expandedCfg,  setExpandedCfg]  = useState<string | null>(null);
-  const [localCfg,     setLocalCfg]     = useState<Record<string, Record<string, string>>>({});
-
-  const refresh = useCallback(async () => {
-    const [ints, logs, stats] = await Promise.all([
-      getIntegrations(),
-      getActionLogs({ limit: 50 }),
-      fetch('/api/action-stats', { headers: { 'Authorization': `Bearer ${localStorage.getItem('soc_token')}` } }).then(r => r.json()).catch(() => null),
-    ]);
-    setIntegrations(ints as Integration[]);
-    setActionLogs(logs as ActionLog[]);
-    setActionStats(stats);
-  }, []);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  const handleToggle = async (name: string, enabled: boolean) => {
-    if (!isAdmin) return;
-    setSaving(prev => ({ ...prev, [name]: true }));
-    try {
-      await updateIntegration(name, { enabled });
-      showToast(`${name} ${enabled ? 'enabled' : 'disabled'}`);
-      refresh();
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    } finally {
-      setSaving(prev => ({ ...prev, [name]: false }));
-    }
-  };
-
-  const handleThresholdChange = async (name: string, threshold: string) => {
-    if (!isAdmin) return;
-    await updateIntegration(name, { auto_send_threshold: threshold });
-    refresh();
-  };
-
-  const handleSaveConfig = async (name: string) => {
-    if (!isAdmin) return;
-    setSaving(prev => ({ ...prev, [`cfg_${name}`]: true }));
-    try {
-      await updateIntegration(name, { config: localCfg[name] || {} });
-      showToast(`${name} configuration saved`);
-      setExpandedCfg(null);
-      refresh();
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    } finally {
-      setSaving(prev => ({ ...prev, [`cfg_${name}`]: false }));
-    }
-  };
-
-  const handleTest = async (name: string) => {
-    setTesting(prev => ({ ...prev, [name]: true }));
-    try {
-      const result = await testIntegration(name);
-      showToast(result.ok ? `${name} test successful!` : `${name} test failed: ${result.error}`, result.ok ? 'success' : 'error');
-      refresh();
-    } finally {
-      setTesting(prev => ({ ...prev, [name]: false }));
-    }
-  };
-
-  const INTG_META: Record<string, { icon: React.ReactNode; label: string; color: string; type?: string; fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean }> }> = {
-    wazuh: {
-      icon:  <Shield size={20} />,
-      label: 'Wazuh (Real-Time Ingest)',
-      color: 'text-orange-700 bg-orange-50 border-orange-200',
-      type:  'ingest',
-      fields: [
-        { key: 'min_severity',         label: 'Min Severity Level (0–15)',                  placeholder: '7' },
-        { key: 'dedup_window_minutes', label: 'Dedup Window (minutes)',                      placeholder: '5' },
-        { key: 'max_alerts_per_min',   label: 'Rate Limit (alerts/min; 0 = unlimited)',      placeholder: '60' },
-        { key: 'time_window_start',    label: 'Accept From (HH:MM — leave blank for 24 h)', placeholder: '08:00' },
-        { key: 'time_window_end',      label: 'Accept Until (HH:MM)',                        placeholder: '20:00' },
-        { key: 'auto_orchestrate',     label: 'Auto-run AI pipeline (true/false)',            placeholder: 'true' },
-      ],
-    },
-    email: {
-      icon:  <Mail size={20} />,
-      label: 'Email (SMTP)',
-      color: 'text-blue-700 bg-blue-50 border-blue-200',
-      fields: [
-        { key: 'to', label: 'Recipient address', placeholder: 'soc-team@company.com' },
-      ],
-    },
-    glpi: {
-      icon:  <ExternalLink size={20} />,
-      label: 'GLPI Ticketing',
-      color: 'text-purple-700 bg-purple-50 border-purple-200',
-      fields: [
-        { key: 'url',        label: 'GLPI URL',       placeholder: 'https://glpi.company.com' },
-        { key: 'app_token',  label: 'App Token',      placeholder: 'App-Token-here', secret: true },
-        { key: 'user_token', label: 'User Token',     placeholder: 'user_token_here', secret: true },
-      ],
-    },
-    telegram: {
-      icon:  <Send size={20} />,
-      label: 'Telegram',
-      color: 'text-cyan-700 bg-cyan-50 border-cyan-200',
-      fields: [
-        { key: 'bot_token', label: 'Bot Token',  placeholder: '123456:ABCdef...', secret: true },
-        { key: 'chat_id',   label: 'Chat ID',    placeholder: '-1001234567890' },
-      ],
-    },
-  };
-
-  const priColor: Record<string, string> = {
-    CRITICAL: 'bg-red-100 text-red-800 border-red-200',
-    HIGH:     'bg-orange-100 text-orange-800 border-orange-200',
-    MEDIUM:   'bg-blue-100 text-blue-800 border-blue-200',
-    LOW:      'bg-green-100 text-green-800 border-green-200',
-    NEVER:    'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]',
-  };
-
-  const statusIcon: Record<string, string> = { success: '✓', failed: '✕', skipped: '↷' };
-  const statusColor: Record<string, string> = {
-    success: 'text-green-700 bg-green-50',
-    failed:  'text-red-700 bg-red-50',
-    skipped: 'text-[var(--t4)] bg-[var(--s1)]',
-  };
-
-  return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-[var(--p1)]">Notification Integrations</h2>
-          <p className="text-sm text-[var(--t4)] mt-0.5">Connect agent-generated evidence to Email, GLPI, and Telegram dispatch paths.</p>
-        </div>
-        <button onClick={refresh} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.78rem] font-semibold hover:bg-[var(--s1)] transition-colors">
-          <RefreshCw size={13} />
-          Refresh
-        </button>
-      </div>
-
-      {/* Stats strip */}
-      {actionStats && (
-        <div className="grid grid-cols-4 gap-3">
-          {[
-            { label: 'Total Actions',  value: actionStats.total,        color: 'text-[var(--p1)]' },
-            { label: 'Today',          value: actionStats.today,        color: 'text-[var(--p1)]' },
-            { label: 'Success Rate',   value: `${actionStats.success_rate}%`, color: actionStats.success_rate >= 80 ? 'text-[#1e8e3e]' : 'text-[#d93025]' },
-            { label: 'Integrations',   value: `${integrations.filter(i => i.enabled).length} / ${integrations.length} active`, color: 'text-[var(--p1)]' },
-          ].map((s, i) => (
-            <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 shadow-sm">
-              <p className="text-[0.65rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">{s.label}</p>
-              <p className={`text-[1.6rem] font-black ${s.color}`}>{s.value}</p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Integration cards */}
-      <div className="grid grid-cols-3 gap-4">
-        {integrations.map(intg => {
-          const meta      = INTG_META[intg.name];
-          if (!meta) return null;
-          const isExpanded = expandedCfg === intg.name;
-          const s24        = intg.stats_24h || { total: 0, success: 0, failed: 0 };
-          const cfgValues  = localCfg[intg.name] ?? intg.config ?? {};
-
-          return (
-            <div key={intg.name} className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden transition-all ${intg.enabled ? 'border-[var(--p1)]/30' : 'border-[var(--b1)]'}`}>
-              {/* Card header */}
-              <div className={`flex items-center justify-between px-4 py-3 border-b ${intg.enabled ? 'bg-[var(--sa)]' : 'bg-[var(--s1)]'}`}>
-                <div className="flex items-center gap-2">
-                  <span className={`p-1.5 rounded-lg border ${meta.color}`}>{meta.icon}</span>
-                  <div>
-                    <p className="text-[0.82rem] font-black text-[var(--t7)]">{meta.label}</p>
-                    <span className={`text-[0.58rem] font-black uppercase tracking-wider ${intg.enabled ? 'text-[#1e8e3e]' : 'text-[var(--t3)]'}`}>
-                      {intg.enabled ? '● ACTIVE' : '○ DISABLED'}
-                    </span>
-                  </div>
-                </div>
-                {isAdmin && (
-                  <button
-                    onClick={() => handleToggle(intg.name, !intg.enabled)}
-                    disabled={saving[intg.name]}
-                    className="text-[var(--t3)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
-                    title={intg.enabled ? 'Disable' : 'Enable'}
-                  >
-                    {intg.enabled
-                      ? <ToggleRight size={28} className="text-[var(--p1)]" />
-                      : <ToggleLeft  size={28} />}
-                  </button>
-                )}
-              </div>
-
-              {/* Stats row */}
-              <div className="grid grid-cols-3 divide-x divide-slate-100 border-b border-[var(--b3)]">
-                {[
-                  { label: '24h sent',  value: s24.total },
-                  { label: 'success',   value: s24.success },
-                  { label: 'failed',    value: s24.failed },
-                ].map((m, i) => (
-                  <div key={i} className="py-2 text-center">
-                    <p className={`text-[1rem] font-black ${i === 2 && m.value > 0 ? 'text-red-600' : 'text-[var(--t6)]'}`}>{m.value}</p>
-                    <p className="text-[0.58rem] text-[var(--t3)] uppercase tracking-wider">{m.label}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Auto-fire setting — hidden for ingest-type integrations */}
-              {meta.type !== 'ingest' && (
-                <div className="px-4 py-3 flex items-center justify-between border-b border-[var(--b3)]">
-                  <p className="text-[0.7rem] font-bold text-[var(--t4)] uppercase tracking-wider">Auto-fire on</p>
-                  <select
-                    value={intg.auto_send_threshold}
-                    disabled={!isAdmin}
-                    onChange={e => handleThresholdChange(intg.name, e.target.value)}
-                    className={`text-[0.7rem] font-bold border rounded px-2 py-1 outline-none ${priColor[intg.auto_send_threshold] || priColor.NEVER} disabled:opacity-60`}
-                  >
-                    {['CRITICAL','HIGH','MEDIUM','LOW','NEVER'].map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                </div>
-              )}
-
-              {/* Config section */}
-              {isAdmin && (
-                <div className="px-4 py-2 border-b border-[var(--b3)]">
-                  <button
-                    onClick={() => {
-                      setExpandedCfg(isExpanded ? null : intg.name);
-                      if (!localCfg[intg.name]) setLocalCfg(prev => ({ ...prev, [intg.name]: { ...intg.config } }));
-                    }}
-                    className="flex items-center gap-1 text-[0.7rem] font-bold text-[var(--p1)] hover:underline"
-                  >
-                    <ChevronDown size={12} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                    {intg.name === 'wazuh' ? 'Filter Settings' : 'Configure'}
-                  </button>
-                  {isExpanded && (
-                    <div className="mt-2 space-y-2">
-                      {meta.fields.map(f => (
-                        <div key={f.key}>
-                          <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-0.5">{f.label}</label>
-                          <input
-                            type={f.secret ? 'password' : 'text'}
-                            value={cfgValues[f.key] || ''}
-                            onChange={e => setLocalCfg(prev => ({ ...prev, [intg.name]: { ...(prev[intg.name] || {}), [f.key]: e.target.value } }))}
-                            placeholder={f.placeholder}
-                            className="w-full border border-[var(--b2)] rounded px-2 py-1.5 text-[0.75rem] outline-none focus:border-[var(--p1)] font-mono"
-                          />
-                        </div>
-                      ))}
-                      <button
-                        onClick={() => handleSaveConfig(intg.name)}
-                        disabled={saving[`cfg_${intg.name}`]}
-                        className="w-full mt-1 py-1.5 rounded bg-[var(--p1)] text-[var(--t7)] text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
-                      >
-                        {saving[`cfg_${intg.name}`] ? 'Saving…' : 'Save Configuration'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Test button — hidden for ingest-type integrations */}
-              {meta.type !== 'ingest' && (
-                <div className="px-4 py-3">
-                  <button
-                    onClick={() => handleTest(intg.name)}
-                    disabled={testing[intg.name] || !isAdmin}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.72rem] font-bold hover:bg-[var(--sa)] transition-colors disabled:opacity-50"
-                  >
-                    {testing[intg.name]
-                      ? <><div className="w-3 h-3 rounded-full border-2 border-[var(--p1)]/40 border-t-[#004a99] animate-spin" />Testing…</>
-                      : <><Send size={12} />Send Test</>}
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Action log table */}
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
-          <p className="text-[0.82rem] font-black text-[var(--p1)] uppercase tracking-wide">Action Log</p>
-          <p className="text-[0.65rem] text-[var(--t3)]">Last 50 dispatches</p>
-        </div>
-        {actionLogs.length === 0 ? (
-          <div className="p-10 text-center text-[var(--t3)] text-sm">No actions dispatched yet. Enable an integration and run agents on a HIGH or CRITICAL alert.</div>
-        ) : (
-          <table className="w-full text-left text-[0.78rem]">
-            <thead className="bg-[var(--s1)]/50 border-b border-[var(--b3)] text-[0.65rem] text-[var(--t3)] font-black uppercase tracking-wider">
-              <tr>
-                <th className="px-4 py-2">Time</th>
-                <th className="px-4 py-2">Integration</th>
-                <th className="px-4 py-2">Action</th>
-                <th className="px-4 py-2">Payload</th>
-                <th className="px-4 py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {actionLogs.map((log: any) => (
-                <tr key={log.id} className="hover:bg-[var(--s1)] transition-colors">
-                  <td className="px-4 py-2 font-mono text-[var(--t4)] text-[0.7rem] whitespace-nowrap">
-                    {new Date(log.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                  </td>
-                  <td className="px-4 py-2">
-                    <span className={`px-2 py-0.5 rounded text-[0.65rem] font-black uppercase tracking-wide ${
-                      log.integration === 'email'    ? 'bg-blue-100 text-blue-800' :
-                      log.integration === 'telegram' ? 'bg-cyan-100 text-cyan-800' :
-                      'bg-purple-100 text-purple-800'
-                    }`}>{log.integration}</span>
-                  </td>
-                  <td className="px-4 py-2 text-[var(--t5)] font-mono text-[0.68rem]">{log.action}</td>
-                  <td className="px-4 py-2 text-[var(--t6)] truncate max-w-[200px]" title={log.payload}>{log.payload || '—'}</td>
-                  <td className="px-4 py-2">
-                    <span className={`px-2 py-0.5 rounded text-[0.65rem] font-black ${statusColor[log.status] || 'bg-[var(--s1)] text-[var(--t4)]'}`}>
-                      {statusIcon[log.status] || '?'} {log.status}
-                    </span>
-                    {log.error && <p className="text-[0.62rem] text-red-500 mt-0.5 truncate max-w-[150px]" title={log.error}>{log.error}</p>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
     </div>
   );
 };
@@ -4671,27 +3896,6 @@ const FirewallSection = () => {
     </div>
   );
 };
-
-const ResponseControls = () => (
-  <div className="p-6 max-w-6xl mx-auto space-y-6 overflow-y-auto h-full">
-    <PageHeader
-      eyebrow="Containment Layer"
-      title="Response Controls"
-      description="Firewall enforcement, manual block/unblock, and auto-block readiness for agent response actions."
-      right={(
-        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-4 py-2 text-right">
-          <p className="text-[0.58rem] font-black uppercase text-[var(--t3)]">Supported</p>
-          <p className="text-[0.78rem] font-black text-[var(--p1)]">FortiGate · pfSense · Sophos</p>
-        </div>
-      )}
-    />
-    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-[0.78rem] text-amber-800 font-semibold">
-      Auto-blocking is controlled per firewall and should be used only when the response agent emits a high-confidence BLOCK_IP action.
-    </div>
-    <FirewallSection />
-  </div>
-);
-
 const AgentsTab = () => {
   const showToast = useToast();
   const { token, user } = useAuth();
@@ -4911,7 +4115,7 @@ const AgentsTab = () => {
             </div>
             {isAdmin && (
               <>
-                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
+                <button onClick={handleSaveLocalConfig} disabled={savingLocal} className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.75rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 transition-colors">
                   {savingLocal ? 'Saving…' : 'Save'}
                 </button>
                 <button onClick={handleTestLocal} disabled={localStatus === 'checking'} className="px-4 py-2 rounded-lg border border-[var(--p1)] text-[var(--p1)] text-[0.75rem] font-bold hover:bg-[var(--sa)] disabled:opacity-50 transition-colors">
@@ -5198,7 +4402,7 @@ const SettingsTab = () => {
           <button
             type="submit"
             disabled={pwLoading}
-            className="mt-1 px-4 py-2 bg-[var(--p1)] text-[var(--t7)] text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
+            className="mt-1 px-4 py-2 bg-[var(--p1)] text-white text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
           >
             {pwLoading ? 'Updating…' : 'Update Password'}
           </button>
@@ -5211,7 +4415,7 @@ const SettingsTab = () => {
             <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">User Management</h3>
             <button
               onClick={() => setShowCreate(!showCreateForm)}
-              className="flex items-center gap-1.5 bg-[var(--p1)] text-[var(--t7)] px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
             >
               <UserPlus className="w-3 h-3" />
               Add User
@@ -5242,7 +4446,7 @@ const SettingsTab = () => {
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="bg-[var(--p1)] text-[var(--t7)] px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
                 <button type="button" onClick={() => setShowCreate(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
               </div>
             </form>
@@ -5659,7 +4863,7 @@ const ResponseActionsTab = ({
             const tier  = tierFor(a.priority.score);
 
             return (
-              <div key={a.key} className={`bg-[var(--s0)] border border-[var(--b1)] border-l-4 ${cat.border} rounded-xl shadow-sm overflow-hidden`}>
+              <div key={a.key} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
                 <div className="p-4 space-y-3">
                   {/* Top row */}
                   <div className="flex items-start gap-3">
@@ -5839,14 +5043,14 @@ const LoginPage = () => {
 
           <button 
             disabled={loading}
-            className="w-full bg-[var(--p1)] text-[var(--t7)] font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
+            className="w-full bg-[var(--p1)] text-white font-bold py-4 rounded hover:bg-[var(--pd)] transition-all shadow-md disabled:opacity-50 text-[0.9rem] uppercase tracking-widest"
           >
             {loading ? 'Verifying Credentials...' : 'Initialize Session'}
           </button>
           
           <div className="text-center space-y-2">
             <p className="text-[0.7rem] text-[var(--t2)] font-semibold">
-              SYSTEM ID: SOC-ALPHA-01 • REGION: EU-WEST-2
+              AISOC {new Date().getFullYear()} • SECURE ACCESS
             </p>
             <p className="text-[0.65rem] text-[var(--t2)] opacity-50">
               Unauthorized access is strictly prohibited and monitored.
@@ -5863,11 +5067,64 @@ const LoginPage = () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Dashboard Tab ───────────────────────────────────────────────────────────
+type DashboardIncidentCounts = {
+  OPEN: number;
+  IN_PROGRESS: number;
+  CONTAINED: number;
+  RESOLVED: number;
+  CLOSED: number;
+  RECLASSIFIED_FP: number;
+};
+
+const toDashboardIncidentCounts = (counts?: Record<string, number>): DashboardIncidentCounts => ({
+  OPEN: counts?.OPEN ?? 0,
+  IN_PROGRESS: counts?.IN_PROGRESS ?? 0,
+  CONTAINED: counts?.CONTAINED ?? 0,
+  RESOLVED: counts?.RESOLVED ?? 0,
+  CLOSED: counts?.CLOSED ?? 0,
+  RECLASSIFIED_FP: counts?.RECLASSIFIED_FP ?? 0,
+});
+
+const computeDashboardRiskScore = ({
+  activeCritical,
+  activeHigh,
+  activeMedium,
+  openIncidentCount,
+  aiRiskPressure,
+  containedIncidents,
+  resolvedIncidents,
+  closedIncidents,
+}: {
+  activeCritical: number;
+  activeHigh: number;
+  activeMedium: number;
+  openIncidentCount: number;
+  aiRiskPressure: number;
+  containedIncidents: number;
+  resolvedIncidents: number;
+  closedIncidents: number;
+}) => {
+  const rawRisk =
+    activeCritical * 5 +
+    activeHigh * 2 +
+    activeMedium +
+    openIncidentCount * 2 +
+    aiRiskPressure;
+  const mitigation =
+    containedIncidents * 2 +
+    resolvedIncidents * 3 +
+    closedIncidents * 4;
+  const bounded = Math.max(0, Math.min(100, Math.round(rawRisk - mitigation)));
+  // Keep 100 reserved for sustained critical pressure (>20 critical alerts).
+  return activeCritical <= 20 && bounded === 100 ? 99 : bounded;
+};
+
 const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: { alerts: Alert[]; onAlertClick: (a: Alert) => void; setActiveTab: (t: string) => void; onRefreshAlerts?: () => void }) => {
   const { token } = useAuth();
   const [funnel, setFunnel] = useState<any>(null);
   const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
   const [agentStats, setAgentStatsState] = useState<AgentStat[]>([]);
+  const [incidentCounts, setIncidentCounts] = useState<DashboardIncidentCounts>(() => toDashboardIncidentCounts());
   const [refreshing, setRefreshing] = useState(false);
   const [riskGranularity, setRiskGranularity] = useState<RiskChartGranularity>('days');
 
@@ -5875,6 +5132,9 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     if (!onRefreshAlerts || refreshing) return;
     setRefreshing(true);
     onRefreshAlerts();
+    getIncidents({ limit: 1, offset: 0 })
+      .then(data => setIncidentCounts(toDashboardIncidentCounts(data?.counts)))
+      .catch(() => setIncidentCounts(toDashboardIncidentCounts()));
     setTimeout(() => setRefreshing(false), 800);
   };
 
@@ -5883,6 +5143,9 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     getPipelineFunnel().then(setFunnel).catch(() => {});
     fetch('/api/stats/trends', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (Array.isArray(data)) setTrends(data); }).catch(() => {});
     getAgentStats().then(setAgentStatsState).catch(() => setAgentStatsState([]));
+    getIncidents({ limit: 1, offset: 0 })
+      .then(data => setIncidentCounts(toDashboardIncidentCounts(data?.counts)))
+      .catch(() => setIncidentCounts(toDashboardIncidentCounts()));
   }, [token]);
 
   const analyzed = alerts.filter(a => !!a.ai_analysis || ['TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED','FP_CONFIRMED','FILTERED'].includes(a.status)).length;
@@ -5894,7 +5157,6 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
   const fallbackAgents = agentStats.filter(s => s.total_runs > 0 && (s.fallback_count / s.total_runs) > 0.2);
   const resolvedStatuses = new Set(['CLOSED', 'FALSE_POSITIVE', 'FP_CONFIRMED', 'FILTERED']);
   const fpStatuses = new Set(['FALSE_POSITIVE', 'FP_CONFIRMED', 'FILTERED']);
-  const incidentStatuses = new Set(['ANALYZING', 'TRIAGED', 'ESCALATED', 'INCIDENT']);
   const activeAlerts = alerts.filter(a => !resolvedStatuses.has(a.status));
   const activeCritical = activeAlerts.filter(a => a.severity >= 13).length;
   const activeHigh = activeAlerts.filter(a => a.severity >= 10 && a.severity < 13).length;
@@ -5902,23 +5164,26 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
   const activeEscalated = activeAlerts.filter(a => a.status === 'ESCALATED' || a.status === 'INCIDENT').length;
   const totalAlerts = alerts.length;
   const fpFiltered = alerts.filter(a => fpStatuses.has(a.status) || parseAlertAi(a)?.phaseData?.analysis?.is_false_positive).length;
-  const activeIncidents = alerts.filter(a => incidentStatuses.has(a.status)).length;
+  const openIncidentCount = incidentCounts.OPEN + incidentCounts.IN_PROGRESS;
+  const activeIncidents = openIncidentCount;
   const resolvedHighCritical = alerts.filter(a => resolvedStatuses.has(a.status) && a.severity >= 10).length;
   const aiRiskPressure = activeAlerts.reduce((sum, alert) => {
     const risk = getAlertRiskScore(alert);
     if (risk == null) return sum;
-    if (risk >= 80) return sum + 8;
-    if (risk >= 60) return sum + 4;
+    if (risk >= 80) return sum + 2;
+    if (risk >= 60) return sum + 1;
     return sum;
   }, 0);
-  const globalRiskScore = Math.min(
-    100,
-    activeCritical * 18 +
-    activeHigh * 10 +
-    activeMedium * 3 +
-    activeEscalated * 8 +
-    aiRiskPressure
-  );
+  const globalRiskScore = computeDashboardRiskScore({
+    activeCritical,
+    activeHigh,
+    activeMedium,
+    openIncidentCount,
+    aiRiskPressure,
+    containedIncidents: incidentCounts.CONTAINED,
+    resolvedIncidents: incidentCounts.RESOLVED,
+    closedIncidents: incidentCounts.CLOSED,
+  });
 
   const riskSeriesConfig: Record<RiskChartGranularity, { count: number; label: (d: Date) => string; key: (d: Date) => string; shift: (d: Date, offset: number) => void; end: (d: Date) => void }> = {
     hours: {
@@ -5956,7 +5221,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     },
   };
   const riskSeriesConf = riskSeriesConfig[riskGranularity];
-  const riskSeriesPoints: RiskSeriesPoint[] = Array.from({ length: riskSeriesConf.count }, (_, idx) => {
+  const riskSeriesPointsBase: RiskSeriesPoint[] = Array.from({ length: riskSeriesConf.count }, (_, idx) => {
     const d = new Date();
     riskSeriesConf.shift(d, -(riskSeriesConf.count - 1 - idx));
     riskSeriesConf.end(d);
@@ -5981,8 +5246,8 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     const riskPressure = activeSoFar.reduce((sum, alert) => {
       const risk = getAlertRiskScore(alert);
       if (risk == null) return sum;
-      if (risk >= 80) return sum + 8;
-      if (risk >= 60) return sum + 4;
+      if (risk >= 80) return sum + 2;
+      if (risk >= 60) return sum + 1;
       return sum;
     }, 0);
     const solvedHighCritical = alerts.filter(alert => {
@@ -5995,12 +5260,24 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     return {
       day,
       label,
-      risk: Math.min(100, activeCrit * 18 + activeHi * 10 + activeMed * 3 + escalated * 8 + riskPressure),
+      risk: computeDashboardRiskScore({
+        activeCritical: activeCrit,
+        activeHigh: activeHi,
+        activeMedium: activeMed,
+        openIncidentCount: escalated,
+        aiRiskPressure: riskPressure,
+        containedIncidents: 0,
+        resolvedIncidents: 0,
+        closedIncidents: 0,
+      }),
       activeHighCritical: activeCrit + activeHi,
       solvedHighCritical,
       totalAlerts: alertsSoFar.length,
     };
   });
+  const riskSeriesPoints: RiskSeriesPoint[] = riskSeriesPointsBase.map((point, idx) =>
+    idx === riskSeriesPointsBase.length - 1 ? { ...point, risk: globalRiskScore } : point
+  );
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
@@ -6079,43 +5356,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-5">
-        <div className="col-span-2 space-y-5">
-          {trends && (
-            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-4">
-              <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wide mb-3">7-Day Volume</p>
-              <div className="flex items-end gap-1.5 h-16">
-                {trends.map(t => (
-                  <div key={t.day} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="w-full bg-[var(--s1)] rounded-sm overflow-hidden flex flex-col-reverse" style={{ height: 48 }}>
-                      <div className="w-full bg-[var(--p1)] rounded-sm" style={{ height: `${trendMax > 0 ? Math.round((t.count / trendMax) * 100) : 0}%`, minHeight: t.count > 0 ? 3 : 0 }} />
-                    </div>
-                    <span className="text-[0.55rem] text-[var(--t3)] font-mono">{t.count}</span>
-                    <span className="text-[0.5rem] text-[var(--t2)]">{t.day.slice(5)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm p-4">
-            <p className="text-[0.72rem] font-black text-[var(--p1)] uppercase tracking-wide mb-3">System Health</p>
-            <div className="space-y-2">
-              <div className="flex justify-between text-[0.7rem]">
-                <span className="text-[var(--t3)]">Agents active</span>
-                <span className="font-bold text-[var(--t7)]">{agentStats.filter(s => s.total_runs > 0).length}/{agentStats.length || 9}</span>
-              </div>
-              {fallbackAgents.length > 0 && (
-                <div className="text-[0.65rem] text-amber-600 font-semibold">{fallbackAgents.length} agent(s) with high fallback rate</div>
-              )}
-              <div className="flex gap-2 mt-2">
-                <button onClick={() => setActiveTab('noise-filter')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Noise Filter</button>
-                <button onClick={() => setActiveTab('investigation')} className="flex-1 text-[0.65rem] font-bold bg-[var(--sa)] rounded-lg py-2 text-center hover:bg-[var(--s1)] text-[var(--p1)]">Incidents</button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div />
-      </div>
+
 
       {/* Top Active Threats */}
       {topThreats.length > 0 && (
@@ -6320,7 +5561,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
             <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between">
               <p className="text-[0.78rem] font-black text-[var(--t7)]">Unscanned Alerts ({unscanned.length})</p>
               <button onClick={handleScanAll} disabled={scanning || unscanned.length === 0}
-                className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1.5">
+                className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1.5">
                 <Zap size={12} />{scanning ? 'Scanning...' : 'Scan All'}
               </button>
             </div>
@@ -6368,7 +5609,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
                       <p className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · sev {a.severity}</p>
                     </div>
                     <button onClick={() => handleScanOne(a.id)} disabled={scanningId === a.id}
-                      className="shrink-0 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.62rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 transition-colors">
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.62rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 transition-colors">
                       {scanningId === a.id
                         ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-current/30 border-t-current animate-spin" />Scanning</>
                         : <><Zap size={10} />Scan</>}
@@ -6391,7 +5632,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
                   className="flex-1 px-3 py-1.5 text-[0.72rem] bg-[var(--s0)] border border-[var(--b1)] rounded-lg outline-none focus:border-[var(--p1)] font-mono transition-colors"
                 />
                 <button onClick={handleDirectScan} disabled={directScanning || !directScanId.trim()}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 shrink-0">
+                  className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 shrink-0">
                   {directScanning
                     ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-current/30 border-t-current animate-spin" />Scanning…</>
                     : <><Search size={11} />Scan</>}
@@ -6555,6 +5796,7 @@ const FpArchiveTab = () => {
   const [noisySources, setNoisySources] = useState<any[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const reload = useCallback(() => {
     getFpArchive({ page, pageSize: 25, method: methodFilter || undefined }).then(setData).catch(() => {});
@@ -6571,7 +5813,7 @@ const FpArchiveTab = () => {
   };
 
   const handleClearArchive = async () => {
-    if (!confirm('Delete ALL alerts in the FP Archive?\n\nThis permanently removes both AI-flagged and analyst-confirmed FPs. The Incidents queue is NOT affected.\n\nProceed?')) return;
+    setShowClearConfirm(false);
     setClearing(true);
     try {
       const res = await fetch('/api/admin/clear-fp-archive', {
@@ -6634,7 +5876,7 @@ const FpArchiveTab = () => {
             <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Alerts ({data.total})</p>
             {isAdmin && data.total > 0 && (
               <button
-                onClick={handleClearArchive}
+                onClick={() => setShowClearConfirm(true)}
                 disabled={clearing}
                 className="px-3 py-1 rounded text-[0.62rem] font-bold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 disabled:opacity-50 flex items-center gap-1.5"
                 title="Permanently delete all FP archive entries (Incidents queue is not affected)"
@@ -6731,12 +5973,21 @@ const FpArchiveTab = () => {
           </div>
         </div>
       )}
+      {showClearConfirm && (
+        <ConfirmModal
+          title="Clear FP Archive"
+          message="Delete ALL alerts in the FP Archive? This permanently removes both AI-flagged and analyst-confirmed FPs. The Incidents queue is NOT affected."
+          confirmLabel="Delete All"
+          onConfirm={handleClearArchive}
+          onCancel={() => setShowClearConfirm(false)}
+        />
+      )}
     </div>
   );
 };
 
 
-// ── Investigation Tab (wraps existing AlertsTab with pipeline semantics) ────
+// ── Investigation Tab ───────────────────────────────────────────────────────
 const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertAction, setActiveTab }: {
   alerts: Alert[];
   selectedAlert: Alert | null;
@@ -6749,9 +6000,10 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
   const isAdmin = user?.role === 'ADMIN';
   const [investigating, setInvestigating] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const handleClearQueue = async () => {
-    if (!confirm('Delete all alerts in the Incidents queue?\n\nThis permanently removes alerts with status TRIAGED, ESCALATED, CLOSED, or ANALYZING. The FP Archive is NOT affected.\n\nProceed?')) return;
+    setShowClearConfirm(false);
     setClearing(true);
     try {
       const res = await fetch('/api/admin/clear-investigation', {
@@ -6902,7 +6154,7 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
           <p className="text-[0.78rem] font-black text-[var(--t7)]">Alerts Queue ({investigationAlerts.length})</p>
           {isAdmin && investigationAlerts.length > 0 && (
             <button
-              onClick={handleClearQueue}
+              onClick={() => setShowClearConfirm(true)}
               disabled={clearing}
               className="px-3 py-1 rounded text-[0.65rem] font-bold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 disabled:opacity-50 flex items-center gap-1.5"
               title="Permanently delete all alerts in this queue (FP Archive is not affected)"
@@ -7035,6 +6287,15 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
           </div>
         </div>
       )}
+      {showClearConfirm && (
+        <ConfirmModal
+          title="Clear Incidents Queue"
+          message="Delete all alerts in the Incidents queue? This permanently removes alerts with status TRIAGED, ESCALATED, CLOSED, or ANALYZING. The FP Archive is NOT affected."
+          confirmLabel="Delete All"
+          onConfirm={handleClearQueue}
+          onCancel={() => setShowClearConfirm(false)}
+        />
+      )}
     </div>
   );
 };
@@ -7115,8 +6376,9 @@ const IntegrationsTab = () => {
     finally { setKeyCreating(false); }
   };
 
+  const [revokeKeyId, setRevokeKeyId] = useState<number | null>(null);
   const handleRevokeKey = async (id: number) => {
-    if (!confirm('Revoke this key? Any Wazuh scripts using it will stop working immediately.')) return;
+    setRevokeKeyId(null);
     setKeyRevoke(p => ({ ...p, [id]: true }));
     await revokeApiKey(id);
     fetchApiKeys();
@@ -7490,7 +6752,7 @@ const IntegrationsTab = () => {
                 <button
                   onClick={handleCreateKey}
                   disabled={keyCreating || !newKeyName.trim()}
-                  className="px-4 py-2 rounded bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
+                  className="px-4 py-2 rounded bg-[var(--p1)] text-white text-[0.78rem] font-bold hover:bg-[var(--pd)] transition-colors disabled:opacity-50 flex items-center gap-1.5 whitespace-nowrap"
                 >
                   <Plus size={13} />{keyCreating ? 'Creating…' : 'Create Key'}
                 </button>
@@ -7577,7 +6839,7 @@ const IntegrationsTab = () => {
                         {!k.revoked && (
                           <button
                             disabled={keyRevoke[k.id]}
-                            onClick={() => handleRevokeKey(k.id)}
+                            onClick={() => setRevokeKeyId(k.id)}
                             className="shrink-0 text-[0.65rem] text-red-600 hover:underline font-semibold disabled:opacity-50"
                           >Revoke</button>
                         )}
@@ -7636,6 +6898,15 @@ const IntegrationsTab = () => {
           </div>
 
         </div>
+      )}
+      {revokeKeyId !== null && (
+        <ConfirmModal
+          title="Revoke API Key"
+          message="Revoke this key? Any Wazuh scripts using it will stop working immediately."
+          confirmLabel="Revoke"
+          onConfirm={() => handleRevokeKey(revokeKeyId)}
+          onCancel={() => setRevokeKeyId(null)}
+        />
       )}
     </div>
   );
@@ -7858,8 +7129,9 @@ const KnowledgeBaseTab = ({
     } catch { setPBError('Failed to create playbook.'); }
   };
 
+  const [deletePBId, setDeletePBId] = useState<number | null>(null);
   const handleDeletePlaybook = async (id: number) => {
-    if (!confirm('Delete this playbook?')) return;
+    setDeletePBId(null);
     await deletePlaybook(id);
     fetchPlaybooks();
     showToast('Playbook deleted', 'info');
@@ -8041,7 +7313,7 @@ const KnowledgeBaseTab = ({
             {isAdmin && (
               <button
                 onClick={() => setShowPBForm(!showPBForm)}
-                className="flex items-center gap-1.5 bg-[var(--p1)] text-[var(--t7)] px-3 py-2 rounded-lg text-[0.75rem] font-bold hover:bg-[var(--pd)] whitespace-nowrap"
+                className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-2 rounded-lg text-[0.75rem] font-bold hover:bg-[var(--pd)] whitespace-nowrap"
               >
                 <Plus size={13} />Add Playbook
               </button>
@@ -8084,7 +7356,7 @@ const KnowledgeBaseTab = ({
                 <textarea required value={pbForm.steps} onChange={e => setPBForm({ ...pbForm, steps: e.target.value })} rows={4} placeholder="1. Block source IP at firewall&#10;2. Lock affected account…" className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] resize-none font-mono bg-[var(--s0)]" />
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="bg-[var(--p1)] text-[var(--t7)] px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
+                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
                 <button type="button" onClick={() => setShowPBForm(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
               </div>
             </form>
@@ -8126,7 +7398,7 @@ const KnowledgeBaseTab = ({
                         <button onClick={() => startEditPB(pb)} className="p-1.5 rounded hover:bg-[var(--s2)] text-[var(--t3)] hover:text-[var(--p1)]" title="Edit">
                           <Settings size={13} />
                         </button>
-                        <button onClick={() => handleDeletePlaybook(pb.id)} className="p-1.5 rounded hover:bg-red-50 text-[var(--t3)] hover:text-red-600" title="Delete">
+                        <button onClick={() => setDeletePBId(pb.id)} className="p-1.5 rounded hover:bg-red-50 text-[var(--t3)] hover:text-red-600" title="Delete">
                           <Trash2 size={13} />
                         </button>
                       </div>
@@ -8285,6 +7557,15 @@ const KnowledgeBaseTab = ({
           )}
         </div>
       )}
+      {deletePBId !== null && (
+        <ConfirmModal
+          title="Delete Playbook"
+          message="Are you sure you want to delete this playbook? This action cannot be undone."
+          confirmLabel="Delete"
+          onConfirm={() => handleDeletePlaybook(deletePBId)}
+          onCancel={() => setDeletePBId(null)}
+        />
+      )}
     </div>
   );
 };
@@ -8402,6 +7683,41 @@ function extractAiResults(analysisJson: string | null) {
     };
   } catch { return {} as any; }
 }
+
+function extractObservables(analysisJson: string | null, alerts?: Alert[]): { type: string; value: string; source: string }[] {
+  const obs: { type: string; value: string; source: string }[] = [];
+  const seen = new Set<string>();
+  const add = (type: string, value: string, source: string) => {
+    const key = `${type}:${value}`;
+    if (!value || seen.has(key)) return;
+    seen.add(key);
+    obs.push({ type, value, source });
+  };
+  if (analysisJson) {
+    try {
+      const j = JSON.parse(analysisJson);
+      const a = j?.phaseData?.analysis || {};
+      const iocs = a?.iocs || {};
+      const mapping: Record<string, string> = { ips: 'ip', domains: 'domain', users: 'username', hosts: 'hostname', hashes: 'hash', urls: 'url', files: 'filename' };
+      for (const [k, label] of Object.entries(mapping)) {
+        for (const v of (iocs[k] || []) as string[]) add(label, v, 'AI Analysis');
+      }
+    } catch {}
+  }
+  if (alerts) {
+    for (const a of alerts) {
+      if (a.source_ip) add('ip', a.source_ip, `Alert ${a.id.slice(0, 8)}`);
+      if (a.dest_ip) add('ip', a.dest_ip, `Alert ${a.id.slice(0, 8)}`);
+      if (a.hostname) add('hostname', a.hostname, `Alert ${a.id.slice(0, 8)}`);
+      if (a.user) add('username', a.user, `Alert ${a.id.slice(0, 8)}`);
+    }
+  }
+  return obs;
+}
+
+const OBSERVABLE_ICONS: Record<string, any> = {
+  ip: Globe, domain: Globe, hostname: Laptop, username: User, hash: Hash, url: Link2, filename: FileText,
+};
 
 const PhaseStepper = ({ current }: { current: string }) => {
   const idx = INCIDENT_PHASES.indexOf(current as IncidentPhase);
@@ -8552,6 +7868,8 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
   const [activeId, setActiveId]       = useState<string | null>(null);
   const [detail, setDetail]           = useState<Incident | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailTab, setDetailTab]     = useState<'overview'|'observables'|'tasks'|'timeline'|'report'>('overview');
+  const [myOnly, setMyOnly]           = useState(false);
 
   const [showReassign, setShowReassign] = useState(false);
   const [reassignTo, setReassignTo]     = useState<number>(0);
@@ -8563,6 +7881,8 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
   const [reportEditing, setReportEditing] = useState(false);
   const [reportSaving, setReportSaving]   = useState(false);
   const [noteText, setNoteText]         = useState('');
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+  const [deleteActionTarget, setDeleteActionTarget] = useState<IncidentAction | null>(null);
 
   const fetchList = useCallback(() => {
     getIncidents({
@@ -8586,7 +7906,7 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
   }, []);
 
   useEffect(() => {
-    if (activeId) fetchDetail(activeId);
+    if (activeId) { fetchDetail(activeId); setDetailTab('overview'); }
     else { setDetail(null); setReportEditing(false); }
   }, [activeId, fetchDetail]);
 
@@ -8594,8 +7914,9 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
     let out = list;
     if (sevF) out = out.filter(i => i.severity === sevF);
     if (slaF) out = out.filter(i => computeSla(i.severity, i.escalated_at).state === slaF);
+    if (myOnly && user) out = out.filter(i => i.assigned_to === user.id);
     return out;
-  }, [list, sevF, slaF]);
+  }, [list, sevF, slaF, myOnly, user]);
 
   // ── Detail view ──────────────────────────────────────────────────────────
   if (activeId && detail) {
@@ -8670,7 +7991,7 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
       else toast(r.error || 'Failed', 'error');
     };
     const handleActionDelete = async (a: IncidentAction) => {
-      if (!confirm('Delete this action?')) return;
+      setDeleteActionTarget(null);
       const r = await deleteIncidentAction(detail.id, a.id);
       if (r.ok) { toast('Action deleted', 'info'); fetchDetail(detail.id); }
       else toast(r.error || 'Failed', 'error');
@@ -8693,6 +8014,15 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
       else toast(r.error || 'Failed', 'error');
     };
 
+    const observables = extractObservables(detail.analysis, detail.alerts);
+    const DETAIL_TABS = [
+      { key: 'overview'     as const, label: 'Overview',     icon: <Eye size={13} /> },
+      { key: 'observables'  as const, label: `Observables (${observables.length})`, icon: <Crosshair size={13} /> },
+      { key: 'tasks'        as const, label: `Tasks (${actions.length})`, icon: <ListChecks size={13} /> },
+      { key: 'timeline'     as const, label: `Timeline (${detail.timeline?.length || 0})`, icon: <MessageSquare size={13} /> },
+      { key: 'report'       as const, label: 'Report',      icon: <FileText size={13} /> },
+    ];
+
     return (
       <div className="overflow-y-auto h-full bg-[var(--s3)]">
         <div className="max-w-7xl mx-auto p-5 space-y-4">
@@ -8708,291 +8038,462 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
               <span className={`px-3 py-1 rounded-lg text-[0.65rem] font-black uppercase tracking-widest border ${STATUS_COLORS[detail.status] || 'bg-gray-100 text-gray-700'}`}>
                 {STATUS_LABELS[detail.status] || detail.status}
               </span>
+              <div className="flex items-center gap-1.5 ml-2">
+                <span className={`w-2 h-2 rounded-full ${sla.color}`} />
+                <span className="text-[0.65rem] font-bold text-[var(--t5)]">{sla.label}</span>
+              </div>
             </div>
           </div>
 
-          {/* Title */}
-          <h2 className="text-[1.25rem] font-black text-[var(--t7)]">{detail.title}</h2>
+          {/* Title + assignee */}
+          <div className="flex items-start justify-between gap-4">
+            <h2 className="text-[1.25rem] font-black text-[var(--t7)]">{detail.title}</h2>
+            {detail.assigned_to_username && (
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[var(--p1)] to-[var(--pd)] flex items-center justify-center text-white text-[0.55rem] font-black">
+                  {detail.assigned_to_username.substring(0, 2).toUpperCase()}
+                </div>
+                <span className="text-[0.72rem] font-bold text-[var(--t5)]">{detail.assigned_to_username}</span>
+              </div>
+            )}
+          </div>
 
           {/* Phase stepper */}
           <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
-            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-3">Incident Response Lifecycle (NIST 800-61)</p>
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-3">Incident Response Lifecycle</p>
             <PhaseStepper current={detail.phase} />
           </div>
 
           {/* Two-column body */}
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
 
-            {/* Left column — main case content */}
+            {/* Left column — tabbed content */}
             <div className="space-y-4">
+              {/* Tab bar */}
+              <div className="flex gap-1 bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-1 overflow-x-auto">
+                {DETAIL_TABS.map(t => (
+                  <button key={t.key} onClick={() => setDetailTab(t.key)}
+                    className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[0.72rem] font-bold whitespace-nowrap transition-all ${
+                      detailTab === t.key
+                        ? 'bg-[var(--p1)] text-white shadow-sm'
+                        : 'text-[var(--t4)] hover:text-[var(--t7)] hover:bg-[var(--s1)]'
+                    }`}>
+                    {t.icon} {t.label}
+                  </button>
+                ))}
+              </div>
 
-              {/* AI Summary */}
-              {(ai.summary || ai.ticket_summary) && (
-                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
-                    <Activity size={13} className="text-violet-600" />
-                    <p className="text-[0.72rem] font-black text-[var(--t7)]">AI Summary</p>
+              {/* ===== OVERVIEW TAB ===== */}
+              {detailTab === 'overview' && (
+                <div className="space-y-4">
+                  {/* Quick metrics row */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
+                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{ai.risk_score ?? '—'}</p>
+                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">Risk Score</p>
+                    </div>
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
+                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{ai.confidence != null ? `${Math.round(ai.confidence * 100)}%` : '—'}</p>
+                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">AI Confidence</p>
+                    </div>
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
+                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{detail.alerts?.length ?? 0}</p>
+                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">Linked Alerts</p>
+                    </div>
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
+                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{observables.length}</p>
+                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">Observables</p>
+                    </div>
                   </div>
-                  <div className="p-4 text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">
-                    {ai.summary}
-                    {ai.recommended_action && (
-                      <div className="mt-3 bg-blue-50 border border-blue-200 rounded p-2">
-                        <p className="text-[0.55rem] font-black text-blue-800 uppercase tracking-widest mb-0.5">Recommended Next Step</p>
-                        <p className="font-mono font-bold text-blue-900 text-[0.72rem]">{ai.recommended_action}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
 
-              {/* Threat Intelligence */}
-              {(ai.intel_summary || (ai.mitre && ai.mitre.length > 0) || ai.threat_actor) && (
-                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
-                    <Shield size={13} className="text-red-600" />
-                    <p className="text-[0.72rem] font-black text-[var(--t7)]">Threat Intelligence</p>
-                  </div>
-                  <div className="p-4 space-y-3 text-[0.72rem]">
-                    {ai.intel_summary && (
-                      <p className="text-[var(--t6)] leading-relaxed">{ai.intel_summary}</p>
-                    )}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                      <div>
-                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Attack Category</p>
-                        <p className="font-mono text-[var(--t6)]">{ai.attack_category || '—'}</p>
+                  {/* AI Summary */}
+                  {(ai.summary || ai.ticket_summary) && (
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                      <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                        <Activity size={13} className="text-violet-600" />
+                        <p className="text-[0.72rem] font-black text-[var(--t7)]">AI Analysis Summary</p>
                       </div>
-                      <div>
-                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Kill Chain</p>
-                        <p className="font-mono text-[var(--t6)]">{ai.kill_chain_stage || '—'}</p>
-                      </div>
-                      <div>
-                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Threat Actor</p>
-                        <p className="font-mono text-[var(--t6)]">{ai.threat_actor || '—'}</p>
-                      </div>
-                      <div>
-                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Campaign</p>
-                        <p className="font-mono text-[var(--t6)]">{ai.correlation || '—'}</p>
+                      <div className="p-4 text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">
+                        {ai.summary}
+                        {ai.recommended_action && (
+                          <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                            <p className="text-[0.55rem] font-black text-blue-800 uppercase tracking-widest mb-0.5">Recommended Next Step</p>
+                            <p className="font-mono font-bold text-blue-900 text-[0.72rem]">{ai.recommended_action}</p>
+                          </div>
+                        )}
                       </div>
                     </div>
-                    {ai.mitre && ai.mitre.length > 0 && (
-                      <div>
-                        <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">MITRE ATT&CK</p>
-                        <div className="flex gap-1 flex-wrap">
-                          {ai.mitre.slice(0, 16).map((t: any, i: number) => (
-                            <span key={i} className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[0.58rem] font-mono">{t}</span>
+                  )}
+
+                  {/* Threat Intelligence */}
+                  {(ai.intel_summary || (ai.mitre && ai.mitre.length > 0) || ai.threat_actor || ai.attack_category) && (
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                      <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                        <Shield size={13} className="text-red-600" />
+                        <p className="text-[0.72rem] font-black text-[var(--t7)]">Threat Intelligence</p>
+                      </div>
+                      <div className="p-4 space-y-3 text-[0.72rem]">
+                        {ai.intel_summary && (
+                          <p className="text-[var(--t6)] leading-relaxed">{ai.intel_summary}</p>
+                        )}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          {[
+                            { label: 'Attack Category', value: ai.attack_category },
+                            { label: 'Kill Chain Stage', value: ai.kill_chain_stage },
+                            { label: 'Threat Actor', value: ai.threat_actor },
+                            { label: 'Campaign', value: ai.correlation },
+                          ].map((item, idx) => (
+                            <div key={idx} className="bg-[var(--s1)] rounded-lg p-2.5 border border-[var(--b2)]">
+                              <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">{item.label}</p>
+                              <p className="font-mono text-[0.68rem] text-[var(--t6)] truncate">{item.value || '—'}</p>
+                            </div>
                           ))}
                         </div>
+                        {ai.mitre && ai.mitre.length > 0 && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">MITRE ATT&CK Techniques</p>
+                            <div className="flex gap-1.5 flex-wrap">
+                              {ai.mitre.slice(0, 16).map((t: any, i: number) => (
+                                <span key={i} className="px-2 py-1 rounded-lg bg-violet-50 text-violet-700 text-[0.6rem] font-mono border border-violet-200">{t}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Linked Alerts */}
+                  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                    <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                      <AlertTriangle size={13} className="text-orange-500" />
+                      <p className="text-[0.72rem] font-black text-[var(--t7)]">Linked Alerts ({detail.alerts?.length || 0})</p>
+                    </div>
+                    {(detail.alerts || []).length === 0 ? (
+                      <div className="p-6 text-center text-[var(--t3)] text-[0.72rem]">No alerts linked to this incident.</div>
+                    ) : (
+                      <div className="divide-y divide-[var(--b1)]">
+                        {(detail.alerts || []).map(a => (
+                          <div key={a.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[var(--s1)] transition-colors">
+                            <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase shrink-0 ${a.severity >= 12 ? 'bg-red-100 text-red-700 border border-red-200' : a.severity >= 7 ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>sev {a.severity}</span>
+                            <code className="font-mono text-[0.6rem] text-[var(--p1)] bg-[var(--s1)] px-1.5 py-0.5 rounded shrink-0">#{a.id.slice(0, 8).toUpperCase()}</code>
+                            <span className="text-[0.72rem] text-[var(--t6)] flex-1 truncate">{a.description}</span>
+                            <span className="text-[0.6rem] text-[var(--t3)] font-mono shrink-0">{a.source_ip || '—'}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
-                    {ai.iocs && (() => {
-                      const flat: { type: string; value: string }[] = [];
-                      for (const k of ['ips','domains','users','hosts','hashes','urls','files'] as const) {
-                        for (const v of (ai.iocs?.[k] || []) as string[]) flat.push({ type: k, value: v });
-                      }
-                      if (flat.length === 0) return null;
-                      return (
-                        <div>
-                          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Key Indicators ({flat.length})</p>
-                          <div className="flex gap-1 flex-wrap">
-                            {flat.slice(0, 14).map((i, idx) => (
-                              <span key={idx} className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[var(--t6)] text-[0.58rem] font-mono border border-[var(--b2)]">
-                                <span className="text-[var(--t3)]">{i.type}:</span> {i.value}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })()}
                   </div>
                 </div>
               )}
 
-              {/* Response Actions */}
-              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Zap size={13} className="text-amber-600" />
-                    <p className="text-[0.72rem] font-black text-[var(--t7)]">
-                      Response Actions
-                      <span className="ml-2 text-[0.62rem] font-mono text-[var(--t3)]">
-                        ({actions.filter(a => a.status === 'executed').length}/{actions.length} executed)
-                      </span>
-                    </p>
+              {/* ===== OBSERVABLES TAB ===== */}
+              {detailTab === 'observables' && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                    <Crosshair size={13} className="text-orange-600" />
+                    <p className="text-[0.72rem] font-black text-[var(--t7)]">Observables & Indicators of Compromise</p>
                   </div>
-                  {!isClosed && canEdit && (
-                    <button onClick={() => setShowAddAction(s => !s)} className="text-[0.62rem] font-bold text-[var(--p1)] hover:underline">
-                      {showAddAction ? 'Cancel' : '+ Add action'}
-                    </button>
-                  )}
-                </div>
-
-                {showAddAction && (
-                  <div className="px-4 py-3 bg-[var(--sa)] border-b border-[var(--b1)] space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <select value={newAction.action_type} onChange={e => setNewAction({ ...newAction, action_type: e.target.value })}
-                        className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)]">
-                        {Object.entries(ACTION_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
-                      <select value={newAction.priority} onChange={e => setNewAction({ ...newAction, priority: e.target.value })}
-                        className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)]">
-                        {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
-                      </select>
+                  {observables.length === 0 ? (
+                    <div className="p-10 text-center">
+                      <Crosshair size={28} className="mx-auto text-[var(--t3)] mb-2" />
+                      <p className="text-[0.82rem] font-semibold text-[var(--t5)]">No observables extracted</p>
+                      <p className="text-[0.7rem] text-[var(--t3)] mt-1">IOCs will appear here once the AI analysis identifies indicators.</p>
                     </div>
-                    <input value={newAction.target} onChange={e => setNewAction({ ...newAction, target: e.target.value })} placeholder="Target (IP / host / user) — optional"
-                      className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] font-mono" />
-                    <textarea value={newAction.description} onChange={e => setNewAction({ ...newAction, description: e.target.value })} rows={2} placeholder="Action description…"
-                      className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] resize-none" />
-                    <div className="flex justify-end">
-                      <button onClick={handleAddAction} disabled={!newAction.description.trim()}
-                        className="px-3 py-1 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50">Add</button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="divide-y divide-[var(--b1)]">
-                  {actions.length === 0 ? (
-                    <div className="p-6 text-center text-[var(--t3)] text-[0.7rem]">
-                      No response actions yet.
-                      {!isClosed && canEdit && <> Click <span className="font-bold text-[var(--p1)]">+ Add action</span> to start.</>}
-                    </div>
-                  ) : actions.map((a, i) => (
-                    <ActionRow
-                      key={a.id}
-                      action={a}
-                      index={i}
-                      total={actions.length}
-                      isClosed={isClosed || !canEdit}
-                      onMoveUp={()   => handleReorder(i, i - 1)}
-                      onMoveDown={() => handleReorder(i, i + 1)}
-                      onDelete={()   => handleActionDelete(a)}
-                      onSave={(p)    => handleActionEdit(a, p)}
-                      onStatus={(s)  => handleActionStatus(a, s)}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Linked alerts */}
-              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)]">
-                  <p className="text-[0.72rem] font-black text-[var(--t7)]">Linked Alerts ({detail.alerts?.length || 0})</p>
-                </div>
-                <div className="divide-y divide-[var(--b1)]">
-                  {(detail.alerts || []).map(a => (
-                    <div key={a.id} className="px-4 py-2.5 flex items-center gap-3 hover:bg-[var(--s1)]">
-                      <code className="font-mono text-[0.6rem] text-[var(--t3)]">ALERT-{a.id.slice(0, 8).toUpperCase()}</code>
-                      <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase ${a.severity >= 12 ? 'bg-red-100 text-red-700' : a.severity >= 7 ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>sev {a.severity}</span>
-                      <span className="text-[0.7rem] text-[var(--t6)] flex-1 truncate">{a.description}</span>
-                      <span className="text-[0.6rem] text-[var(--t3)] font-mono">{a.source_ip || '—'}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Editable Incident Report */}
-              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <FileText size={13} className="text-[var(--p1)]" />
-                    <p className="text-[0.72rem] font-black text-[var(--t7)]">Incident Report</p>
-                  </div>
-                  {!isClosed && canEdit && !reportEditing && (
-                    <button onClick={() => setReportEditing(true)} className="text-[0.62rem] font-bold text-[var(--p1)] hover:underline">Edit</button>
-                  )}
-                </div>
-                <div className="p-4">
-                  {reportEditing ? (
-                    <>
-                      <textarea value={reportDraft} onChange={e => setReportDraft(e.target.value)} rows={10}
-                        placeholder="Write or refine the incident report…"
-                        className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed" />
-                      <div className="flex gap-2 mt-2">
-                        <button onClick={handleSaveReport} disabled={reportSaving}
-                          className="px-3 py-1.5 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50">{reportSaving ? 'Saving…' : 'Save'}</button>
-                        <button onClick={() => { setReportEditing(false); setReportDraft(detail.report_body || ''); }}
-                          className="px-3 py-1.5 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.7rem] font-semibold">Cancel</button>
-                      </div>
-                    </>
-                  ) : detail.report_body ? (
-                    <p className="text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">{detail.report_body}</p>
                   ) : (
-                    <p className="text-[0.72rem] text-[var(--t3)] italic">No report body yet. {canEdit && !isClosed && <button onClick={() => setReportEditing(true)} className="text-[var(--p1)] font-bold hover:underline">Write one</button>}</p>
+                    <div>
+                      {/* Summary chips */}
+                      <div className="px-4 py-3 border-b border-[var(--b1)] flex gap-2 flex-wrap">
+                        {(['ip', 'domain', 'hostname', 'username', 'hash', 'url', 'filename'] as const).map(type => {
+                          const count = observables.filter(o => o.type === type).length;
+                          if (count === 0) return null;
+                          const Ico = OBSERVABLE_ICONS[type] || Globe;
+                          return (
+                            <span key={type} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--s1)] border border-[var(--b2)] text-[0.62rem] font-bold text-[var(--t5)]">
+                              <Ico size={11} /> {type} <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-[var(--p1)] text-white text-[0.5rem] font-black">{count}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                      {/* Table */}
+                      <table className="w-full text-[0.72rem]">
+                        <thead>
+                          <tr className="border-b border-[var(--b1)] text-[var(--t3)]">
+                            <th className="text-left px-4 py-2 text-[0.55rem] font-black uppercase tracking-widest">Type</th>
+                            <th className="text-left px-4 py-2 text-[0.55rem] font-black uppercase tracking-widest">Value</th>
+                            <th className="text-left px-4 py-2 text-[0.55rem] font-black uppercase tracking-widest">Source</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[var(--b1)]">
+                          {observables.map((o, idx) => {
+                            const Ico = OBSERVABLE_ICONS[o.type] || Globe;
+                            return (
+                              <tr key={idx} className="hover:bg-[var(--s1)] transition-colors">
+                                <td className="px-4 py-2.5">
+                                  <span className="flex items-center gap-1.5 text-[var(--t5)]">
+                                    <Ico size={12} className="text-[var(--t3)]" />
+                                    <span className="font-bold uppercase text-[0.6rem]">{o.type}</span>
+                                  </span>
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <code className="font-mono text-[0.7rem] text-[var(--t7)] bg-[var(--s1)] px-2 py-0.5 rounded select-all">{o.value}</code>
+                                </td>
+                                <td className="px-4 py-2.5 text-[var(--t4)] text-[0.65rem]">{o.source}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
-              </div>
+              )}
 
-              {/* Activity / Comments */}
-              <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)]">
-                  <p className="text-[0.72rem] font-black text-[var(--t7)]">Activity ({detail.timeline?.length || 0})</p>
-                </div>
-                {!isClosed && (
-                  <div className="px-4 py-3 bg-[var(--sa)] border-b border-[var(--b1)] flex gap-2">
-                    <textarea value={noteText} onChange={e => setNoteText(e.target.value)} rows={2} placeholder="Add a comment…"
-                      className="flex-1 border border-[var(--b2)] rounded px-3 py-2 text-[0.72rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-none" />
-                    <button onClick={handleAddNote} disabled={!noteText.trim()}
-                      className="px-3 py-1.5 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50 self-start">Comment</button>
+              {/* ===== TASKS TAB ===== */}
+              {detailTab === 'tasks' && (
+                <div className="space-y-4">
+                  {/* Task summary cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[
+                      { label: 'Total', value: actions.length, color: 'text-[var(--p1)]' },
+                      { label: 'Pending', value: actions.filter(a => a.status === 'pending').length, color: 'text-blue-600' },
+                      { label: 'Executed', value: actions.filter(a => a.status === 'executed').length, color: 'text-green-600' },
+                      { label: 'Failed', value: actions.filter(a => a.status === 'failed').length, color: 'text-red-600' },
+                    ].map((s, i) => (
+                      <div key={i} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
+                        <p className={`text-[1.1rem] font-black ${s.color}`}>{s.value}</p>
+                        <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">{s.label}</p>
+                      </div>
+                    ))}
                   </div>
-                )}
-                <div className="divide-y divide-[var(--b1)] max-h-96 overflow-y-auto">
-                  {(detail.timeline || []).slice().reverse().map(t => (
-                    <div key={t.id} className="px-4 py-2.5 flex items-start gap-3">
-                      <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+
+                  {/* Progress bar */}
+                  {actions.length > 0 && (
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[0.62rem] font-bold text-[var(--t5)]">Completion Progress</p>
+                        <p className="text-[0.62rem] font-mono text-[var(--t3)]">{actions.filter(a => a.status === 'executed').length}/{actions.length}</p>
+                      </div>
+                      <div className="h-2 bg-[var(--s2)] rounded-full overflow-hidden flex">
+                        <div className="bg-green-500 transition-all" style={{ width: `${(actions.filter(a => a.status === 'executed').length / actions.length) * 100}%` }} />
+                        <div className="bg-red-400 transition-all" style={{ width: `${(actions.filter(a => a.status === 'failed').length / actions.length) * 100}%` }} />
+                        <div className="bg-gray-300 transition-all" style={{ width: `${(actions.filter(a => a.status === 'skipped').length / actions.length) * 100}%` }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Response Actions */}
+                  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                    <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Zap size={13} className="text-amber-600" />
+                        <p className="text-[0.72rem] font-black text-[var(--t7)]">Response Actions</p>
+                      </div>
+                      {!isClosed && canEdit && (
+                        <button onClick={() => setShowAddAction(s => !s)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-white bg-[var(--p1)] hover:bg-[var(--pd)] transition-colors">
+                          {showAddAction ? <><X size={11} /> Cancel</> : <><Plus size={11} /> Add Action</>}
+                        </button>
+                      )}
+                    </div>
+
+                    {showAddAction && (
+                      <div className="px-4 py-3 bg-[var(--sa)] border-b border-[var(--b1)] space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <select value={newAction.action_type} onChange={e => setNewAction({ ...newAction, action_type: e.target.value })}
+                            className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)]">
+                            {Object.entries(ACTION_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                          </select>
+                          <select value={newAction.priority} onChange={e => setNewAction({ ...newAction, priority: e.target.value })}
+                            className="border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)]">
+                            {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => <option key={p} value={p}>{p}</option>)}
+                          </select>
+                        </div>
+                        <input value={newAction.target} onChange={e => setNewAction({ ...newAction, target: e.target.value })} placeholder="Target (IP / host / user) — optional"
+                          className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] font-mono" />
+                        <textarea value={newAction.description} onChange={e => setNewAction({ ...newAction, description: e.target.value })} rows={2} placeholder="Action description..."
+                          className="w-full border border-[var(--b2)] rounded px-2 py-1 text-[0.7rem] bg-[var(--s0)] resize-none" />
+                        <div className="flex justify-end">
+                          <button onClick={handleAddAction} disabled={!newAction.description.trim()}
+                            className="px-3 py-1 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50">Add</button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="divide-y divide-[var(--b1)]">
+                      {actions.length === 0 ? (
+                        <div className="p-8 text-center">
+                          <ListChecks size={28} className="mx-auto text-[var(--t3)] mb-2" />
+                          <p className="text-[0.82rem] font-semibold text-[var(--t5)]">No response actions yet</p>
+                          {!isClosed && canEdit && <p className="text-[0.7rem] text-[var(--t3)] mt-1">Click <span className="font-bold text-[var(--p1)]">+ Add Action</span> to create one.</p>}
+                        </div>
+                      ) : actions.map((a, i) => (
+                        <ActionRow
+                          key={a.id}
+                          action={a}
+                          index={i}
+                          total={actions.length}
+                          isClosed={isClosed || !canEdit}
+                          onMoveUp={()   => handleReorder(i, i - 1)}
+                          onMoveDown={() => handleReorder(i, i + 1)}
+                          onDelete={()   => setDeleteActionTarget(a)}
+                          onSave={(p)    => handleActionEdit(a, p)}
+                          onStatus={(s)  => handleActionStatus(a, s)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ===== TIMELINE TAB ===== */}
+              {detailTab === 'timeline' && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+                    <MessageSquare size={13} className="text-green-600" />
+                    <p className="text-[0.72rem] font-black text-[var(--t7)]">Activity & Comments</p>
+                  </div>
+                  {!isClosed && (
+                    <div className="px-4 py-3 bg-[var(--sa)] border-b border-[var(--b1)] flex gap-2">
+                      <textarea value={noteText} onChange={e => setNoteText(e.target.value)} rows={2} placeholder="Add a comment..."
+                        className="flex-1 border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.72rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-none" />
+                      <button onClick={handleAddNote} disabled={!noteText.trim()}
+                        className="px-4 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50 self-start flex items-center gap-1">
+                        <Send size={11} /> Comment
+                      </button>
+                    </div>
+                  )}
+                  <div className="divide-y divide-[var(--b1)]">
+                    {(detail.timeline || []).length === 0 ? (
+                      <div className="p-8 text-center text-[var(--t3)] text-[0.72rem]">No activity recorded yet.</div>
+                    ) : (detail.timeline || []).slice().reverse().map(t => {
+                      const eventColor =
                         t.event_type === 'created'         ? 'bg-blue-500' :
                         t.event_type === 'phase_change'    ? 'bg-orange-500' :
                         t.event_type === 'assigned'        ? 'bg-purple-500' :
                         t.event_type === 'closed'          ? 'bg-gray-500' :
                         t.event_type === 'reclassified_fp' ? 'bg-pink-500' :
                         t.event_type === 'status_change'   ? 'bg-indigo-500' :
-                        'bg-green-500'
-                      }`} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[0.7rem] text-[var(--t6)]">
-                          <span className="font-bold">{t.username || 'system'}</span>
-                          {t.event_type === 'phase_change'    && <> moved phase <span className="font-mono text-[var(--t4)]">{t.phase_from} → {t.phase_to}</span></>}
-                          {t.event_type === 'status_change'   && <> changed status <span className="font-mono text-[var(--t4)]">{t.status_from} → {t.status_to}</span></>}
-                          {t.event_type === 'assigned'        && <> reassigned the incident</>}
-                          {t.event_type === 'closed'          && <> closed the incident</>}
-                          {t.event_type === 'reclassified_fp' && <> reclassified as false positive</>}
-                          {t.event_type === 'created'         && <> created the incident</>}
-                          {t.event_type === 'note'            && <> added a comment</>}
-                        </p>
-                        {t.note && <p className="text-[0.65rem] text-[var(--t4)] italic mt-0.5">"{t.note}"</p>}
-                      </div>
-                      <span className="text-[0.6rem] text-[var(--t3)] shrink-0">{timeAgo(new Date(t.created_at).getTime())}</span>
-                    </div>
-                  ))}
+                        'bg-green-500';
+                      const eventIcon =
+                        t.event_type === 'created'         ? <Plus size={10} /> :
+                        t.event_type === 'phase_change'    ? <ChevronRight size={10} /> :
+                        t.event_type === 'assigned'        ? <UserPlus size={10} /> :
+                        t.event_type === 'closed'          ? <XCircle size={10} /> :
+                        t.event_type === 'reclassified_fp' ? <ThumbsDown size={10} /> :
+                        t.event_type === 'status_change'   ? <Activity size={10} /> :
+                        <MessageSquare size={10} />;
+                      return (
+                        <div key={t.id} className="px-4 py-3 flex items-start gap-3 hover:bg-[var(--s1)] transition-colors">
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-white ${eventColor}`}>
+                            {eventIcon}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[0.72rem] text-[var(--t6)]">
+                              <span className="font-bold">{t.username || 'system'}</span>
+                              {t.event_type === 'phase_change'    && <> moved phase <span className="font-mono bg-[var(--s1)] px-1.5 py-0.5 rounded text-[0.6rem]">{t.phase_from} → {t.phase_to}</span></>}
+                              {t.event_type === 'status_change'   && <> changed status <span className="font-mono bg-[var(--s1)] px-1.5 py-0.5 rounded text-[0.6rem]">{t.status_from} → {t.status_to}</span></>}
+                              {t.event_type === 'assigned'        && <> reassigned the incident</>}
+                              {t.event_type === 'closed'          && <> closed the incident</>}
+                              {t.event_type === 'reclassified_fp' && <> reclassified as false positive</>}
+                              {t.event_type === 'created'         && <> created the incident</>}
+                              {t.event_type === 'note'            && <> added a comment</>}
+                            </p>
+                            {t.note && (
+                              <div className="mt-1.5 bg-[var(--s1)] border border-[var(--b2)] rounded-lg px-3 py-2">
+                                <p className="text-[0.68rem] text-[var(--t5)] leading-relaxed">{t.note}</p>
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-[0.6rem] text-[var(--t3)] shrink-0 mt-0.5">{timeAgo(new Date(t.created_at).getTime())}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* ===== REPORT TAB ===== */}
+              {detailTab === 'report' && (
+                <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FileText size={13} className="text-[var(--p1)]" />
+                      <p className="text-[0.72rem] font-black text-[var(--t7)]">Incident Report</p>
+                    </div>
+                    {!isClosed && canEdit && !reportEditing && (
+                      <button onClick={() => setReportEditing(true)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--p1)] border border-[var(--p1)] hover:bg-blue-50 transition-colors">
+                        <FileText size={11} /> Edit Report
+                      </button>
+                    )}
+                  </div>
+                  <div className="p-4">
+                    {reportEditing ? (
+                      <>
+                        <textarea value={reportDraft} onChange={e => setReportDraft(e.target.value)} rows={14}
+                          placeholder="Write or refine the incident report..."
+                          className="w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed" />
+                        <div className="flex gap-2 mt-3">
+                          <button onClick={handleSaveReport} disabled={reportSaving}
+                            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold disabled:opacity-50 flex items-center gap-1">
+                            {reportSaving ? 'Saving...' : <><CheckCircle size={12} /> Save Report</>}
+                          </button>
+                          <button onClick={() => { setReportEditing(false); setReportDraft(detail.report_body || ''); }}
+                            className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.72rem] font-semibold">Cancel</button>
+                        </div>
+                      </>
+                    ) : detail.report_body ? (
+                      <div className="prose prose-sm max-w-none">
+                        <p className="text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">{detail.report_body}</p>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8">
+                        <FileText size={28} className="mx-auto text-[var(--t3)] mb-2" />
+                        <p className="text-[0.82rem] font-semibold text-[var(--t5)]">No report written yet</p>
+                        {canEdit && !isClosed && (
+                          <button onClick={() => setReportEditing(true)} className="mt-2 px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)]">
+                            Write Report
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Right sidebar — metadata + quick actions */}
             <div className="space-y-4">
               {/* Status / details card */}
               <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-3">
-                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Details</p>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Case Details</p>
 
                 <div>
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Status</p>
-                  <select value={detail.status} disabled={!canEdit || isClosed}
-                    onChange={e => handleStatusChange(e.target.value)}
-                    className={`w-full border rounded px-2 py-1.5 text-[0.72rem] font-bold ${STATUS_COLORS[detail.status]?.replace('border-', 'border ') || 'border-[var(--b2)]'} disabled:opacity-70`}>
-                    {(['OPEN','IN_PROGRESS','CONTAINED','RESOLVED','CLOSED','RECLASSIFIED_FP'] as const).map(s =>
-                      <option key={s} value={s}>{STATUS_LABELS[s]}</option>
-                    )}
-                  </select>
+                  {isClosed ? (
+                    <span className={`inline-block px-2.5 py-1 rounded-lg text-[0.65rem] font-black uppercase tracking-widest border ${STATUS_COLORS[detail.status] || 'bg-gray-100 text-gray-700'}`}>
+                      {STATUS_LABELS[detail.status] || detail.status}
+                    </span>
+                  ) : (
+                    <select value={detail.status} disabled={!canEdit}
+                      onChange={e => handleStatusChange(e.target.value)}
+                      className={`w-full border rounded-lg px-2 py-1.5 text-[0.72rem] font-bold ${STATUS_COLORS[detail.status]?.replace('border-', 'border ') || 'border-[var(--b2)]'} disabled:opacity-70`}>
+                      {(['OPEN','IN_PROGRESS','CONTAINED','RESOLVED','CLOSED','RECLASSIFIED_FP'] as const).map(s =>
+                        <option key={s} value={s}>{STATUS_LABELS[s]}</option>
+                      )}
+                    </select>
+                  )}
                 </div>
 
                 <div>
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Phase</p>
-                  <span className={`inline-block px-2 py-0.5 rounded text-[0.6rem] font-black uppercase ${PHASE_COLORS[detail.phase] || 'bg-gray-100 text-gray-700'}`}>
+                  <span className={`inline-block px-2 py-0.5 rounded-lg text-[0.6rem] font-black uppercase ${PHASE_COLORS[detail.phase] || 'bg-gray-100 text-gray-700'}`}>
                     {PHASE_LABELS[detail.phase as IncidentPhase] || detail.phase}
                   </span>
                 </div>
 
                 <div>
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Severity</p>
-                  <span className={`inline-block px-2 py-0.5 rounded text-[0.6rem] font-black uppercase border ${SEV_COLORS[detail.severity] || 'bg-gray-100 text-gray-700'}`}>
+                  <span className={`inline-block px-2 py-0.5 rounded-lg text-[0.6rem] font-black uppercase border ${SEV_COLORS[detail.severity] || 'bg-gray-100 text-gray-700'}`}>
                     {detail.severity}
                   </span>
                 </div>
@@ -9000,14 +8501,19 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
                 <div>
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Assignee</p>
                   {detail.assigned_to_username ? (
-                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.assigned_to_username}</p>
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-gradient-to-br from-[var(--p1)] to-[var(--pd)] flex items-center justify-center text-white text-[0.45rem] font-black">
+                        {detail.assigned_to_username.substring(0, 2).toUpperCase()}
+                      </div>
+                      <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.assigned_to_username}</p>
+                    </div>
                   ) : (
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-[0.72rem] font-bold text-amber-700">Unassigned</p>
                       {!isClosed && ['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
                         <button onClick={handleTake}
-                          className="px-2 py-0.5 rounded bg-blue-600 text-white text-[0.6rem] font-bold hover:bg-blue-700 flex items-center gap-1">
-                          <UserPlus size={10} />Take it
+                          className="px-2 py-0.5 rounded-lg bg-blue-600 text-white text-[0.6rem] font-bold hover:bg-blue-700 flex items-center gap-1">
+                          <UserPlus size={10} />Claim
                         </button>
                       )}
                     </div>
@@ -9016,36 +8522,40 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
 
                 <div>
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Reporter</p>
-                  <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.escalated_by_username || 'unknown'}</p>
+                  <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.escalated_by_username || 'system'}</p>
                 </div>
 
                 <div>
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">SLA</p>
                   <div className="flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full ${sla.color}`} />
+                    <span className={`w-2.5 h-2.5 rounded-full ${sla.color}`} />
                     <span className="text-[0.72rem] font-bold text-[var(--t6)]">{sla.label}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Risk</p>
-                    <p className="text-[0.85rem] font-black text-[var(--t7)]">{ai.risk_score ?? '—'}<span className="text-[0.55rem] text-[var(--t3)]"> /100</span></p>
-                  </div>
-                  <div>
-                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">AI Conf.</p>
-                    <p className="text-[0.85rem] font-black text-[var(--t7)]">{ai.confidence != null ? `${Math.round(ai.confidence * 100)}%` : '—'}</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[var(--b1)]">
                   <div>
-                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Alerts</p>
-                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.alerts?.length ?? 0}</p>
+                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Risk</p>
+                    <p className="text-[0.85rem] font-black text-[var(--t7)]">{ai.risk_score ?? '—'}<span className="text-[0.55rem] text-[var(--t3)]">/100</span></p>
                   </div>
                   <div>
-                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Actions</p>
+                    <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">Confidence</p>
+                    <p className="text-[0.85rem] font-black text-[var(--t7)]">{ai.confidence != null ? `${Math.round(ai.confidence * 100)}%` : '—'}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--b1)]">
+                  <div className="text-center">
+                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{detail.alerts?.length ?? 0}</p>
+                    <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase">Alerts</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-[0.72rem] font-bold text-[var(--t6)]">{observables.length}</p>
+                    <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase">IOCs</p>
+                  </div>
+                  <div className="text-center">
                     <p className="text-[0.72rem] font-bold text-[var(--t6)]">{actions.length}</p>
+                    <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase">Actions</p>
                   </div>
                 </div>
 
@@ -9054,10 +8564,12 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
                     <span className="text-[var(--t3)]">Escalated</span>
                     <span className="font-bold text-[var(--t6)]">{timeAgo(new Date(detail.escalated_at).getTime())}</span>
                   </div>
-                  <div className="flex justify-between text-[0.65rem]">
-                    <span className="text-[var(--t3)]">GLPI</span>
-                    <span className="font-mono text-[var(--t6)]">{detail.glpi_ticket_id ? `#${detail.glpi_ticket_id}` : '—'}</span>
-                  </div>
+                  {detail.glpi_ticket_id && (
+                    <div className="flex justify-between text-[0.65rem]">
+                      <span className="text-[var(--t3)]">GLPI Ticket</span>
+                      <span className="font-mono text-[var(--p1)]">#{detail.glpi_ticket_id}</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -9067,36 +8579,31 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Quick Actions</p>
                   {!detail.assigned_to && ['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
                     <button onClick={handleTake}
-                      className="w-full px-3 py-2 rounded bg-blue-600 text-white text-[0.7rem] font-bold hover:bg-blue-700 flex items-center gap-2">
-                      <UserPlus size={12} />Take it (claim and start investigating)
+                      className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-[0.7rem] font-bold hover:bg-blue-700 flex items-center gap-2 transition-colors">
+                      <UserPlus size={12} />Claim Incident
                     </button>
                   )}
                   {nextPhase && canEdit && detail.assigned_to && (
                     <button onClick={handleNextPhase}
-                      className="w-full px-3 py-2 rounded bg-[var(--p1)] text-white text-[0.7rem] font-bold hover:bg-[var(--pd)] flex items-center gap-2">
-                      <ChevronRight size={12} />Move to {PHASE_LABELS[nextPhase as IncidentPhase]}
+                      className="w-full px-3 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.7rem] font-bold hover:bg-[var(--pd)] flex items-center gap-2 transition-colors">
+                      <ChevronRight size={12} />Advance to {PHASE_LABELS[nextPhase as IncidentPhase]}
                     </button>
                   )}
                   {canReassign && (
                     <button onClick={() => { setReassignTo(detail.assigned_to || 0); setShowReassign(s => !s); }}
-                      className="w-full px-3 py-2 rounded border border-[var(--b2)] text-[var(--t6)] text-[0.7rem] font-bold hover:bg-[var(--s1)] flex items-center gap-2">
+                      className="w-full px-3 py-2 rounded-lg border border-[var(--b2)] text-[var(--t6)] text-[0.7rem] font-bold hover:bg-[var(--s1)] flex items-center gap-2 transition-colors">
                       <UserPlus size={12} />Reassign
                     </button>
                   )}
                   {canEdit && (
                     <button onClick={() => setShowReclassify(s => !s)}
-                      className="w-full px-3 py-2 rounded bg-pink-100 text-pink-800 text-[0.7rem] font-bold hover:bg-pink-200 flex items-center gap-2">
+                      className="w-full px-3 py-2 rounded-lg bg-pink-100 text-pink-800 text-[0.7rem] font-bold hover:bg-pink-200 flex items-center gap-2 transition-colors">
                       <ThumbsDown size={12} />Reclassify as FP
                     </button>
                   )}
                   {canEdit && (
-                    <button onClick={async () => {
-                      if (!confirm('Close this incident as Resolved?')) return;
-                      const r = await closeIncident(detail.id);
-                      if (r.ok) { toast('Incident closed', 'success'); fetchDetail(detail.id); fetchList(); }
-                      else toast(r.error || 'Failed to close', 'error');
-                    }}
-                      className="w-full px-3 py-2 rounded bg-amber-100 text-amber-800 text-[0.7rem] font-bold hover:bg-amber-200">
+                    <button onClick={() => setShowCloseConfirm(true)}
+                      className="w-full px-3 py-2 rounded-lg bg-amber-100 text-amber-800 text-[0.7rem] font-bold hover:bg-amber-200 transition-colors">
                       Close as Resolved
                     </button>
                   )}
@@ -9108,13 +8615,13 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
                 <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2">
                   <p className="text-[0.6rem] font-black text-[var(--t6)] uppercase tracking-widest">Reassign / Unassign</p>
                   <select value={reassignTo} onChange={e => setReassignTo(Number(e.target.value))}
-                    className="w-full border border-[var(--b2)] rounded px-2 py-1.5 text-[0.7rem] bg-[var(--s0)]">
-                    <option value={0}>— Unassign (back to Open) —</option>
+                    className="w-full border border-[var(--b2)] rounded-lg px-2 py-1.5 text-[0.7rem] bg-[var(--s0)]">
+                    <option value={0}>-- Unassign (back to Open) --</option>
                     {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
                   </select>
                   <div className="flex gap-1.5">
-                    <button onClick={handleReassign} className="flex-1 px-2 py-1 rounded bg-[var(--p1)] text-white text-[0.65rem] font-bold">Confirm</button>
-                    <button onClick={() => setShowReassign(false)} className="flex-1 px-2 py-1 rounded border border-[var(--b2)] text-[var(--t5)] text-[0.65rem] font-semibold">Cancel</button>
+                    <button onClick={handleReassign} className="flex-1 px-2 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.65rem] font-bold">Confirm</button>
+                    <button onClick={() => setShowReassign(false)} className="flex-1 px-2 py-1.5 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.65rem] font-semibold">Cancel</button>
                   </div>
                 </div>
               )}
@@ -9126,45 +8633,99 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
                   <p className="text-[0.65rem] text-pink-900">Returns {detail.alerts?.length ?? 0} alert(s) to the FP archive.</p>
                   <textarea value={reclassifyNote} onChange={e => setReclassifyNote(e.target.value)} rows={2}
                     placeholder="Why? (optional)"
-                    className="w-full border border-pink-300 rounded px-2 py-1 text-[0.65rem] bg-white resize-none" />
+                    className="w-full border border-pink-300 rounded-lg px-2 py-1 text-[0.65rem] bg-white resize-none" />
                   <div className="flex gap-1.5">
-                    <button onClick={handleReclassifyFp} className="flex-1 px-2 py-1 rounded bg-pink-600 text-white text-[0.65rem] font-bold hover:bg-pink-700">Confirm</button>
-                    <button onClick={() => { setShowReclassify(false); setReclassifyNote(''); }} className="flex-1 px-2 py-1 rounded border border-pink-300 text-pink-800 text-[0.65rem] font-semibold">Cancel</button>
+                    <button onClick={handleReclassifyFp} className="flex-1 px-2 py-1.5 rounded-lg bg-pink-600 text-white text-[0.65rem] font-bold hover:bg-pink-700">Confirm</button>
+                    <button onClick={() => { setShowReclassify(false); setReclassifyNote(''); }} className="flex-1 px-2 py-1.5 rounded-lg border border-pink-300 text-pink-800 text-[0.65rem] font-semibold">Cancel</button>
                   </div>
                 </div>
               )}
             </div>
           </div>
         </div>
+
+        {/* Close confirmation modal */}
+        {showCloseConfirm && (
+          <ConfirmModal
+            title="Close Incident"
+            message={`Are you sure you want to close "${detail.title}" as Resolved? This action marks the incident as complete.`}
+            confirmLabel="Close as Resolved"
+            confirmClass="bg-amber-600 hover:bg-amber-700"
+            onConfirm={async () => {
+              const r = await closeIncident(detail.id);
+              if (r.ok) { toast('Incident closed', 'success'); fetchDetail(detail.id); fetchList(); }
+              else toast(r.error || 'Failed to close', 'error');
+              setShowCloseConfirm(false);
+            }}
+            onCancel={() => setShowCloseConfirm(false)}
+          />
+        )}
+        {deleteActionTarget && (
+          <ConfirmModal
+            title="Delete Action"
+            message="Are you sure you want to delete this response action? This cannot be undone."
+            confirmLabel="Delete"
+            onConfirm={() => handleActionDelete(deleteActionTarget)}
+            onCancel={() => setDeleteActionTarget(null)}
+          />
+        )}
       </div>
     );
   }
 
   if (activeId && loadingDetail) {
-    return <div className="p-6"><p className="text-[0.78rem] text-[var(--t3)]">Loading incident…</p></div>;
+    return <div className="p-6"><p className="text-[0.78rem] text-[var(--t3)]">Loading incident...</p></div>;
   }
 
   // ── List view ───────────────────────────────────────────────────────────
+  const openCount = (counts['OPEN'] ?? 0) + (counts['IN_PROGRESS'] ?? 0) + (counts['CONTAINED'] ?? 0);
+  const critCount = filteredList.filter(i => i.severity === 'CRITICAL').length;
+  const breachedCount = filteredList.filter(i => computeSla(i.severity, i.escalated_at).state === 'breached').length;
+  const pendingActCount = filteredList.reduce((s, i) => s + (i.pending_actions ?? 0), 0);
+
   const STATUS_CARDS: { key: string; label: string; tint: string; icon: any }[] = [
-    { key: 'OPEN',            label: 'Open',           tint: 'border-blue-200 bg-blue-50',     icon: AlertOctagon },
-    { key: 'IN_PROGRESS',     label: 'Investigating',  tint: 'border-orange-200 bg-orange-50', icon: Activity },
-    { key: 'CONTAINED',       label: 'Contained',      tint: 'border-amber-200 bg-amber-50',   icon: Shield },
-    { key: 'RESOLVED',        label: 'Resolved',       tint: 'border-green-200 bg-green-50',   icon: CheckCircle },
-    { key: 'RECLASSIFIED_FP', label: 'False Positive', tint: 'border-pink-200 bg-pink-50',     icon: ThumbsDown },
+    { key: 'OPEN',        label: 'Open',          tint: 'border-blue-200 bg-blue-50',     icon: AlertOctagon },
+    { key: 'IN_PROGRESS', label: 'Investigating', tint: 'border-orange-200 bg-orange-50', icon: Activity },
+    { key: 'CONTAINED',   label: 'Contained',     tint: 'border-amber-200 bg-amber-50',   icon: Shield },
+    { key: 'RESOLVED',    label: 'Resolved',      tint: 'border-green-200 bg-green-50',   icon: CheckCircle },
   ];
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
+    <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
       <PageHeader eyebrow="Incident Response" title="Incidents"
-        description="Case-management workspace for formally escalated incidents. Each incident has an owner, a NIST 800-61 phase, response actions, and a full audit trail." />
+        description="Manage escalated security incidents through their full lifecycle." />
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      {/* Summary dashboard */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[
+          { label: 'Active Incidents', value: openCount,       icon: AlertOctagon,  color: '#3b82f6', bg: 'bg-blue-50 border-blue-100' },
+          { label: 'Critical',         value: critCount,       icon: AlertTriangle, color: '#ef4444', bg: 'bg-red-50 border-red-100' },
+          { label: 'SLA Breached',     value: breachedCount,   icon: Clock,         color: '#f59e0b', bg: 'bg-amber-50 border-amber-100' },
+          { label: 'Pending Actions',  value: pendingActCount, icon: Zap,           color: '#8b5cf6', bg: 'bg-violet-50 border-violet-100' },
+        ].map((s, i) => {
+          const Ico = s.icon;
+          return (
+            <div key={i} className={`rounded-xl p-4 border ${s.bg} flex items-center gap-3`}>
+              <div className="w-10 h-10 rounded-xl bg-white/80 flex items-center justify-center border border-[var(--b2)] shadow-sm shrink-0">
+                <Ico className="w-5 h-5" style={{ color: s.color }} />
+              </div>
+              <div>
+                <p className="text-[1.4rem] font-black tracking-tight leading-none" style={{ color: s.color }}>{s.value}</p>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mt-0.5">{s.label}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Status filter cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {STATUS_CARDS.map(c => {
           const active = statusF === c.key;
           const Ico = c.icon;
           return (
             <button key={c.key} onClick={() => setStatusF(active ? '' : c.key)}
-              className={`text-left rounded-lg p-3 border-2 transition-colors ${active ? 'border-[var(--p1)] bg-blue-50' : `${c.tint} hover:border-[var(--p1)]`}`}>
+              className={`text-left rounded-xl p-3 border-2 transition-all ${active ? 'border-[var(--p1)] bg-blue-50 shadow-sm' : `${c.tint} hover:border-[var(--p1)]`}`}>
               <div className="flex items-center gap-2 mb-1">
                 <Ico size={13} className="text-[var(--t5)]" />
                 <p className="text-[0.55rem] font-black text-[var(--t4)] uppercase tracking-widest">{c.label}</p>
@@ -9175,43 +8736,53 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
         })}
       </div>
 
+      {/* Search + filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex-1 min-w-[240px] relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by title or ID…"
-            className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by title or ID..."
+            className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
         </div>
         <select value={ownerF} onChange={e => setOwnerF(e.target.value === '' ? '' : Number(e.target.value))}
-          className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] bg-[var(--s0)]">
+          className="px-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] bg-[var(--s0)]">
           <option value="">All owners</option>
           {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
         </select>
         <select value={sevF} onChange={e => setSevF(e.target.value)}
-          className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] bg-[var(--s0)]">
+          className="px-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] bg-[var(--s0)]">
           <option value="">All severities</option>
           {['CRITICAL','HIGH','MEDIUM','LOW'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={slaF} onChange={e => setSlaF(e.target.value)}
-          className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] bg-[var(--s0)]">
+          className="px-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] bg-[var(--s0)]">
           <option value="">All SLA states</option>
           <option value="on_track">On Track</option>
           <option value="watch">Watch</option>
           <option value="at_risk">At Risk</option>
           <option value="breached">Breached</option>
         </select>
+        {/* My Incidents toggle */}
+        <button onClick={() => setMyOnly(m => !m)}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[0.78rem] font-bold border transition-all ${
+            myOnly ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s0)] text-[var(--t4)] border-[var(--b2)] hover:border-[var(--p1)]'
+          }`}>
+          <User size={14} /> My Incidents
+        </button>
       </div>
 
+      {/* Phase filter chips */}
       <div className="flex gap-1.5 flex-wrap">
         <button onClick={() => setPhaseF('')}
-          className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider ${phaseF === '' ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)]'}`}>All phases</button>
+          className={`px-2.5 py-1 rounded-lg text-[0.62rem] font-black uppercase tracking-wider transition-all ${phaseF === '' ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)]'}`}>All phases</button>
         {INCIDENT_PHASES.map(p => (
           <button key={p} onClick={() => setPhaseF(phaseF === p ? '' : p)}
-            className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider ${phaseF === p ? 'bg-[var(--p1)] text-white' : PHASE_COLORS[p] || 'bg-[var(--s1)]'}`}>
+            className={`px-2.5 py-1 rounded-lg text-[0.62rem] font-black uppercase tracking-wider transition-all ${phaseF === p ? 'bg-[var(--p1)] text-white' : PHASE_COLORS[p] || 'bg-[var(--s1)]'}`}>
             {PHASE_LABELS[p]}
           </button>
         ))}
       </div>
 
+      {/* Incident cards */}
       {filteredList.length === 0 ? (
         <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-10 text-center">
           <AlertOctagon size={32} className="mx-auto text-[var(--t3)] mb-2" />
@@ -9223,29 +8794,46 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
       ) : (
         <div className="space-y-2">
           {filteredList.map(inc => {
-            const sla = computeSla(inc.severity, inc.escalated_at);
+            const incSla = computeSla(inc.severity, inc.escalated_at);
+            const actionTotal = inc.action_count || 0;
+            const actionDone = inc.executed_actions || 0;
+            const actionPct = actionTotal > 0 ? Math.round((actionDone / actionTotal) * 100) : 0;
             return (
               <button key={inc.id} onClick={() => setActiveId(inc.id)}
-                className="w-full bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-4 text-left hover:border-[var(--p1)] transition-colors">
-                <div className="flex items-start gap-3 mb-2">
-                  <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest border shrink-0 ${SEV_COLORS[inc.severity] || 'bg-gray-100 text-gray-700'}`}>{inc.severity}</span>
-                  <code className="text-[0.62rem] font-mono bg-[var(--s1)] text-[var(--t4)] px-1.5 py-0.5 rounded shrink-0">{inc.id}</code>
-                  <p className="text-[0.82rem] font-semibold text-[var(--t7)] flex-1 truncate">{inc.title}</p>
-                  <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest border shrink-0 ${STATUS_COLORS[inc.status] || 'bg-gray-100 text-gray-700'}`}>
+                className="w-full bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 text-left hover:border-[var(--p1)] hover:shadow-md transition-all group">
+                <div className="flex items-start gap-3 mb-2.5">
+                  <span className={`px-2 py-0.5 rounded-lg text-[0.55rem] font-black uppercase tracking-widest border shrink-0 ${SEV_COLORS[inc.severity] || 'bg-gray-100 text-gray-700'}`}>{inc.severity}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.85rem] font-bold text-[var(--t7)] truncate group-hover:text-[var(--p1)] transition-colors">{inc.title}</p>
+                    <code className="text-[0.58rem] font-mono text-[var(--t3)]">{inc.id}</code>
+                  </div>
+                  <span className={`px-2.5 py-1 rounded-lg text-[0.55rem] font-black uppercase tracking-widest border shrink-0 ${STATUS_COLORS[inc.status] || 'bg-gray-100 text-gray-700'}`}>
                     {STATUS_LABELS[inc.status] || inc.status}
                   </span>
                 </div>
                 <div className="flex items-center gap-3 text-[0.65rem] text-[var(--t3)] flex-wrap">
-                  <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase ${PHASE_COLORS[inc.phase] || 'bg-gray-100 text-gray-700'}`}>{PHASE_LABELS[inc.phase as IncidentPhase] || inc.phase}</span>
-                  <span className="flex items-center gap-1"><span className={`w-1.5 h-1.5 rounded-full ${sla.color}`} />{sla.label}</span>
-                  <span>{inc.alert_count || 0} alert{inc.alert_count === 1 ? '' : 's'}</span>
-                  {(inc.action_count || 0) > 0 && (
-                    <span>{inc.executed_actions || 0}/{inc.action_count} actions</span>
+                  <span className={`px-1.5 py-0.5 rounded-lg text-[0.55rem] font-black uppercase ${PHASE_COLORS[inc.phase] || 'bg-gray-100 text-gray-700'}`}>{PHASE_LABELS[inc.phase as IncidentPhase] || inc.phase}</span>
+                  <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${incSla.color}`} /><span className="font-semibold">{incSla.label}</span></span>
+                  <span className="flex items-center gap-1"><AlertTriangle size={11} /> {inc.alert_count || 0} alert{(inc.alert_count || 0) !== 1 ? 's' : ''}</span>
+                  {actionTotal > 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <Zap size={11} />
+                      <span>{actionDone}/{actionTotal}</span>
+                      <div className="w-12 h-1.5 bg-[var(--s2)] rounded-full overflow-hidden">
+                        <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${actionPct}%` }} />
+                      </div>
+                    </span>
                   )}
-                  {inc.assigned_to_username && <span>→ <span className="font-semibold text-[var(--t5)]">{inc.assigned_to_username}</span></span>}
-                  {inc.glpi_ticket_id && <span>· GLPI #{inc.glpi_ticket_id}</span>}
-                  <span className="text-[var(--t4)]">· {lastEventLabel(inc.last_event_type, inc.last_event_note)}</span>
-                  <span className="ml-auto">{timeAgo(new Date(inc.escalated_at).getTime())}</span>
+                  {inc.assigned_to_username && (
+                    <span className="flex items-center gap-1">
+                      <div className="w-4 h-4 rounded-full bg-gradient-to-br from-[var(--p1)] to-[var(--pd)] flex items-center justify-center text-white text-[0.35rem] font-black">
+                        {inc.assigned_to_username.substring(0, 2).toUpperCase()}
+                      </div>
+                      <span className="font-semibold text-[var(--t5)]">{inc.assigned_to_username}</span>
+                    </span>
+                  )}
+                  {inc.glpi_ticket_id && <span className="font-mono text-[var(--t4)]">GLPI #{inc.glpi_ticket_id}</span>}
+                  <span className="ml-auto flex items-center gap-1 text-[var(--t4)]"><Clock size={11} />{timeAgo(new Date(inc.escalated_at).getTime())}</span>
                 </div>
               </button>
             );
@@ -9373,7 +8961,7 @@ const ReportsTab = ({
               Agent-generated reports across all analyzed alerts
             </p>
           </div>
-          <p className="text-xs font-mono text-[var(--t3)] mt-1">BBS-ALPHA-{new Date().toISOString().split('T')[0]}</p>
+          <p className="text-xs font-mono text-[var(--t3)] mt-1">AISOC-RPT-{new Date().toISOString().split('T')[0]}</p>
         </div>
 
         {/* Stats row */}

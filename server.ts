@@ -718,7 +718,7 @@ try {
   if (!adminExists) {
     const hashedPassword = bcrypt.hashSync('admin123', 10);
     db.prepare('INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)')
-      .run('admin', hashedPassword, 'admin@blackbox.com', 'ADMIN');
+      .run('admin', hashedPassword, 'admin@aisoc.local', 'ADMIN');
   }
 
   // Seed default playbooks if none exist

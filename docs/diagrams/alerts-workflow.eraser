@@ -1,0 +1,67 @@
+title AISOC Alerts Workflow (Real App Behavior)
+
+Ingestion [icon: shield, color: red] {
+  WAZUH [icon: alert-triangle, label: "Wazuh Event"]
+  INGEST [icon: server, label: "POST /api/ingest"]
+  GUARDS [icon: lock, label: "API key + pause + rate-limit + dedup"]
+  AUTO_FP [icon: filter, label: "Severity/Time-window Auto FP"]
+}
+
+Pipeline [icon: cpu, color: orange] {
+  NEW [icon: bell, label: "Alert status: NEW"]
+  ANALYZING [icon: activity, label: "Alert status: ANALYZING"]
+  ORCH [icon: brain, label: "POST /api/ai/orchestrate (full swarm)"]
+  FPSCAN [icon: search, label: "POST /api/ai/fp-scan (steps 0-3)"]
+  INVEST [icon: search, label: "POST /api/ai/investigate (steps 4-7)"]
+  TRIAGED [icon: check-circle, label: "Alert status: TRIAGED"]
+  FP [icon: x-circle, label: "Alert status: FALSE_POSITIVE"]
+  FILTERED [icon: filter, label: "Alert status: FILTERED"]
+}
+
+Analyst Actions [icon: users, color: blue] {
+  CONFIRM [icon: check-circle, label: "POST /api/alerts/:id/confirm-fp"]
+  OVERRIDE [icon: rotate-ccw, label: "POST /api/alerts/:id/override-fp"]
+  ESCALATE [icon: alert-octagon, label: "POST /api/alerts/:id/escalate"]
+}
+
+Incident Layer [icon: database, color: purple] {
+  INCIDENT [icon: file-text, label: "createIncidentFromAlert"]
+  ESCALATED [icon: alert-octagon, label: "Alert status: ESCALATED"]
+  FP_CONF [icon: check-circle, label: "Alert status: FP_CONFIRMED"]
+}
+
+%% INGEST ENTRY
+WAZUH > INGEST
+INGEST > GUARDS
+GUARDS > NEW
+GUARDS > AUTO_FP
+AUTO_FP > FP
+
+%% AUTO ORCHESTRATION FROM INGEST
+NEW > ORCH
+ORCH > ANALYZING
+ANALYZING > TRIAGED
+ANALYZING > FP
+
+%% MANUAL FP-FIRST FLOW
+NEW > FPSCAN
+FPSCAN > ANALYZING
+ANALYZING > FP
+ANALYZING > FILTERED
+
+%% INVESTIGATION FROM FILTERED
+FILTERED > INVEST
+INVEST > ANALYZING
+ANALYZING > TRIAGED
+ANALYZING > FP
+
+%% ANALYST DECISIONS
+FP > CONFIRM
+CONFIRM > FP_CONF
+
+FP > OVERRIDE
+OVERRIDE > FILTERED
+
+TRIAGED > ESCALATE
+ESCALATE > INCIDENT
+INCIDENT > ESCALATED

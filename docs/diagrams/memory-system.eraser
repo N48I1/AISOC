@@ -1,0 +1,57 @@
+title AISOC Memory System (Real App Workflow)
+
+Orchestration Runtime [icon: cpu, color: orange] {
+  PRE [icon: search, label: "Pre-flight Memory Reads"]
+  PLAN [icon: brain, label: "Planner + Reflection"]
+  COMMIT [icon: refresh-cw, label: "Outcome Memory Commit"]
+}
+
+Memory Stores [icon: database, color: purple] {
+  INSIGHTS [icon: file-search, label: "incident_insights (semantic history)"]
+  IOCS [icon: globe, label: "ioc_memory (counts + fp/tp ratios)"]
+  ASSETS [icon: server, label: "asset_context (known infra + fp_default)"]
+  SUPPRESS [icon: filter, label: "suppression_rules"]
+  WORKING [icon: list-tree, label: "working_memory (planner scratchpad)"]
+}
+
+Embedding Layer [icon: sparkles, color: pink] {
+  EMBED_TEXT [icon: box, label: "embedText(query/summary)"]
+  VECTOR [icon: binary, label: "embedding BLOB"]
+}
+
+Memory APIs [icon: webhooks, color: blue] {
+  API_INSIGHTS [icon: book-open, label: "GET /api/memory/insights"]
+  API_IOCS [icon: hash, label: "GET /api/memory/iocs/all"]
+  API_WORKING [icon: scroll-text, label: "GET /api/memory/working/:alertId"]
+}
+
+Learning Surface [icon: lightbulb, color: teal] {
+  FP_SUGGEST [icon: lightbulb, label: "GET /api/analytics/fp-suggestions"]
+  ACCEPT [icon: check-circle, label: "POST /api/analytics/accept-suggestion"]
+}
+
+%% PRE-FLIGHT READS (run in orchestration/fp-scan/investigation)
+PRE > SUPPRESS
+PRE > ASSETS
+PRE > IOCS
+PRE > INSIGHTS
+INSIGHTS > EMBED_TEXT
+EMBED_TEXT > VECTOR
+
+%% PLANNER TRACE
+PLAN > WORKING
+
+%% MEMORY COMMIT WRITES
+COMMIT > IOCS
+COMMIT > INSIGHTS
+INSIGHTS > VECTOR
+
+%% SERVING LAYER
+INSIGHTS > API_INSIGHTS
+IOCS > API_IOCS
+WORKING > API_WORKING
+
+%% LEARNING LOOP USED BY THE APP
+IOCS > FP_SUGGEST
+FP_SUGGEST > ACCEPT
+ACCEPT > ASSETS
