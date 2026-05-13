@@ -1,0 +1,75 @@
+title AISOC Incident Lifecycle and Risk Coupling
+
+Alert Escalation [icon: alert-octagon, color: red] {
+  TRIAGED_ALERT [icon: alert-triangle, label: "Alert status: TRIAGED"]
+  ESCALATE_API [icon: webhooks, label: "POST /api/alerts/:id/escalate"]
+  INCIDENT_CREATE [icon: file-plus, label: "createIncidentFromAlert()"]
+  ALERT_ESCALATED [icon: siren, label: "Alert status: ESCALATED"]
+}
+
+Incident Command [icon: users, color: orange] {
+  OPEN [icon: circle, label: "OPEN"]
+  IN_PROGRESS [icon: activity, label: "IN_PROGRESS"]
+  CONTAINED [icon: shield-check, label: "CONTAINED"]
+  RESOLVED [icon: check-circle, label: "RESOLVED"]
+  CLOSED [icon: lock, label: "CLOSED"]
+  RECLASS_FP [icon: filter, label: "RECLASSIFIED_FP"]
+}
+
+Phase Engine [icon: route, color: blue] {
+  DETECTION [icon: search, label: "detection"]
+  ANALYSIS [icon: microscope, label: "analysis"]
+  CONTAINMENT [icon: shield, label: "containment"]
+  ERADICATION [icon: bug, label: "eradication"]
+  RECOVERY [icon: wrench, label: "recovery"]
+  POST [icon: file-check, label: "post_incident"]
+}
+
+Actions + Closure [icon: list-checks, color: teal] {
+  ACTIONS [icon: list, label: "incident_actions: pending -> approved -> executed"]
+  CLOSE_API [icon: x-circle, label: "POST /api/incidents/:id/close"]
+  RECLASS_API [icon: rotate-ccw, label: "POST /api/incidents/:id/reclassify-fp"]
+}
+
+Dashboard Risk [icon: gauge, color: purple] {
+  GLOBAL [icon: donut, label: "Global Risk Score card"]
+  SERIES [icon: chart-line, label: "Risk & Pipeline Over Time card"]
+  MITIGATION [icon: trending-down, label: "Contained/Resolved/Closed reduce risk"]
+}
+
+%% ESCALATION INTO INCIDENTS
+TRIAGED_ALERT > ESCALATE_API
+ESCALATE_API > INCIDENT_CREATE
+INCIDENT_CREATE > ALERT_ESCALATED
+INCIDENT_CREATE > OPEN
+
+%% STATUS PROGRESSION
+OPEN > IN_PROGRESS
+IN_PROGRESS > CONTAINED
+CONTAINED > RESOLVED
+RESOLVED > CLOSED
+
+%% PHASE TO STATUS MAPPING
+DETECTION > OPEN
+ANALYSIS > OPEN
+CONTAINMENT > IN_PROGRESS
+ERADICATION > IN_PROGRESS
+RECOVERY > CONTAINED
+POST > RESOLVED
+
+%% OPERATOR ACTIONS
+IN_PROGRESS > ACTIONS
+ACTIONS > CLOSE_API
+CLOSE_API > CLOSED
+
+IN_PROGRESS > RECLASS_API
+RECLASS_API > RECLASS_FP
+
+%% RISK COUPLING
+OPEN > GLOBAL
+IN_PROGRESS > GLOBAL
+CONTAINED > MITIGATION
+RESOLVED > MITIGATION
+CLOSED > MITIGATION
+MITIGATION > GLOBAL
+GLOBAL > SERIES

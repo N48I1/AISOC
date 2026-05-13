@@ -55,27 +55,67 @@ function checkIngestRateLimit(maxPerMin: number): boolean {
 
 // --- Email helper -----------------------------------------------------------
 // Config comes from DB (configurable in UI). Falls back to env vars for bootstrapping.
-async function sendIncidentAlert(subject: string, body: string, emailCfg?: Record<string, string>) {
-  const cfg  = emailCfg || {};
-  const host = cfg.smtp_host || process.env.SMTP_HOST;
-  const port = Number(cfg.smtp_port || process.env.SMTP_PORT || 587);
-  const user = cfg.smtp_user || process.env.SMTP_USER;
-  const pass = cfg.smtp_pass || process.env.SMTP_PASS;
-  const to   = cfg.to   || process.env.ALERT_EMAIL_TO;
-  const from = cfg.from || user;
+function extractEmail(value?: string): string {
+  if (!value) return '';
+  const m = value.match(/<([^>]+)>/);
+  return (m?.[1] || value).trim();
+}
 
-  if (!host || !user || !pass || !to) {
-    console.warn('[Email] Not configured — skipping');
-    return;
+function isGmailAddress(value?: string): boolean {
+  return /@gmail\.com$/i.test(extractEmail(value));
+}
+
+function normalizeEmailIntegrationConfig(rawCfg: Record<string, string> = {}): Record<string, string> {
+  const cfg = rawCfg || {};
+  const user = extractEmail(cfg.smtp_user || cfg.from || '');
+  const hostFromCfg = (cfg.smtp_host || '').trim();
+  const gmailMode = hostFromCfg.toLowerCase() === 'smtp.gmail.com' || isGmailAddress(user);
+  const pass = gmailMode ? String(cfg.smtp_pass || '').replace(/\s+/g, '') : String(cfg.smtp_pass || '');
+  return {
+    ...cfg,
+    smtp_user: user || String(cfg.smtp_user || ''),
+    smtp_pass: pass,
+    smtp_host: hostFromCfg || (gmailMode ? 'smtp.gmail.com' : ''),
+    smtp_port: String(cfg.smtp_port || '').trim() || (gmailMode ? '587' : ''),
+    from: String(cfg.from || '').trim() || user,
+    to: String(cfg.to || '').trim(),
+  };
+}
+
+async function sendIncidentAlert(subject: string, body: string, emailCfg?: Record<string, string>) {
+  const cfg = emailCfg || {};
+
+  const from = cfg.from || process.env.SMTP_USER || '';
+  const user = extractEmail(cfg.smtp_user || process.env.SMTP_USER || from);
+  const to   = cfg.to || process.env.ALERT_EMAIL_TO;
+  const hostFromCfg = (cfg.smtp_host || process.env.SMTP_HOST || '').trim();
+  const gmailMode = hostFromCfg.toLowerCase() === 'smtp.gmail.com' || isGmailAddress(user) || isGmailAddress(from);
+  const host = hostFromCfg || (gmailMode ? 'smtp.gmail.com' : '');
+  const portRaw = cfg.smtp_port || process.env.SMTP_PORT || (gmailMode ? '587' : '587');
+  const port = Number(portRaw);
+  const rawPass = cfg.smtp_pass || process.env.SMTP_PASS || '';
+  const pass = gmailMode ? rawPass.replace(/\s+/g, '') : rawPass;
+
+  const missing: string[] = [];
+  if (!host) missing.push('smtp_host');
+  if (!user) missing.push('smtp_user');
+  if (!pass) missing.push('smtp_pass');
+  if (!to)   missing.push('to');
+  if (missing.length > 0) {
+    throw new Error(`Email integration missing required fields: ${missing.join(', ')}`);
   }
 
+  const resolvedPort = Number.isFinite(port) && port > 0 ? port : 587;
   const transport = nodemailer.createTransport({
-    host, port, secure: port === 465,
+    host,
+    port: resolvedPort,
+    secure: resolvedPort === 465,
     auth: { user, pass },
   });
 
   await transport.sendMail({
-    from, to,
+    from: extractEmail(from) || user,
+    to,
     subject: `[BBS AISOC] ${subject}`,
     text:    body,
   });
@@ -109,7 +149,19 @@ try {
       username TEXT UNIQUE,
       password TEXT,
       email TEXT,
-      role TEXT DEFAULT 'ANALYST'
+      role TEXT DEFAULT 'ANALYST',
+      display_name TEXT,
+      avatar_color TEXT DEFAULT '#3b82f6',
+      timezone TEXT DEFAULT 'UTC',
+      notify_email INTEGER DEFAULT 1,
+      notify_critical INTEGER DEFAULT 1,
+      notify_assignments INTEGER DEFAULT 1,
+      bio TEXT DEFAULT '',
+      last_login TEXT,
+      password_changed_at TEXT,
+      failed_logins INTEGER DEFAULT 0,
+      locked_until TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS alerts (
@@ -356,6 +408,24 @@ try {
   safeAlter('ALTER TABLE incident_insights   ADD COLUMN triggered_by TEXT DEFAULT \'triage\'');
   safeAlter('ALTER TABLE api_keys            ADD COLUMN paused               INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE api_keys            ADD COLUMN min_severity_override INTEGER');
+  // Legacy users table migration must run before user seeding.
+  safeAlter('ALTER TABLE users ADD COLUMN display_name TEXT');
+  safeAlter("ALTER TABLE users ADD COLUMN avatar_color TEXT DEFAULT '#3b82f6'");
+  safeAlter("ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'UTC'");
+  safeAlter('ALTER TABLE users ADD COLUMN notify_email INTEGER DEFAULT 1');
+  safeAlter('ALTER TABLE users ADD COLUMN notify_critical INTEGER DEFAULT 1');
+  safeAlter('ALTER TABLE users ADD COLUMN notify_assignments INTEGER DEFAULT 1');
+  safeAlter("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''");
+  safeAlter('ALTER TABLE users ADD COLUMN last_login TEXT');
+  safeAlter('ALTER TABLE users ADD COLUMN password_changed_at TEXT');
+  safeAlter('ALTER TABLE users ADD COLUMN failed_logins INTEGER DEFAULT 0');
+  safeAlter('ALTER TABLE users ADD COLUMN locked_until TEXT');
+  safeAlter('ALTER TABLE users ADD COLUMN created_at TEXT');
+  try {
+    db.prepare("UPDATE users SET created_at = COALESCE(created_at, datetime('now'))").run();
+  } catch (err: any) {
+    console.warn('[Migration] users created_at backfill failed:', err?.message);
+  }
 
   // ── Seed known-asset entries (idempotent — won't overwrite manual changes) ──
   const seedAsset = db.prepare(`
@@ -713,13 +783,19 @@ try {
     console.warn('[Backfill] FP archive reclassification failed:', err?.message);
   }
 
-  // Seed admin user if not exists
-  const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
-  if (!adminExists) {
-    const hashedPassword = bcrypt.hashSync('admin123', 10);
-    db.prepare('INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)')
-      .run('admin', hashedPassword, 'admin@aisoc.local', 'ADMIN');
-  }
+  // Seed default users if not exists
+  const seedUser = (username: string, password: string, email: string, role: string, displayName: string, avatarColor: string) => {
+    const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+    if (!exists) {
+      const hashed = bcrypt.hashSync(password, 10);
+      db.prepare(
+        `INSERT INTO users (username, password, email, role, display_name, avatar_color, password_changed_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+      ).run(username, hashed, email, role, displayName, avatarColor);
+    }
+  };
+  seedUser('admin',     'admin123',     'admin@aisoc.local',      'ADMIN', 'Administrator',     '#8b5cf6');
+  seedUser('nelhilali', 'Analyst@2025', 'nelhilali@aisoc.local',  'TIER1', 'N. El Hilali',      '#3b82f6');
 
   // Seed default playbooks if none exist
   const playbookCount = (db.prepare('SELECT COUNT(*) as c FROM playbooks').get() as any).c;
@@ -1252,6 +1328,7 @@ try {
   for (const phase of AGENT_PHASES) {
     seedAgentSetting.run(phase, DEFAULT_AGENT_MODELS[phase]);
   }
+
 } catch (err) {
   console.error('Database initialization failed:', err);
   process.exit(1);
@@ -1440,6 +1517,37 @@ function getSeverityLabel(level: number): string {
 }
 
 // --- Server Setup -----------------------------------------------------------
+// ── Password complexity validator ─────────────────────────────────────────────
+const PASSWORD_RULES = {
+  minLength: 8,
+  requireUppercase: true,
+  requireLowercase: true,
+  requireDigit: true,
+  requireSpecial: true,
+};
+
+function validatePassword(pw: string): { ok: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (pw.length < PASSWORD_RULES.minLength) errors.push(`At least ${PASSWORD_RULES.minLength} characters`);
+  if (PASSWORD_RULES.requireUppercase && !/[A-Z]/.test(pw)) errors.push('At least one uppercase letter');
+  if (PASSWORD_RULES.requireLowercase && !/[a-z]/.test(pw)) errors.push('At least one lowercase letter');
+  if (PASSWORD_RULES.requireDigit     && !/\d/.test(pw))    errors.push('At least one digit');
+  if (PASSWORD_RULES.requireSpecial   && !/[^A-Za-z0-9]/.test(pw)) errors.push('At least one special character (!@#$...)');
+  return { ok: errors.length === 0, errors };
+}
+
+// ── Role hierarchy for RBAC (higher number = more privilege) ─────────────────
+const ROLE_LEVEL: Record<string, number> = {
+  ANALYST:       0,
+  TIER1:         1,
+  TIER2:         2,
+  INCIDENT_LEAD: 3,
+  ADMIN:         4,
+};
+
+const MAX_FAILED_LOGINS = 5;
+const LOCKOUT_MINUTES   = 15;
+
 async function startServer() {
   const app = express();
 
@@ -1480,20 +1588,53 @@ async function startServer() {
     next();
   };
 
+  // Role-based guard: pass minimum role required
+  const requireRole = (...allowedRoles: string[]) => (req: any, res: any, next: any) => {
+    const userLevel = ROLE_LEVEL[req.user?.role] ?? -1;
+    const minLevel  = Math.min(...allowedRoles.map(r => ROLE_LEVEL[r] ?? 99));
+    if (userLevel < minLevel) return res.status(403).json({ error: `Requires role: ${allowedRoles.join(' or ')}` });
+    next();
+  };
+
   // ── Auth ──────────────────────────────────────────────────────────────────
+  const userProfileFields = 'id, username, email, role, display_name, avatar_color, timezone, notify_email, notify_critical, notify_assignments, bio, last_login, password_changed_at, created_at';
+
   app.post('/api/auth/login', (req, res) => {
     const { username, password } = req.body;
     const user: any = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-    if (!user || !bcrypt.compareSync(password, user.password)) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    // Account lockout check
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      const remaining = Math.ceil((new Date(user.locked_until).getTime() - Date.now()) / 60000);
+      return res.status(423).json({ error: `Account locked. Try again in ${remaining} min.`, locked: true });
     }
+
+    if (!bcrypt.compareSync(password, user.password)) {
+      const attempts = (user.failed_logins || 0) + 1;
+      if (attempts >= MAX_FAILED_LOGINS) {
+        const lockUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60000).toISOString();
+        db.prepare('UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?').run(attempts, lockUntil, user.id);
+        writeAudit(user.id, 'ACCOUNT_LOCKED', `Account locked after ${attempts} failed attempts`);
+        return res.status(423).json({ error: `Too many failed attempts. Account locked for ${LOCKOUT_MINUTES} min.`, locked: true });
+      }
+      db.prepare('UPDATE users SET failed_logins = ? WHERE id = ?').run(attempts, user.id);
+      return res.status(401).json({ error: 'Invalid credentials', attemptsRemaining: MAX_FAILED_LOGINS - attempts });
+    }
+
+    // Success — reset failed counter, update last_login
+    db.prepare('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login = datetime(\'now\') WHERE id = ?').run(user.id);
     writeAudit(user.id, 'LOGIN', `User ${username} logged in`);
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role, email: user.email }, JWT_SECRET);
+    const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(user.id);
+    res.json({ token, user: profile });
   });
 
   app.get('/api/auth/me', authenticate, (req: any, res) => {
-    res.json(req.user);
+    const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(req.user.id);
+    if (!profile) return res.status(404).json({ error: 'User not found' });
+    res.json(profile);
   });
 
   // ── Alerts ────────────────────────────────────────────────────────────────
@@ -1602,43 +1743,97 @@ async function startServer() {
 
   // ── Users ─────────────────────────────────────────────────────────────────
   app.get('/api/users', authenticate, requireAdmin, (_req, res) => {
-    res.json(db.prepare('SELECT id, username, email, role FROM users').all());
+    res.json(db.prepare(`SELECT ${userProfileFields} FROM users`).all());
   });
 
-  // Users available for incident assignment — visible to all authenticated users
+  // Users available for incident assignment — all roles visible for assignment
   app.get('/api/users/analysts', authenticate, (_req, res) => {
     const rows = db.prepare(
-      `SELECT id, username, role FROM users
-       WHERE role IN ('ADMIN', 'TIER2', 'INCIDENT_LEAD')
-       ORDER BY role DESC, username ASC`
+      `SELECT id, username, role, display_name, avatar_color FROM users
+       ORDER BY CASE role WHEN 'ADMIN' THEN 0 WHEN 'INCIDENT_LEAD' THEN 1 WHEN 'TIER2' THEN 2 WHEN 'TIER1' THEN 3 ELSE 4 END, username ASC`
     ).all();
     res.json(rows);
   });
 
   app.post('/api/users', authenticate, requireAdmin, (req: any, res) => {
-    const { username, password, email, role } = req.body;
+    const { username, password, email, role, display_name } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'username and password required' });
+    const pwCheck = validatePassword(password);
+    if (!pwCheck.ok) return res.status(400).json({ error: 'Password too weak', details: pwCheck.errors });
     try {
-      const hashed   = bcrypt.hashSync(password, 10);
-      const result: any = db.prepare('INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)').run(username, hashed, email || null, role || 'ANALYST');
-      writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${role || 'ANALYST'})`);
-      res.json({ id: result.lastInsertRowid, username, email: email || null, role: role || 'ANALYST' });
+      const hashed = bcrypt.hashSync(password, 10);
+      const result: any = db.prepare(
+        `INSERT INTO users (username, password, email, role, display_name, password_changed_at, created_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+      ).run(username, hashed, email || null, role || 'TIER1', display_name || null);
+      writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${role || 'TIER1'})`);
+      const created = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(result.lastInsertRowid);
+      res.json(created);
     } catch (err: any) {
       if (err.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Username already exists' });
       res.status(500).json({ error: 'Failed to create user' });
     }
   });
 
+  // ── Profile endpoints ────────────────────────────────────────────────────
+  app.get('/api/users/me/profile', authenticate, (req: any, res) => {
+    const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(req.user.id);
+    if (!profile) return res.status(404).json({ error: 'Not found' });
+    res.json(profile);
+  });
+
+  app.patch('/api/users/me/profile', authenticate, (req: any, res) => {
+    const allowed = ['display_name', 'email', 'avatar_color', 'timezone', 'notify_email', 'notify_critical', 'notify_assignments', 'bio'];
+    const updates: string[] = [];
+    const values: any[] = [];
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        updates.push(`${key} = ?`);
+        values.push(req.body[key]);
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+    values.push(req.user.id);
+    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    writeAudit(req.user.id, 'PROFILE_UPDATED', `User updated profile fields: ${updates.map(u => u.split(' ')[0]).join(', ')}`);
+    const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(req.user.id);
+    res.json(profile);
+  });
+
+  // Activity log — audit entries for this user
+  app.get('/api/users/me/activity', authenticate, (req: any, res) => {
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || '50'))));
+    const rows = db.prepare(
+      'SELECT id, timestamp, action, details FROM audit_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?'
+    ).all(req.user.id, limit);
+    res.json(rows);
+  });
+
+  // Password rules endpoint (for frontend validation hints)
+  app.get('/api/auth/password-rules', (_req, res) => {
+    res.json(PASSWORD_RULES);
+  });
+
   app.patch('/api/users/me/password', authenticate, (req: any, res) => {
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword || newPassword.length < 6)
-      return res.status(400).json({ message: 'Invalid input — new password must be at least 6 characters.' });
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ message: 'Current and new password required.' });
+    const pwCheck = validatePassword(newPassword);
+    if (!pwCheck.ok)
+      return res.status(400).json({ message: 'Password does not meet requirements.', details: pwCheck.errors });
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
     if (!bcrypt.compareSync(currentPassword, user.password))
       return res.status(401).json({ message: 'Current password is incorrect.' });
-    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(bcrypt.hashSync(newPassword, 10), req.user.id);
+    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now') WHERE id = ?").run(bcrypt.hashSync(newPassword, 10), req.user.id);
     writeAudit(req.user.id, 'PASSWORD_CHANGED', `User ${user.username} changed password`);
     res.json({ message: 'Password updated.' });
+  });
+
+  // Admin: unlock a locked account
+  app.post('/api/admin/unlock-user/:id', authenticate, requireAdmin, (req: any, res) => {
+    db.prepare('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?').run(req.params.id);
+    writeAudit(req.user.id, 'USER_UNLOCKED', `Admin unlocked user #${req.params.id}`);
+    res.json({ ok: true });
   });
 
   // ── Admin ─────────────────────────────────────────────────────────────────
@@ -3396,7 +3591,11 @@ async function startServer() {
     const updates: string[] = ["updated_at = datetime('now')"];
     const values: any[]     = [];
     if (enabled !== undefined)             { updates.push('enabled = ?');             values.push(enabled ? 1 : 0); }
-    if (config  !== undefined)             { updates.push('config = ?');              values.push(JSON.stringify(config)); }
+    if (config  !== undefined) {
+      const nextConfig = name === 'email' ? normalizeEmailIntegrationConfig(config) : config;
+      updates.push('config = ?');
+      values.push(JSON.stringify(nextConfig));
+    }
     if (auto_send_threshold !== undefined) { updates.push('auto_send_threshold = ?'); values.push(auto_send_threshold); }
     values.push(name);
     db.prepare(`UPDATE integrations SET ${updates.join(', ')} WHERE name = ?`).run(...values);

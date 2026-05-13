@@ -1,5 +1,17 @@
 export type UserRole = 'ADMIN' | 'TIER1' | 'TIER2' | 'INCIDENT_LEAD' | 'ANALYST';
 
+export const ROLE_LABELS: Record<UserRole, string> = {
+  ADMIN:         'Administrator',
+  INCIDENT_LEAD: 'Incident Lead',
+  TIER2:         'SOC Analyst L2',
+  TIER1:         'SOC Analyst L1',
+  ANALYST:       'Analyst',
+};
+
+export const ROLE_LEVEL: Record<string, number> = {
+  ANALYST: 0, TIER1: 1, TIER2: 2, INCIDENT_LEAD: 3, ADMIN: 4,
+};
+
 export type IncidentPhase = 'detection' | 'analysis' | 'containment' | 'eradication' | 'recovery' | 'post_incident';
 export type IncidentStatus = 'OPEN' | 'IN_PROGRESS' | 'CONTAINED' | 'RESOLVED' | 'CLOSED' | 'RECLASSIFIED_FP';
 
@@ -91,6 +103,16 @@ export interface User {
   username: string;
   email: string;
   role: UserRole;
+  display_name?: string;
+  avatar_color?: string;
+  timezone?: string;
+  notify_email?: number;
+  notify_critical?: number;
+  notify_assignments?: number;
+  bio?: string;
+  last_login?: string;
+  password_changed_at?: string;
+  created_at?: string;
 }
 
 export interface Alert {

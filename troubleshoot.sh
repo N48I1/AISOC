@@ -200,7 +200,14 @@ fi
 # --fix (restart server)
 if $FIX; then
   info "Killing any existing server processes..."
-  pkill -9 -f "tsx.*server" 2>/dev/null || true
+  SERVER_PIDS=$(pgrep -f "tsx.*server" 2>/dev/null || true)
+  if [ -n "$SERVER_PIDS" ]; then
+    for pid in $SERVER_PIDS; do kill "$pid" 2>/dev/null || true; done
+    sleep 1
+    for pid in $SERVER_PIDS; do
+      if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null || true; fi
+    done
+  fi
   sleep 1
   info "Starting server..."
   npm run dev > "$LOG" 2>&1 &

@@ -1,0 +1,55 @@
+title AISOC False Positive Detection (Layered Workflow)
+
+Ingress [icon: shield, color: red] {
+  ALERT [icon: alert-triangle, label: "Incoming alert (Wazuh/API)"]
+  START [icon: server, label: "POST /api/ingest or /api/ai/fp-scan"]
+}
+
+Deterministic Layers [icon: cpu, color: orange] {
+  SUPPRESS [icon: filter, label: "Layer 1: suppression_rules match (CIDR/regex/agent)"]
+  AUTO_FP [icon: x-circle, label: "Immediate FALSE_POSITIVE (risk 0)"]
+  MEMORY [icon: database, label: "Layer 2: memory recall (asset_context + ioc_memory + semantic hits)"]
+}
+
+AI Triage [icon: brain, color: blue] {
+  ANALYSIS [icon: activity, label: "Layer 3: mandatory analysis agent"]
+  FP_DECISION [icon: check-circle, label: "High-confidence FP short-circuit"]
+  TRIAGED [icon: alert-octagon, label: "Not FP -> TRIAGED / investigation path"]
+}
+
+Analyst Decisions [icon: users, color: teal] {
+  CONFIRM_FP [icon: check-circle, label: "POST /api/alerts/:id/confirm-fp -> FP_CONFIRMED"]
+  OVERRIDE_FP [icon: rotate-ccw, label: "POST /api/alerts/:id/override-fp -> FILTERED"]
+  ESCALATE [icon: siren, label: "POST /api/alerts/:id/escalate -> Incident"]
+}
+
+Learning Loop [icon: sparkles, color: purple] {
+  IOC_STATS [icon: hash, label: "IOC observation history (fp_ratio, counts)"]
+  SUGGEST [icon: lightbulb, label: "GET /api/memory/learning/suggestions"]
+  PROMOTE [icon: plus-circle, label: "POST /api/memory/learning/promote"]
+  NEW_RULE [icon: filter, label: "New suppression rule registered"]
+}
+
+%% ENTRY
+ALERT > START
+START > SUPPRESS
+
+%% DETECTION LAYERS
+SUPPRESS > AUTO_FP
+SUPPRESS > MEMORY
+MEMORY > ANALYSIS
+ANALYSIS > FP_DECISION
+ANALYSIS > TRIAGED
+
+%% HUMAN-IN-THE-LOOP
+FP_DECISION > CONFIRM_FP
+FP_DECISION > OVERRIDE_FP
+TRIAGED > ESCALATE
+
+%% FEEDBACK INTO LEARNING
+CONFIRM_FP > IOC_STATS
+OVERRIDE_FP > IOC_STATS
+IOC_STATS > SUGGEST
+SUGGEST > PROMOTE
+PROMOTE > NEW_RULE
+NEW_RULE > SUPPRESS

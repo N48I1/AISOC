@@ -1,0 +1,68 @@
+title AISOC Hub-and-Swarm Architecture (Runtime Orchestration)
+
+Entry + Mode [icon: settings, color: red] {
+  ALERT [icon: alert-triangle, label: "Selected alert"]
+  ORCH [icon: webhooks, label: "POST /api/ai/orchestrate"]
+  MODE_SWARM [icon: git-branch, label: "AGENT_MODE=swarm (default)"]
+  MODE_LINEAR [icon: list, label: "AGENT_MODE=linear (legacy)"]
+}
+
+Hub Control Plane [icon: brain, color: orange] {
+  STEP0 [icon: filter, label: "Step 0: suppression check"]
+  STEP1 [icon: search, label: "Step 1: pre-flight memory reads"]
+  STEP2 [icon: activity, label: "Step 2: mandatory triage (analysis)"]
+  PLANNER [icon: brain-circuit, label: "Step 3: planner chooses agents"]
+  REFLECT [icon: refresh-cw, label: "Step 5: optional reflection re-plan"]
+}
+
+Swarm Investigators (Parallel) [icon: cpu, color: blue] {
+  INTEL [icon: radar, label: "intel"]
+  KNOWLEDGE [icon: book-open, label: "knowledge"]
+  CORRELATION [icon: network, label: "correlation"]
+  RECALL [icon: history, label: "recall (deterministic)"]
+  IOC_CHECK [icon: hash, label: "ioc_check (deterministic)"]
+}
+
+Composer Chain (Sequential) [icon: layers, color: teal] {
+  TICKETING [icon: file-text, label: "ticketing"]
+  RESPONSE [icon: shield-check, label: "response"]
+  VALIDATION [icon: badge-check, label: "validation"]
+}
+
+Memory + Output [icon: database, color: purple] {
+  COMMIT [icon: upload, label: "Step 7: commit insights + IOC memory"]
+  RESULT [icon: monitor, label: "Return pipeline result to UI"]
+}
+
+%% ENTRY + MODE
+ALERT > ORCH
+ORCH > MODE_SWARM
+ORCH > MODE_LINEAR
+
+%% SWARM PATH
+MODE_SWARM > STEP0
+STEP0 > STEP1
+STEP1 > STEP2
+STEP2 > PLANNER
+
+PLANNER > INTEL
+PLANNER > KNOWLEDGE
+PLANNER > CORRELATION
+PLANNER > RECALL
+PLANNER > IOC_CHECK
+
+INTEL > REFLECT
+KNOWLEDGE > REFLECT
+CORRELATION > REFLECT
+RECALL > REFLECT
+IOC_CHECK > REFLECT
+REFLECT > TICKETING
+
+TICKETING > RESPONSE
+RESPONSE > VALIDATION
+VALIDATION > COMMIT
+COMMIT > RESULT
+
+%% LEGACY LINEAR FALLBACK
+MODE_LINEAR > STEP2
+STEP2 > TICKETING

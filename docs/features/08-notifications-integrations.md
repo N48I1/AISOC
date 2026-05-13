@@ -38,7 +38,17 @@ Priority hierarchy: `CRITICAL > HIGH > MEDIUM > LOW`
 
 ### Configuration
 
-Set via environment variables:
+Set via UI (**Integrations → Email**) or environment variables.
+
+For Gmail in the UI, the minimum working setup is:
+
+1. **Gmail Address / SMTP Username**: your Gmail address
+2. **App Password / SMTP Password**: paste the Gmail app password
+3. **Destination Email**: recipient mailbox for alerts
+
+`smtp.gmail.com:587` is auto-filled if Gmail is detected, and app-password spaces are normalized automatically.
+
+Environment-variable option:
 
 ```env
 SMTP_HOST=smtp.yourorg.com
