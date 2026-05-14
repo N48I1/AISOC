@@ -1690,6 +1690,37 @@ async function startServer() {
     }
   });
 
+  // ── Ingest health ─────────────────────────────────────────────────────────
+  // We don't poll Wazuh — Wazuh POSTs to /api/ingest. So "is Wazuh online?" really
+  // means "has Wazuh hit our ingest endpoint recently?". We look at api_keys.last_used_at
+  // (updated on every /api/ingest call) plus the most recent alert timestamp.
+  app.get('/api/ingest/status', authenticate, (_req, res) => {
+    const keyRow: any = db.prepare(
+      "SELECT MAX(last_used_at) AS last_used_at FROM api_keys WHERE revoked=0"
+    ).get();
+    const alertRow: any = db.prepare(
+      "SELECT MAX(timestamp) AS last_ts FROM alerts"
+    ).get();
+    const alerts5m: any = db.prepare(
+      "SELECT COUNT(*) AS c FROM alerts WHERE timestamp >= datetime('now', '-5 minutes')"
+    ).get();
+    const alerts60m: any = db.prepare(
+      "SELECT COUNT(*) AS c FROM alerts WHERE timestamp >= datetime('now', '-1 hour')"
+    ).get();
+    const keys: any = db.prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN revoked=0 AND paused=0 THEN 1 ELSE 0 END) AS active FROM api_keys"
+    ).get();
+
+    res.json({
+      lastIngestAt:   keyRow?.last_used_at || null,
+      lastAlertAt:    alertRow?.last_ts || null,
+      alertsLast5m:   alerts5m?.c ?? 0,
+      alertsLastHour: alerts60m?.c ?? 0,
+      totalKeys:      keys?.total ?? 0,
+      activeKeys:     keys?.active ?? 0,
+    });
+  });
+
   // ── Stats ─────────────────────────────────────────────────────────────────
   app.get('/api/stats', authenticate, (_req, res) => {
     const activeRow: any  = db.prepare("SELECT COUNT(*) as count FROM alerts WHERE status IN ('NEW', 'ANALYZING', 'ESCALATED')").get();
@@ -1743,7 +1774,33 @@ async function startServer() {
 
   // ── Users ─────────────────────────────────────────────────────────────────
   app.get('/api/users', authenticate, requireAdmin, (_req, res) => {
-    res.json(db.prepare(`SELECT ${userProfileFields} FROM users`).all());
+    const adminFields = `${userProfileFields}, failed_logins, locked_until`;
+    res.json(db.prepare(`SELECT ${adminFields} FROM users ORDER BY id ASC`).all());
+  });
+
+  app.patch('/api/users/:id', authenticate, requireAdmin, (req: any, res) => {
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    const { role } = req.body;
+    const allowedRoles = ['TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN', 'ANALYST'];
+    if (!role || !allowedRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+    writeAudit(req.user.id, 'USER_ROLE_CHANGED', `Changed ${target.username} role → ${role}`);
+    const updated = db.prepare(`SELECT ${userProfileFields}, failed_logins, locked_until FROM users WHERE id = ?`).get(targetId);
+    res.json(updated);
+  });
+
+  app.delete('/api/users/:id', authenticate, requireAdmin, (req: any, res) => {
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    if (targetId === req.user.id) return res.status(400).json({ error: 'Cannot delete your own account' });
+    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
+    writeAudit(req.user.id, 'USER_DELETED', `Deleted user ${target.username} (#${targetId})`);
+    res.json({ ok: true });
   });
 
   // Users available for incident assignment — all roles visible for assignment
@@ -1804,7 +1861,7 @@ async function startServer() {
   app.get('/api/users/me/activity', authenticate, (req: any, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || '50'))));
     const rows = db.prepare(
-      'SELECT id, timestamp, action, details FROM audit_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?'
+      'SELECT id, timestamp, action, details FROM audit_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?'
     ).all(req.user.id, limit);
     res.json(rows);
   });

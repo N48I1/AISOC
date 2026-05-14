@@ -273,17 +273,67 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 };
 
 const Header = () => {
-  const { user, logout } = useAuth();
-  const [wazuhStatus, setWazuhStatus] = useState<'healthy' | 'degraded' | 'offline'>('offline');
+  const { user, token, logout } = useAuth();
+  const [ingestInfo, setIngestInfo] = useState<{
+    lastIngestAt: string | null;
+    lastAlertAt: string | null;
+    alertsLast5m: number;
+    alertsLastHour: number;
+    totalKeys: number;
+    activeKeys: number;
+  } | null>(null);
+
   useEffect(() => {
-    getIntegrations().then(list => {
-      const w = list.find((i: any) => i.name === 'wazuh');
-      setWazuhStatus(w?.enabled ? 'healthy' : 'offline');
-    }).catch(() => setWazuhStatus('offline'));
-  }, []);
+    if (!token) return;
+    const fetchStatus = () => {
+      fetch('/api/ingest/status', { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setIngestInfo(d); })
+        .catch(() => {});
+    };
+    fetchStatus();
+    const id = setInterval(fetchStatus, 30_000);
+    return () => clearInterval(id);
+  }, [token]);
+
+  // Status derived from ingest activity, not from a fake "is enabled" toggle:
+  //   healthy  — Wazuh POSTed something in the last 5 minutes
+  //   degraded — last activity 5–30 minutes ago
+  //   offline  — no activity 30+ min, or no active API key configured
+  const minsSinceIngest = (() => {
+    const ts = ingestInfo?.lastIngestAt || ingestInfo?.lastAlertAt;
+    if (!ts) return Infinity;
+    return (Date.now() - new Date(ts).getTime()) / 60_000;
+  })();
+
+  const wazuhStatus: 'healthy' | 'degraded' | 'offline' =
+    !ingestInfo || ingestInfo.activeKeys === 0 ? 'offline' :
+    minsSinceIngest < 5  ? 'healthy' :
+    minsSinceIngest < 30 ? 'degraded' :
+                           'offline';
+
+  const formatAgo = (mins: number) => {
+    if (!isFinite(mins)) return 'never';
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${Math.floor(mins)}m ago`;
+    const h = Math.floor(mins / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  };
+
+  const tooltipText =
+    !ingestInfo ? 'Checking ingest status…' :
+    ingestInfo.activeKeys === 0
+      ? 'No active API keys — Wazuh cannot push alerts. Create a key in Integrations.'
+      : `Last alert: ${formatAgo(minsSinceIngest)} · ${ingestInfo.alertsLast5m} in 5m · ${ingestInfo.alertsLastHour} in 1h · ${ingestInfo.activeKeys} active key${ingestInfo.activeKeys !== 1 ? 's' : ''}`;
+
   const statusColors = { healthy: 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]', degraded: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]', offline: 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' };
   const statusTextColors = { healthy: 'text-green-700', degraded: 'text-amber-700', offline: 'text-red-700' };
-  const statusLabels = { healthy: 'Wazuh: Healthy', degraded: 'Wazuh: Degraded', offline: 'Wazuh: Offline' };
+  const statusLabels = {
+    healthy:  ingestInfo ? `Wazuh: Live (${ingestInfo.alertsLast5m}/5m)` : 'Wazuh: Live',
+    degraded: `Wazuh: Idle ${formatAgo(minsSinceIngest)}`,
+    offline:  ingestInfo?.activeKeys === 0 ? 'Wazuh: No API Key' : 'Wazuh: Silent',
+  };
   return (
     <header className="h-[60px] bg-[var(--s0)] border-b border-[var(--b1)] text-[var(--t1)] flex items-center justify-between px-6 z-[100] sticky top-0 transition-all">
       <div className="flex items-center gap-3">
@@ -300,8 +350,11 @@ const Header = () => {
       </div>
 
       <div className="flex items-center gap-4">
-        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--s1)] border border-[var(--b2)]">
-          <div className={`w-2 h-2 rounded-full animate-pulse ${statusColors[wazuhStatus]}`} />
+        <div
+          className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--s1)] border border-[var(--b2)] cursor-help"
+          title={tooltipText}
+        >
+          <div className={`w-2 h-2 rounded-full ${wazuhStatus === 'healthy' ? 'animate-pulse' : ''} ${statusColors[wazuhStatus]}`} />
           <span className={`text-[0.7rem] font-black uppercase tracking-wider ${statusTextColors[wazuhStatus]}`}>{statusLabels[wazuhStatus]}</span>
         </div>
         
@@ -3934,6 +3987,7 @@ const AgentsTab = () => {
   const [localModels,  setLocalModels] = useState<LocalModel[]>([]);
   const [localStatus,  setLocalStatus] = useState<'unknown'|'checking'|'connected'|'unreachable'>('unknown');
   const [savingLocal,  setSavingLocal] = useState(false);
+  const [selectedPhase, setSelectedPhase] = useState<AgentPhase>('analysis');
 
   const agentDefs: Array<{ phase: AgentPhase; name: string; desc: string; prompt: string }> = [
     {
@@ -4081,6 +4135,28 @@ const AgentsTab = () => {
   const getStatForPhase = (phase: AgentPhase): AgentStat | undefined =>
     agentStats.find(s => s.phase === phase);
 
+  const agentIcons: Record<AgentPhase, any> = {
+    analysis:    Search,
+    intel:       Crosshair,
+    knowledge:   BookOpen,
+    correlation: Link2,
+    recall:      Clock,
+    ioc_check:   Hash,
+    ticketing:   FileText,
+    response:    Zap,
+    validation:  CheckCircle,
+  };
+
+  const agentGroups: Array<{ label: string; phases: AgentPhase[] }> = [
+    { label: 'Triage (mandatory)',         phases: ['analysis'] },
+    { label: 'Investigators (parallel)',   phases: ['intel', 'knowledge', 'correlation', 'recall', 'ioc_check'] },
+    { label: 'Composers (sequential)',     phases: ['ticketing', 'response', 'validation'] },
+  ];
+
+  const selectedAgent = agentDefs.find(a => a.phase === selectedPhase);
+  const selectedModel = config?.assignments?.[selectedPhase] || config?.defaults?.[selectedPhase] || '';
+  const selectedStat = getStatForPhase(selectedPhase);
+
   const statusColor: Record<string, string> = {
     unknown:     'text-[var(--t3)]',
     checking:    'text-blue-500',
@@ -4170,37 +4246,97 @@ const AgentsTab = () => {
         </div>
       </div>
 
-      {/* ── Agent Cards Grid ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-5">
-        {agentDefs.map((agent, i) => {
-          const currentModel = config?.assignments?.[agent.phase] || config?.defaults?.[agent.phase] || 'unknown';
+      {/* ── Agent Configuration: sidebar list + single detail panel ────────── */}
+      <div className="grid grid-cols-[280px_1fr] gap-5">
+        {/* Left: agent list grouped by orchestration stage */}
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden self-start">
+          <div className="px-4 py-3 border-b border-[var(--b1)] bg-[var(--s1)]">
+            <h3 className="text-[0.82rem] font-black text-[var(--t7)]">Agents</h3>
+            <p className="text-[0.62rem] text-[var(--t3)] mt-0.5">{agentDefs.length} phases · select to configure</p>
+          </div>
+          <div className="divide-y divide-[var(--b1)]">
+            {agentGroups.map(group => (
+              <div key={group.label} className="py-2">
+                <p className="px-4 pt-1 pb-2 text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-[0.18em]">{group.label}</p>
+                {group.phases.map(phase => {
+                  const def = agentDefs.find(d => d.phase === phase);
+                  if (!def) return null;
+                  const Icon = agentIcons[phase];
+                  const model = config?.assignments?.[phase] || config?.defaults?.[phase] || '';
+                  const isLocal = model.startsWith('local::');
+                  const isSelected = selectedPhase === phase;
+                  const stat = getStatForPhase(phase);
+                  const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
+                  const modelLabel = isLocal ? model.replace('local::', '') : (config?.modelLabels?.[model] || model.split('/').pop() || model);
+                  return (
+                    <button
+                      key={phase}
+                      onClick={() => setSelectedPhase(phase)}
+                      className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-colors border-l-2 ${
+                        isSelected
+                          ? 'bg-[var(--sa)] border-l-[var(--p1)]'
+                          : 'border-l-transparent hover:bg-[var(--s1)]'
+                      }`}
+                    >
+                      <Icon size={14} className={isSelected ? 'text-[var(--p1)]' : 'text-[var(--t3)]'} />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-[0.76rem] font-bold truncate ${isSelected ? 'text-[var(--p1)]' : 'text-[var(--t7)]'}`}>{def.name}</p>
+                        <p className="text-[0.6rem] text-[var(--t3)] truncate font-mono">{model ? modelLabel : '—'}</p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {fallbackPct > 30 && <AlertTriangle size={10} className="text-amber-600" />}
+                        {isLocal && <span className="w-1.5 h-1.5 rounded-full bg-green-500" title="Local LLM" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: detail panel for the selected agent */}
+        {selectedAgent && (() => {
+          const isLocalAssigned = selectedModel.startsWith('local::');
+          const isSaving = savingPhase === selectedPhase;
           const cloudOptions = config?.availableModels || [];
-          const isSaving     = savingPhase === agent.phase;
-          const isLocalAssigned = currentModel.startsWith('local::');
-          const stat = getStatForPhase(agent.phase);
-          const fallbackPct = stat && stat.total_runs > 0 ? Math.round((stat.fallback_count / stat.total_runs) * 100) : 0;
+          const fallbackPct = selectedStat && selectedStat.total_runs > 0 ? Math.round((selectedStat.fallback_count / selectedStat.total_runs) * 100) : 0;
+          const Icon = agentIcons[selectedPhase];
 
           return (
-            <div key={i} className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden ${isLocalAssigned ? 'border-green-300' : 'border-[var(--b1)]'}`}>
-              <div className={`flex justify-between items-center px-5 py-3 border-b ${isLocalAssigned ? 'bg-green-50/50' : 'bg-[var(--s1)]/50'}`}>
-                <h3 className="font-black text-[0.88rem] text-[var(--p1)]">{agent.name}</h3>
+            <div className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden ${isLocalAssigned ? 'border-green-300' : 'border-[var(--b1)]'}`}>
+              {/* Header */}
+              <div className={`flex justify-between items-center px-6 py-4 border-b ${isLocalAssigned ? 'bg-green-50/50' : 'bg-[var(--s1)]/50'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isLocalAssigned ? 'bg-green-100' : 'bg-[var(--sa)]'}`}>
+                    <Icon size={18} className={isLocalAssigned ? 'text-green-700' : 'text-[var(--p1)]'} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-[1rem] text-[var(--t7)]">{selectedAgent.name}</h3>
+                    <p className="text-[0.6rem] font-mono text-[var(--t3)] uppercase tracking-wider mt-0.5">phase: {selectedPhase}</p>
+                  </div>
+                </div>
                 <div className="flex items-center gap-2">
                   {isLocalAssigned && <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200 text-[0.58rem] font-black uppercase tracking-wide">🖥 LOCAL</span>}
                   <span className="bg-green-50 text-green-600 px-2 py-0.5 rounded text-[0.6rem] font-bold uppercase border border-green-100">Active</span>
                 </div>
               </div>
 
-              <div className="p-5 space-y-4">
-                <p className="text-[0.78rem] text-[var(--t4)]">{agent.desc}</p>
+              <div className="p-6 space-y-5">
+                {/* Description */}
+                <div>
+                  <p className="text-[0.62rem] font-black uppercase tracking-wider text-[var(--t3)] block mb-1.5">What this agent does</p>
+                  <p className="text-[0.85rem] text-[var(--t5)] leading-relaxed">{selectedAgent.desc}</p>
+                </div>
 
-                {/* Model dropdown with groups */}
+                {/* Model selector */}
                 <div className="space-y-1.5">
-                  <label className="text-[0.62rem] font-black uppercase tracking-wider text-[var(--t3)] block">Model</label>
+                  <label className="text-[0.62rem] font-black uppercase tracking-wider text-[var(--t3)] block">Model Assignment</label>
                   <select
-                    value={currentModel}
+                    value={selectedModel}
                     disabled={!isAdmin || loading || isSaving}
-                    onChange={(e) => handleModelChange(agent.phase, e.target.value)}
-                    className="w-full border border-[var(--b1)] rounded px-2.5 py-2 text-[0.72rem] outline-none focus:border-[var(--p1)] disabled:opacity-60"
+                    onChange={(e) => handleModelChange(selectedPhase, e.target.value)}
+                    className="w-full border border-[var(--b1)] rounded-lg px-3 py-2.5 text-[0.82rem] outline-none focus:border-[var(--p1)] disabled:opacity-60 bg-[var(--s0)]"
                   >
                     <optgroup label="☁ Cloud (OpenRouter)">
                       {cloudOptions.map((model) => (
@@ -4215,52 +4351,62 @@ const AgentsTab = () => {
                       </optgroup>
                     )}
                   </select>
-                  <div className="flex justify-between items-center">
-                    <span className="text-[0.62rem] text-[var(--t3)]">
-                      {isSaving ? 'Saving…' : isLocalAssigned ? `🖥 Ollama · ${currentModel.replace('local::','')}` : 'OpenRouter'}
+                  <div className="flex justify-between items-center pt-0.5">
+                    <span className="text-[0.65rem] text-[var(--t3)] font-semibold">
+                      {isSaving ? 'Saving…' : isLocalAssigned ? `🖥 Ollama · ${selectedModel.replace('local::', '')}` : '☁ OpenRouter'}
                     </span>
-                    <button onClick={() => setPromptModal({ name: agent.name, prompt: agent.prompt })} className="flex items-center gap-1 text-[var(--p1)] text-[0.68rem] font-bold hover:underline">
-                      <Eye className="w-3 h-3" />
-                      Prompt
-                    </button>
+                    {!isAdmin && <span className="text-[0.62rem] text-amber-600 font-bold">Admin-only setting</span>}
                   </div>
                 </div>
 
                 {/* Stats strip */}
-                {stat && (
-                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-[var(--b3)]">
-                    <div className="text-center">
-                      <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">Runs</p>
-                      <p className="text-[0.88rem] font-black text-[var(--t6)]">{stat.total_runs || '—'}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">Avg Conf</p>
-                      <p className={`text-[0.88rem] font-black ${
-                        stat.avg_confidence == null ? 'text-[var(--t3)]' :
-                        stat.avg_confidence >= 80 ? 'text-[#1e8e3e]' :
-                        stat.avg_confidence >= 60 ? 'text-amber-600' : 'text-[#d93025]'
-                      }`}>{stat.avg_confidence != null ? `${stat.avg_confidence}%` : '—'}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">Feedback</p>
-                      <p className={`text-[0.88rem] font-black ${
-                        stat.feedback_total === 0 ? 'text-[var(--t3)]' :
-                        (stat.feedback_accurate / stat.feedback_total) >= 0.75 ? 'text-[#1e8e3e]' :
-                        (stat.feedback_accurate / stat.feedback_total) >= 0.5  ? 'text-amber-600' : 'text-[#d93025]'
-                      }`}>{stat.feedback_total > 0 ? `${stat.feedback_accurate}/${stat.feedback_total}` : '—'}</p>
-                    </div>
-                    {fallbackPct > 30 && (
-                      <div className="col-span-3 flex items-center gap-1.5 text-[0.65rem] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 font-bold">
-                        <AlertTriangle size={11} />
-                        {fallbackPct}% fallback rate — model may be unavailable
-                      </div>
-                    )}
+                <div className="grid grid-cols-3 gap-3 pt-1">
+                  <div className="bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-3 text-center">
+                    <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-wider mb-1">Total Runs</p>
+                    <p className="text-[1.1rem] font-black text-[var(--t7)]">{selectedStat?.total_runs ?? '—'}</p>
+                  </div>
+                  <div className="bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-3 text-center">
+                    <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-wider mb-1">Avg Confidence</p>
+                    <p className={`text-[1.1rem] font-black ${
+                      !selectedStat || selectedStat.avg_confidence == null ? 'text-[var(--t3)]' :
+                      selectedStat.avg_confidence >= 80 ? 'text-[#1e8e3e]' :
+                      selectedStat.avg_confidence >= 60 ? 'text-amber-600' : 'text-[#d93025]'
+                    }`}>{selectedStat?.avg_confidence != null ? `${selectedStat.avg_confidence}%` : '—'}</p>
+                  </div>
+                  <div className="bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-3 text-center">
+                    <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-wider mb-1">Feedback</p>
+                    <p className={`text-[1.1rem] font-black ${
+                      !selectedStat || selectedStat.feedback_total === 0 ? 'text-[var(--t3)]' :
+                      (selectedStat.feedback_accurate / selectedStat.feedback_total) >= 0.75 ? 'text-[#1e8e3e]' :
+                      (selectedStat.feedback_accurate / selectedStat.feedback_total) >= 0.5 ? 'text-amber-600' : 'text-[#d93025]'
+                    }`}>{selectedStat && selectedStat.feedback_total > 0 ? `${selectedStat.feedback_accurate}/${selectedStat.feedback_total}` : '—'}</p>
+                  </div>
+                </div>
+
+                {fallbackPct > 30 && (
+                  <div className="flex items-center gap-2 text-[0.72rem] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 font-bold">
+                    <AlertTriangle size={13} />
+                    {fallbackPct}% fallback rate — the assigned model may be unavailable. Consider switching providers.
                   </div>
                 )}
+
+                {/* System prompt preview */}
+                <div className="pt-2 border-t border-[var(--b1)]">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[0.62rem] font-black uppercase tracking-wider text-[var(--t3)]">System Prompt</p>
+                    <button onClick={() => setPromptModal({ name: selectedAgent.name, prompt: selectedAgent.prompt })} className="flex items-center gap-1 text-[var(--p1)] text-[0.7rem] font-bold hover:underline">
+                      <Eye size={12} />
+                      Expand
+                    </button>
+                  </div>
+                  <pre className="text-[0.65rem] bg-slate-950 text-emerald-400 p-3 rounded-lg font-mono leading-relaxed max-h-32 overflow-hidden line-clamp-6 whitespace-pre-wrap">
+                    {selectedAgent.prompt}
+                  </pre>
+                </div>
               </div>
             </div>
           );
-        })}
+        })()}
       </div>
 
       {/* Prompt modal */}
@@ -4293,50 +4439,80 @@ const TACTIC_OPTIONS = [
   'COMMAND_AND_CONTROL','IMPACT','RECONNAISSANCE','RESOURCE_DEVELOPMENT',
 ];
 
+type AdminSection = 'users' | 'system' | 'ai' | 'appearance';
+type SystemOpKey = 'reset' | 'clear-investigation' | 'clear-fp';
+
+const SYSTEM_OPS: Record<SystemOpKey, { title: string; description: string; endpoint: string; confirmTitle: string; confirmMessage: string; confirmLabel: string }> = {
+  'reset': {
+    title: 'Reset All Alerts',
+    description: 'Sets every alert back to NEW status and clears AI analysis. Alerts remain in the database but lose their triage state.',
+    endpoint: '/api/admin/reset-alerts',
+    confirmTitle: 'Reset all alerts?',
+    confirmMessage: 'This will reset every alert back to NEW and delete its AI analysis, MITRE tags, and remediation steps. The alerts themselves are kept.',
+    confirmLabel: 'Reset Alerts',
+  },
+  'clear-investigation': {
+    title: 'Clear Incidents Queue',
+    description: 'Permanently deletes alerts currently in the Incidents queue (TRIAGED / ESCALATED / CLOSED / ANALYZING). The FP archive is preserved.',
+    endpoint: '/api/admin/clear-investigation',
+    confirmTitle: 'Clear Incidents queue?',
+    confirmMessage: 'This will permanently delete every alert in the Incidents queue along with their agent runs, action logs, and working memory. The FP archive is not affected.',
+    confirmLabel: 'Clear Queue',
+  },
+  'clear-fp': {
+    title: 'Clear FP Archive',
+    description: 'Permanently deletes alerts in the FP archive (FALSE_POSITIVE / FP_CONFIRMED). The Incidents queue is preserved.',
+    endpoint: '/api/admin/clear-fp-archive',
+    confirmTitle: 'Clear FP archive?',
+    confirmMessage: 'This will permanently delete every alert currently archived as a false positive. The Incidents queue is not affected.',
+    confirmLabel: 'Clear Archive',
+  },
+};
+
 const SettingsTab = () => {
   const showToast = useToast();
   const { user, token } = useAuth();
-  const [users, setUsers]              = useState<UserType[]>([]);
-  const [loadingUsers, setLoadingUsers]= useState(false);
-  const [showCreateForm, setShowCreate]= useState(false);
-  const [form, setForm]                = useState({ username: '', password: '', email: '', role: 'ANALYST' });
-  const [createError, setCreateError]  = useState('');
-  const [createSuccess, setCreateOk]  = useState('');
+  const { dark, toggle: toggleDark } = useDarkMode();
   const isAdmin = user?.role === 'ADMIN';
 
-  const [pwForm, setPwForm]   = useState({ current: '', next: '', confirm: '' });
-  const [pwError, setPwError] = useState('');
-  const [pwOk, setPwOk]       = useState('');
-  const [pwLoading, setPwLoading] = useState(false);
+  // Sub-tab navigation
+  const [section, setSection] = useState<AdminSection>('users');
 
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPwError(''); setPwOk('');
-    if (pwForm.next !== pwForm.confirm) { setPwError('New passwords do not match.'); return; }
-    if (pwForm.next.length < 6) { setPwError('New password must be at least 6 characters.'); return; }
-    setPwLoading(true);
-    try {
-      const res = await fetch('/api/users/me/password', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ currentPassword: pwForm.current, newPassword: pwForm.next }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setPwError(data.message || 'Failed to update password.'); return; }
-      setPwOk('Password updated successfully.');
-      setPwForm({ current: '', next: '', confirm: '' });
-    } catch { setPwError('Connection error.'); }
-    finally { setPwLoading(false); }
-  };
+  // System-wide stats (drives the cards at the top)
+  const [stats, setStats] = useState<{ activeIncidents: number; totalAlerts: number; automationRate: string; fpRate: string } | null>(null);
 
-  useEffect(() => {
+  // Users
+  const [users, setUsers]              = useState<any[]>([]);
+  const [loadingUsers, setLoadingUsers]= useState(false);
+  const [showCreateForm, setShowCreate]= useState(false);
+  const [form, setForm]                = useState({ username: '', password: '', email: '', role: 'TIER1' });
+  const [createError, setCreateError]  = useState('');
+  const [createSuccess, setCreateOk]   = useState('');
+  const [editingRole, setEditingRole]  = useState<Record<number, string>>({});
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+
+  // System ops
+  const [confirmOp, setConfirmOp] = useState<SystemOpKey | null>(null);
+  const [opRunning, setOpRunning] = useState<SystemOpKey | null>(null);
+
+  const loadUsers = () => {
     if (!isAdmin || !token) return;
     setLoadingUsers(true);
     fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(data => { if (Array.isArray(data)) setUsers(data); })
       .finally(() => setLoadingUsers(false));
-  }, [isAdmin, token]);
+  };
+
+  const loadStats = () => {
+    if (!token) return;
+    fetch('/api/stats', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(data => { if (!data.error) setStats(data); })
+      .catch(() => {});
+  };
+
+  useEffect(() => { loadUsers(); loadStats(); }, [isAdmin, token]);
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4349,126 +4525,213 @@ const SettingsTab = () => {
         body: JSON.stringify(form),
       });
       const data = await res.json();
-      if (data.error) { setCreateError(data.error); return; }
+      if (data.error) { setCreateError(data.error + (data.details ? ': ' + data.details.join(', ') : '')); return; }
       setCreateOk(`User "${data.username}" created successfully.`);
       setUsers(prev => [...prev, data]);
-      setForm({ username: '', password: '', email: '', role: 'ANALYST' });
+      setForm({ username: '', password: '', email: '', role: 'TIER1' });
       setShowCreate(false);
-      showToast(`User "${data.username}" created`);
+      showToast(`User "${data.username}" created`, 'success');
     } catch (err: any) {
       setCreateError(err.message || 'Failed to create user');
     }
   };
 
-  const { dark, toggle: toggleDark } = useDarkMode();
+  const handleRoleChange = async (uid: number, newRole: string) => {
+    try {
+      const res = await fetch(`/api/users/${uid}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ role: newRole }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Failed to update role', 'error'); return; }
+      setUsers(prev => prev.map(u => u.id === uid ? { ...u, role: newRole } : u));
+      setEditingRole(prev => { const n = { ...prev }; delete n[uid]; return n; });
+      showToast(`Role updated to ${newRole}`, 'success');
+    } catch { showToast('Connection error', 'error'); }
+  };
+
+  const handleDeleteUser = async (uid: number) => {
+    try {
+      const res = await fetch(`/api/users/${uid}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Failed to delete user', 'error'); return; }
+      setUsers(prev => prev.filter(u => u.id !== uid));
+      setDeleteConfirm(null);
+      showToast('User deleted', 'success');
+    } catch { showToast('Connection error', 'error'); }
+  };
+
+  const handleUnlockUser = async (uid: number) => {
+    try {
+      const res = await fetch(`/api/admin/unlock-user/${uid}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) { loadUsers(); showToast('Account unlocked', 'success'); }
+    } catch { showToast('Connection error', 'error'); }
+  };
+
+  const isLocked = (u: any) => u.locked_until && new Date(u.locked_until) > new Date();
+  const lockedCount = users.filter(isLocked).length;
+
+  const runSystemOp = async (key: SystemOpKey) => {
+    const op = SYSTEM_OPS[key];
+    setOpRunning(key);
+    setConfirmOp(null);
+    try {
+      const res = await fetch(op.endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || `${op.title} failed`, 'error'); return; }
+      const count = data.deleted ?? data.reset ?? 0;
+      showToast(`${op.title} — ${count} record${count !== 1 ? 's' : ''} affected`, 'success');
+      loadStats();
+    } catch { showToast('Connection error', 'error'); }
+    finally { setOpRunning(null); }
+  };
+
+  if (!isAdmin) {
+    return (
+      <div className="p-8 max-w-3xl mx-auto h-full overflow-y-auto">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-amber-800 flex items-start gap-3">
+          <Lock className="w-5 h-5 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-bold text-[0.95rem]">Admin Ops is restricted to administrators</p>
+            <p className="text-[0.8rem] mt-1 opacity-90">Contact your SOC administrator if you need elevated access.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const sections: Array<{ id: AdminSection; label: string; icon: any }> = [
+    { id: 'users',      label: 'Users',       icon: User },
+    { id: 'system',     label: 'System Ops',  icon: AlertOctagon },
+    { id: 'ai',         label: 'AI Models',   icon: Database },
+    { id: 'appearance', label: 'Appearance',  icon: Palette },
+  ];
+
+  const statCards = [
+    { label: 'Users',            value: users.length,                   subtitle: `${lockedCount} locked`,                  icon: User,         tint: 'text-blue-600',    bg: 'bg-blue-50' },
+    { label: 'Active Incidents', value: stats?.activeIncidents ?? '—',  subtitle: 'NEW · ANALYZING · ESCALATED',            icon: AlertOctagon, tint: 'text-red-600',     bg: 'bg-red-50'  },
+    { label: 'Total Alerts',     value: stats?.totalAlerts ?? '—',      subtitle: `${stats?.fpRate ?? '—'} false-positive`, icon: Bell,         tint: 'text-amber-600',   bg: 'bg-amber-50' },
+    { label: 'Automation Rate',  value: stats?.automationRate ?? '—',   subtitle: 'analyzed by AI agents',                  icon: Activity,     tint: 'text-emerald-600', bg: 'bg-emerald-50' },
+  ];
 
   return (
-    <div className="p-8 max-w-4xl mx-auto space-y-8 overflow-y-auto h-full">
-      <h2 className="text-2xl font-bold text-[var(--p1)]">System Administration</h2>
+    <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
+      {/* Header */}
+      <div className="flex items-end justify-between">
+        <div>
+          <h2 className="text-xl font-black text-[var(--t7)]">System Administration</h2>
+          <p className="text-[0.78rem] text-[var(--t3)] mt-0.5">Manage users, run system operations, and configure AI agents.</p>
+        </div>
+        <button
+          onClick={() => { loadUsers(); loadStats(); showToast('Refreshed', 'info'); }}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--b2)] text-[0.72rem] font-bold text-[var(--t5)] hover:bg-[var(--s1)] transition-colors"
+        >
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </div>
 
-      {/* Appearance */}
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-6 shadow-sm">
-        <h3 className="text-[0.85rem] font-bold text-[var(--t2)] uppercase mb-4">Appearance</h3>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-[0.9rem] font-semibold text-[var(--t7)]">Dark Mode</p>
-            <p className="text-[0.75rem] text-[var(--t4)] mt-0.5">Switch between light and dark interface</p>
+      {/* Stat cards */}
+      <div className="grid grid-cols-4 gap-4">
+        {statCards.map(s => (
+          <div key={s.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 shadow-sm">
+            <div className="flex items-start justify-between mb-2">
+              <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider">{s.label}</p>
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${s.bg}`}><s.icon size={14} className={s.tint} /></div>
+            </div>
+            <p className="text-2xl font-black text-[var(--t7)] leading-none">{s.value}</p>
+            <p className="text-[0.65rem] text-[var(--t3)] mt-1.5 font-semibold">{s.subtitle}</p>
           </div>
+        ))}
+      </div>
+
+      {/* Sub-tab nav */}
+      <div className="flex gap-1 bg-[var(--s1)] p-1 rounded-xl border border-[var(--b1)]">
+        {sections.map(s => (
           <button
-            onClick={toggleDark}
-            className={`relative inline-flex h-7 w-13 items-center rounded-full transition-colors duration-200 focus:outline-none ${dark ? 'bg-[var(--p1)]' : 'bg-slate-300'}`}
+            key={s.id}
+            onClick={() => setSection(s.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[0.78rem] font-bold transition-all ${
+              section === s.id ? 'bg-[var(--s0)] text-[var(--p1)] shadow-sm' : 'text-[var(--t3)] hover:text-[var(--t7)]'
+            }`}
           >
-            <span className={`inline-block h-5 w-5 transform rounded-full bg-[var(--s0)] shadow-md transition-transform duration-200 ${dark ? 'translate-x-7' : 'translate-x-1'}`} />
+            <s.icon size={14} />{s.label}
           </button>
-        </div>
+        ))}
       </div>
 
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-6 shadow-sm">
-        <h3 className="text-[0.85rem] font-bold text-[var(--t2)] uppercase mb-4">Your Profile</h3>
-        <div className="grid grid-cols-3 gap-4">
-          {[
-            { label: 'Username', value: user?.username },
-            { label: 'Role',     value: user?.role },
-            { label: 'User ID',  value: `#${user?.id}` },
-          ].map(f => (
-            <div key={f.label} className="bg-[var(--s1)] border border-[var(--b2)] rounded-lg p-3">
-              <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-wider mb-1">{f.label}</p>
-              <p className="font-bold text-[0.9rem] text-[var(--t7)]">{f.value}</p>
+      {/* Modals */}
+      {deleteConfirm !== null && (
+        <ConfirmModal
+          title="Delete User"
+          message={`Delete user "${users.find(u => u.id === deleteConfirm)?.username}"? This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={() => handleDeleteUser(deleteConfirm)}
+          onCancel={() => setDeleteConfirm(null)}
+        />
+      )}
+      {confirmOp && (
+        <ConfirmModal
+          title={SYSTEM_OPS[confirmOp].confirmTitle}
+          message={SYSTEM_OPS[confirmOp].confirmMessage}
+          confirmLabel={SYSTEM_OPS[confirmOp].confirmLabel}
+          onConfirm={() => runSystemOp(confirmOp)}
+          onCancel={() => setConfirmOp(null)}
+        />
+      )}
+
+      {/* ─── USERS ─── */}
+      {section === 'users' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-[var(--b1)] bg-[var(--s1)] flex justify-between items-center">
+            <div>
+              <h3 className="text-[0.88rem] font-black text-[var(--t7)]">User Management</h3>
+              <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">{users.length} user{users.length !== 1 ? 's' : ''} · {lockedCount} locked</p>
             </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-6 shadow-sm">
-        <h3 className="text-[0.85rem] font-bold text-[var(--t2)] uppercase mb-4">Security — Change Password</h3>
-        <form onSubmit={handleChangePassword} className="space-y-3 max-w-sm">
-          {pwError && <p className="text-[0.8rem] text-[#d93025] bg-red-50 border border-red-100 rounded px-3 py-2">{pwError}</p>}
-          {pwOk    && <p className="text-[0.8rem] text-[#1e8e3e] bg-green-50 border border-green-100 rounded px-3 py-2">✓ {pwOk}</p>}
-          {[
-            { label: 'Current Password', key: 'current' },
-            { label: 'New Password',     key: 'next' },
-            { label: 'Confirm New Password', key: 'confirm' },
-          ].map(({ label, key }) => (
-            <div key={key} className="space-y-1">
-              <label className="text-[0.7rem] font-bold text-[var(--t2)] uppercase tracking-wider">{label}</label>
-              <input
-                type="password"
-                required
-                value={(pwForm as any)[key]}
-                onChange={e => setPwForm(prev => ({ ...prev, [key]: e.target.value }))}
-                className="w-full px-3 py-2 bg-[var(--s1)] border border-[var(--b1)] rounded text-[0.88rem] outline-none focus:border-[var(--p1)] transition-colors"
-              />
-            </div>
-          ))}
-          <button
-            type="submit"
-            disabled={pwLoading}
-            className="mt-1 px-4 py-2 bg-[var(--p1)] text-white text-[0.82rem] font-bold rounded hover:bg-[var(--pd)] transition-colors disabled:opacity-50"
-          >
-            {pwLoading ? 'Updating…' : 'Update Password'}
-          </button>
-        </form>
-      </div>
-
-      {isAdmin ? (
-        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
-          <div className="p-4 border-b bg-[var(--s1)] flex justify-between items-center">
-            <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">User Management</h3>
             <button
               onClick={() => setShowCreate(!showCreateForm)}
-              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[var(--pd)] transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded-lg text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors"
             >
-              <UserPlus className="w-3 h-3" />
-              Add User
+              <UserPlus size={13} />
+              {showCreateForm ? 'Cancel' : 'Add User'}
             </button>
           </div>
 
           {showCreateForm && (
             <form onSubmit={handleCreateUser} className="p-5 border-b border-[var(--b1)] bg-[var(--sa)] space-y-3">
-              {createError  && <div className="text-[#d93025] text-sm font-semibold">{createError}</div>}
-              {createSuccess && <div className="text-[#1e8e3e] text-sm font-semibold">{createSuccess}</div>}
+              <p className="text-[0.72rem] text-[var(--t3)]">Password must be at least 8 chars with uppercase, lowercase, digit, and special character.</p>
+              {createError  && <div className="text-[#d93025] text-[0.78rem] font-semibold bg-red-50 border border-red-200 rounded px-3 py-2">{createError}</div>}
+              {createSuccess && <div className="text-[#1e8e3e] text-[0.78rem] font-semibold bg-green-50 border border-green-100 rounded px-3 py-2">{createSuccess}</div>}
               <div className="grid grid-cols-2 gap-3">
                 <input required placeholder="Username" value={form.username}
                   onChange={e => setForm({...form, username: e.target.value})}
-                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
-                <input required type="password" placeholder="Password" value={form.password}
+                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                <input required type="password" placeholder="Password (min 8 chars)" value={form.password}
                   onChange={e => setForm({...form, password: e.target.value})}
-                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
                 <input placeholder="Email (optional)" value={form.email}
                   onChange={e => setForm({...form, email: e.target.value})}
-                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
                 <select value={form.role} onChange={e => setForm({...form, role: e.target.value})}
-                  className="border border-[var(--b1)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
-                  <option value="TIER1">TIER1 — Alerts Queue triage</option>
-                  <option value="TIER2">TIER2 — Incident owner</option>
-                  <option value="INCIDENT_LEAD">INCIDENT_LEAD — Reassign + close</option>
-                  <option value="ADMIN">ADMIN — Full access</option>
-                  <option value="ANALYST">ANALYST (legacy alias for TIER1)</option>
+                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
+                  <option value="TIER1">SOC Analyst L1 (TIER1)</option>
+                  <option value="TIER2">SOC Analyst L2 (TIER2)</option>
+                  <option value="INCIDENT_LEAD">Incident Lead</option>
+                  <option value="ADMIN">Administrator</option>
                 </select>
               </div>
               <div className="flex gap-2">
-                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-[var(--pd)]">Create</button>
-                <button type="button" onClick={() => setShowCreate(false)} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
+                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-[var(--pd)]">Create User</button>
+                <button type="button" onClick={() => { setShowCreate(false); setCreateError(''); setCreateOk(''); }} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
               </div>
             </form>
           )}
@@ -4476,54 +4739,161 @@ const SettingsTab = () => {
           <table className="w-full text-left text-sm">
             <thead className="bg-[var(--s1)] border-b border-[var(--b1)] text-[var(--t2)] font-bold uppercase text-[0.7rem] tracking-wider">
               <tr>
-                <th className="p-4">ID</th>
-                <th className="p-4">Username</th>
-                <th className="p-4">Email</th>
-                <th className="p-4">Role</th>
+                <th className="p-3 pl-4">User</th>
+                <th className="p-3">Role</th>
+                <th className="p-3">Status</th>
+                <th className="p-3 text-right pr-4">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#f0f0f0]">
+            <tbody className="divide-y divide-[var(--b1)]">
               {loadingUsers ? (
                 <tr><td colSpan={4} className="p-6 text-center text-[var(--t3)]">Loading users...</td></tr>
-              ) : users.map(u => (
-                <tr key={u.id} className="hover:bg-[var(--s1)]">
-                  <td className="p-4 font-mono text-[var(--t3)]">#{u.id}</td>
-                  <td className="p-4 font-semibold">{u.username}</td>
-                  <td className="p-4 text-[var(--t4)]">{u.email || '—'}</td>
-                  <td className="p-4">
-                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
-                      u.role === 'ADMIN'         ? 'bg-purple-100 text-purple-700' :
-                      u.role === 'INCIDENT_LEAD' ? 'bg-indigo-100 text-indigo-700' :
-                      u.role === 'TIER2'         ? 'bg-blue-100 text-blue-700'     :
-                      'bg-slate-100 text-slate-700'
-                    }`}>
-                      {u.role}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              ) : users.map(u => {
+                const locked = isLocked(u);
+                const isCurrentUser = u.id === user?.id;
+                const currentEditRole = editingRole[u.id] ?? u.role;
+                return (
+                  <tr key={u.id} className={`hover:bg-[var(--s1)] transition-colors ${locked ? 'bg-red-50/30' : ''}`}>
+                    <td className="p-3 pl-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[0.65rem] font-black shrink-0" style={{ backgroundColor: u.avatar_color || '#3b82f6' }}>
+                          {(u.display_name || u.username || '?').split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-[0.82rem] text-[var(--t7)]">{u.display_name || u.username}</p>
+                          <p className="text-[0.65rem] text-[var(--t3)]">@{u.username} {u.email ? `· ${u.email}` : ''}</p>
+                        </div>
+                        {isCurrentUser && <span className="text-[0.6rem] bg-blue-100 text-blue-700 font-bold px-1.5 py-0.5 rounded">you</span>}
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      {editingRole[u.id] !== undefined ? (
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={currentEditRole}
+                            onChange={e => setEditingRole(prev => ({ ...prev, [u.id]: e.target.value }))}
+                            className="bg-[var(--s1)] border border-[var(--p1)] rounded px-2 py-1 text-[0.75rem] outline-none"
+                          >
+                            <option value="TIER1">SOC Analyst L1</option>
+                            <option value="TIER2">SOC Analyst L2</option>
+                            <option value="INCIDENT_LEAD">Incident Lead</option>
+                            <option value="ADMIN">Administrator</option>
+                          </select>
+                          <button onClick={() => handleRoleChange(u.id, currentEditRole)} className="text-green-600 hover:text-green-700 p-0.5"><CheckCircle size={15} /></button>
+                          <button onClick={() => setEditingRole(prev => { const n = {...prev}; delete n[u.id]; return n; })} className="text-[var(--t3)] hover:text-[var(--t6)] p-0.5"><XCircle size={15} /></button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
+                            u.role === 'ADMIN'         ? 'bg-purple-100 text-purple-700' :
+                            u.role === 'INCIDENT_LEAD' ? 'bg-indigo-100 text-indigo-700' :
+                            u.role === 'TIER2'         ? 'bg-blue-100 text-blue-700'     :
+                            u.role === 'TIER1'         ? 'bg-cyan-100 text-cyan-700'     :
+                            'bg-slate-100 text-slate-600'
+                          }`}>{ROLE_LABELS[u.role as UserRole] || u.role}</span>
+                          {!isCurrentUser && (
+                            <button onClick={() => setEditingRole(prev => ({ ...prev, [u.id]: u.role }))} className="text-[var(--t3)] hover:text-[var(--p1)] transition-colors" title="Edit role">
+                              <Edit3 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      {locked ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="flex items-center gap-1 text-[0.72rem] text-red-600 font-semibold"><Lock size={12} />Locked</span>
+                          <button onClick={() => handleUnlockUser(u.id)} className="text-[0.65rem] bg-amber-100 text-amber-700 hover:bg-amber-200 font-bold px-2 py-0.5 rounded transition-colors">Unlock</button>
+                        </div>
+                      ) : (u.failed_logins > 0) ? (
+                        <span className="text-[0.72rem] text-amber-600 font-semibold">{u.failed_logins} failed login{u.failed_logins !== 1 ? 's' : ''}</span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[0.72rem] text-green-600"><CheckCircle size={12} />Active</span>
+                      )}
+                    </td>
+                    <td className="p-3 pr-4 text-right">
+                      {!isCurrentUser && (
+                        <button onClick={() => setDeleteConfirm(u.id)} className="text-[var(--t3)] hover:text-red-500 transition-colors p-1 rounded hover:bg-red-50" title="Delete user">
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-      ) : (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-5 text-amber-800 text-sm font-semibold">
-          User management is restricted to ADMIN role. Contact your SOC administrator.
+      )}
+
+      {/* ─── SYSTEM OPS ─── */}
+      {section === 'system' && (
+        <div className="space-y-4">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+            <AlertOctagon className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-[0.85rem] font-black text-red-700">Danger Zone</p>
+              <p className="text-[0.72rem] text-red-700/90 mt-0.5">These operations are immediate and irreversible. They write to the audit log under your account.</p>
+            </div>
+          </div>
+
+          {(Object.entries(SYSTEM_OPS) as Array<[SystemOpKey, typeof SYSTEM_OPS[SystemOpKey]]>).map(([key, op]) => (
+            <div key={key} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-5 shadow-sm flex items-start justify-between gap-6">
+              <div className="flex-1">
+                <h4 className="text-[0.88rem] font-black text-[var(--t7)] mb-1">{op.title}</h4>
+                <p className="text-[0.75rem] text-[var(--t3)] leading-relaxed">{op.description}</p>
+                <p className="text-[0.62rem] text-[var(--t3)] mt-2 font-mono">POST {op.endpoint}</p>
+              </div>
+              <button
+                onClick={() => setConfirmOp(key)}
+                disabled={opRunning !== null}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[0.75rem] font-bold hover:bg-red-100 disabled:opacity-50 transition-colors"
+              >
+                {opRunning === key ? <RefreshCw size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                {opRunning === key ? 'Running...' : op.confirmLabel}
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* ── AI Model Configuration ────────────────────────────────────────── */}
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden shadow-sm">
-        <div className="px-5 py-3 border-b bg-[var(--s1)] flex items-center gap-2">
-          <Shield className="w-4 h-4 text-[var(--p1)]" />
-          <h3 className="text-[0.85rem] font-bold text-[var(--p1)]">AI Agent Model Configuration</h3>
-          <span className="text-[0.65rem] text-[var(--t3)]">
-            {isAdmin ? 'Configure model assignments and local LLM server.' : 'Admin-only.'}
-          </span>
+      {/* ─── AI MODELS ─── */}
+      {section === 'ai' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden shadow-sm">
+          <div className="px-5 py-3 border-b border-[var(--b1)] bg-[var(--s1)] flex items-center gap-2">
+            <Database className="w-4 h-4 text-[var(--p1)]" />
+            <div>
+              <h3 className="text-[0.88rem] font-black text-[var(--t7)]">AI Agent Models</h3>
+              <p className="text-[0.65rem] text-[var(--t3)]">Assign models to each phase of the orchestration pipeline.</p>
+            </div>
+          </div>
+          <div className="p-5">
+            <AgentsTab />
+          </div>
         </div>
-        <div className="p-5">
-          <AgentsTab />
+      )}
+
+      {/* ─── APPEARANCE ─── */}
+      {section === 'appearance' && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-6 shadow-sm">
+          <h3 className="text-[0.88rem] font-black text-[var(--t7)] mb-4 flex items-center gap-2">
+            <Palette size={15} className="text-[var(--p1)]" />Theme & Display
+          </h3>
+          <div className="flex items-center justify-between py-3 border-b border-[var(--b1)]">
+            <div>
+              <p className="text-[0.85rem] font-semibold text-[var(--t7)]">Dark Mode</p>
+              <p className="text-[0.7rem] text-[var(--t3)] mt-0.5">Switch between light and dark interface for this device</p>
+            </div>
+            <button
+              onClick={toggleDark}
+              className={`relative inline-flex h-7 w-13 items-center rounded-full transition-colors duration-200 focus:outline-none ${dark ? 'bg-[var(--p1)]' : 'bg-slate-300'}`}
+            >
+              <span className={`inline-block h-5 w-5 transform rounded-full bg-[var(--s0)] shadow-md transition-transform duration-200 ${dark ? 'translate-x-7' : 'translate-x-1'}`} />
+            </button>
+          </div>
+          <p className="text-[0.65rem] text-[var(--t3)] mt-3">Tip: per-user preferences (notifications, avatar, timezone) live in your <span className="font-bold text-[var(--p1)]">Profile</span> page.</p>
         </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -5868,9 +6238,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
   const unscanned = alerts.filter(a => a.status === 'NEW');
   const recentFp = alerts.filter(a => a.status === 'FALSE_POSITIVE' || a.status === 'FP_CONFIRMED').slice(0, 20);
   const [unscannedSearch, setUnscannedSearch] = useState('');
-  const [directScanId, setDirectScanId] = useState('');
-  const [directScanResult, setDirectScanResult] = useState<any>(null);
-  const [directScanning, setDirectScanning] = useState(false);
+  const [unscannedSevs, setUnscannedSevs] = useState<Set<'CRITICAL'|'HIGH'|'MEDIUM'|'LOW'>>(new Set());
 
   const reload = useCallback(() => {
     getFpReduction().then(d => d && setFpData(d)).catch(() => {});
@@ -5915,24 +6283,6 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
     await overrideFp(alertId);
     setFpResults(prev => prev.filter(r => r.id !== alertId));
     toast('Sent to Incidents queue', 'success');
-  };
-
-  const handleDirectScan = async () => {
-    const id = directScanId.trim();
-    if (!id) return;
-    setDirectScanning(true);
-    setDirectScanResult(null);
-    try {
-      const result = await fpScan(id);
-      setDirectScanResult({ id, ...result });
-      toast(result.is_fp
-        ? `FP detected (${result.fp_method}): ${result.fp_reason?.slice(0, 60)}`
-        : 'Not a false positive — clean alert',
-        result.is_fp ? 'success' : 'info');
-    } catch (e: any) {
-      toast(e?.message || 'Scan failed', 'error');
-    }
-    setDirectScanning(false);
   };
 
   const handleCreateRule = async () => {
@@ -6027,40 +6377,71 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
               </button>
             </div>
 
-            {/* Search filter */}
-            <div className="px-3 py-2 border-b border-[var(--b1)] bg-[var(--s0)]">
+            {/* Filter bar — search + severity chips */}
+            <div className="px-3 py-2.5 border-b border-[var(--b1)] bg-[var(--s0)] space-y-2.5">
               <div className="relative">
-                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
                 <input
                   type="text"
-                  placeholder="Filter by description, IP, or agent…"
+                  placeholder="Search description, IP, agent, or alert ID…"
                   value={unscannedSearch}
                   onChange={e => setUnscannedSearch(e.target.value)}
-                  className="w-full pl-7 pr-3 py-1.5 text-[0.72rem] bg-[var(--s1)] border border-[var(--b1)] rounded-lg outline-none focus:border-[var(--p1)] transition-colors"
+                  className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
                 />
                 {unscannedSearch && (
-                  <button onClick={() => setUnscannedSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t6)]">
-                    <X size={11} />
+                  <button onClick={() => setUnscannedSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2 items-center flex-wrap">
+                <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Severity:</span>
+                {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).map(sv => {
+                  const isActive = unscannedSevs.has(sv);
+                  return (
+                    <button
+                      key={sv}
+                      onClick={() => setUnscannedSevs(prev => {
+                        const next = new Set(prev);
+                        next.has(sv) ? next.delete(sv) : next.add(sv);
+                        return next;
+                      })}
+                      className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? severityChipColor(sv) + ' ring-2 ring-offset-0 ring-current' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                    >
+                      {sv}
+                    </button>
+                  );
+                })}
+                {(unscannedSearch || unscannedSevs.size > 0) && (
+                  <button
+                    onClick={() => { setUnscannedSearch(''); setUnscannedSevs(new Set()); }}
+                    className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+                  >
+                    Clear filters
                   </button>
                 )}
               </div>
             </div>
 
-            <div className="flex-1 max-h-[360px] overflow-y-auto divide-y divide-[var(--b1)]">
+            <div className="flex-1 max-h-[480px] overflow-y-auto divide-y divide-[var(--b1)]">
               {(() => {
                 const q = unscannedSearch.toLowerCase();
-                const filtered = unscanned.filter(a =>
-                  !q ||
-                  a.description?.toLowerCase().includes(q) ||
-                  a.source_ip?.toLowerCase().includes(q) ||
-                  a.agent_name?.toLowerCase().includes(q) ||
-                  a.id?.toLowerCase().includes(q)
-                );
+                const sevOf = (s: number) =>
+                  s >= 12 ? 'CRITICAL' : s >= 10 ? 'HIGH' : s >= 7 ? 'MEDIUM' : 'LOW';
+                const filtered = unscanned.filter(a => {
+                  const matchesText = !q ||
+                    a.description?.toLowerCase().includes(q) ||
+                    a.source_ip?.toLowerCase().includes(q) ||
+                    a.agent_name?.toLowerCase().includes(q) ||
+                    a.id?.toLowerCase().includes(q);
+                  const matchesSev = unscannedSevs.size === 0 || unscannedSevs.has(sevOf(a.severity) as any);
+                  return matchesText && matchesSev;
+                });
                 if (unscanned.length === 0) return (
                   <div className="p-8 text-center text-[var(--t3)] text-[0.78rem]">No unscanned alerts. All clear.</div>
                 );
                 if (filtered.length === 0) return (
-                  <div className="p-6 text-center text-[var(--t3)] text-[0.78rem]">No alerts match <span className="font-mono text-[var(--p1)]">"{unscannedSearch}"</span></div>
+                  <div className="p-6 text-center text-[var(--t3)] text-[0.78rem]">No alerts match the current filters.</div>
                 );
                 return filtered.map(a => (
                   <div key={a.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[var(--sa)] group">
@@ -6078,43 +6459,6 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
                   </div>
                 ));
               })()}
-            </div>
-
-            {/* Direct scan by alert ID */}
-            <div className="px-3 py-2.5 border-t border-[var(--b1)] bg-[var(--s1)]">
-              <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Scan any alert by ID</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="alert-id or fp-cand-openvas-001…"
-                  value={directScanId}
-                  onChange={e => { setDirectScanId(e.target.value); setDirectScanResult(null); }}
-                  onKeyDown={e => e.key === 'Enter' && handleDirectScan()}
-                  className="flex-1 px-3 py-1.5 text-[0.72rem] bg-[var(--s0)] border border-[var(--b1)] rounded-lg outline-none focus:border-[var(--p1)] font-mono transition-colors"
-                />
-                <button onClick={handleDirectScan} disabled={directScanning || !directScanId.trim()}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.68rem] font-bold hover:bg-[var(--pd)] disabled:opacity-50 flex items-center gap-1 shrink-0">
-                  {directScanning
-                    ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-current/30 border-t-current animate-spin" />Scanning…</>
-                    : <><Search size={11} />Scan</>}
-                </button>
-              </div>
-              {directScanResult && (
-                <div className={`mt-2 px-3 py-2 rounded-lg text-[0.68rem] border flex items-start gap-2 ${
-                  directScanResult.is_fp
-                    ? 'bg-amber-50 border-amber-200 text-amber-800'
-                    : 'bg-green-50 border-green-200 text-green-800'
-                }`}>
-                  <span className="text-[0.9rem] leading-none mt-0.5">{directScanResult.is_fp ? '⚠' : '✓'}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold">{directScanResult.is_fp ? `False positive (${directScanResult.fp_method})` : 'Not a false positive'}</p>
-                    {directScanResult.fp_reason && <p className="opacity-80 truncate">{directScanResult.fp_reason}</p>}
-                    {directScanResult.fp_confidence != null && (
-                      <p className="opacity-60 mt-0.5">confidence {Math.round(directScanResult.fp_confidence * 100)}%</p>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
 
@@ -6330,30 +6674,47 @@ const FpArchiveTab = () => {
         </div>
       )}
 
-      {/* Filter + Table */}
-      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-[var(--s1)] flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-3">
-            <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Alerts ({data.total})</p>
-            {isAdmin && data.total > 0 && (
+      {/* Filter bar */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3">
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">FP Method:</span>
+          {['analyst', 'suppression', 'memory', 'triage', 'asset_fast', 'confidence_aggregated', 'low_risk_score', 'noise_priority', 'low_priority', 'severity_filter', 'time_window', 'legacy_filter'].map(m => {
+            const isActive = methodFilter === m;
+            return (
               <button
-                onClick={() => setShowClearConfirm(true)}
-                disabled={clearing}
-                className="px-3 py-1 rounded text-[0.62rem] font-bold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 disabled:opacity-50 flex items-center gap-1.5"
-                title="Permanently delete all FP archive entries (Incidents queue is not affected)"
+                key={m}
+                onClick={() => { setMethodFilter(isActive ? '' : m); setPage(1); }}
+                className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all font-mono ${isActive ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-offset-0 ring-blue-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
               >
-                <Trash2 size={11} />{clearing ? 'Clearing…' : 'Clear Archive'}
+                {m.replace(/_/g, ' ')}
               </button>
-            )}
-          </div>
-          <div className="flex gap-2 flex-wrap">
-            {['', 'analyst', 'suppression', 'memory', 'triage', 'asset_fast', 'confidence_aggregated', 'low_risk_score', 'noise_priority', 'low_priority', 'severity_filter', 'time_window', 'legacy_filter'].map(m => (
-              <button key={m} onClick={() => { setMethodFilter(m); setPage(1); }}
-                className={`px-3 py-1 rounded text-[0.62rem] font-bold ${methodFilter === m ? 'bg-[var(--p1)] text-white' : 'bg-[var(--sa)] text-[var(--t4)] hover:bg-[var(--s1)]'}`}>
-                {m ? m.replace(/_/g, ' ') : 'All'}
-              </button>
-            ))}
-          </div>
+            );
+          })}
+          {methodFilter && (
+            <button
+              onClick={() => { setMethodFilter(''); setPage(1); }}
+              className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--b1)] bg-[var(--s1)] flex items-center justify-between gap-3">
+          <p className="text-[0.78rem] font-black text-[var(--t7)]">FP Alerts ({data.total})</p>
+          {isAdmin && data.total > 0 && (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              disabled={clearing}
+              className="px-3 py-1 rounded text-[0.62rem] font-bold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 disabled:opacity-50 flex items-center gap-1.5"
+              title="Permanently delete all FP archive entries (Incidents queue is not affected)"
+            >
+              <Trash2 size={11} />{clearing ? 'Clearing…' : 'Clear Archive'}
+            </button>
+          )}
         </div>
         <div className="divide-y divide-[var(--b1)]">
           {data.alerts.length === 0 ? (
@@ -7808,39 +8169,55 @@ const KnowledgeBaseTab = ({
       {section === 'playbooks' && (
         <div className="space-y-3">
           {/* Filter bar */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex-1 min-w-[240px] relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
-              <input
-                value={pbSearch}
-                onChange={e => setPbSearch(e.target.value)}
-                placeholder="Search playbooks (title or steps)…"
-                className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
-              />
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2.5">
+            <div className="flex gap-2 items-center">
+              <div className="flex-1 relative">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+                <input
+                  value={pbSearch}
+                  onChange={e => setPbSearch(e.target.value)}
+                  placeholder="Search playbooks (title or steps)…"
+                  className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
+                />
+                {pbSearch && (
+                  <button onClick={() => setPbSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={() => setShowPBForm(!showPBForm)}
+                  className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-1.5 rounded-lg text-[0.7rem] font-bold hover:bg-[var(--pd)] whitespace-nowrap"
+                >
+                  <Plus size={12} />Add Playbook
+                </button>
+              )}
             </div>
-            {isAdmin && (
-              <button
-                onClick={() => setShowPBForm(!showPBForm)}
-                className="flex items-center gap-1.5 bg-[var(--p1)] text-white px-3 py-2 rounded-lg text-[0.75rem] font-bold hover:bg-[var(--pd)] whitespace-nowrap"
-              >
-                <Plus size={13} />Add Playbook
-              </button>
-            )}
-          </div>
 
-          {/* Tactic filter chips */}
-          <div className="flex gap-1.5 flex-wrap">
-            <button
-              onClick={() => setPbTactic('')}
-              className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors ${pbTactic === '' ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s2)]'}`}
-            >All</button>
-            {TACTIC_OPTIONS.map(t => (
-              <button
-                key={t}
-                onClick={() => setPbTactic(pbTactic === t ? '' : t)}
-                className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors ${pbTactic === t ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'}`}
-              >{t.replace(/_/g, ' ')}</button>
-            ))}
+            <div className="flex gap-2 items-center flex-wrap">
+              <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Tactic:</span>
+              {TACTIC_OPTIONS.map(t => {
+                const isActive = pbTactic === t;
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setPbTactic(isActive ? '' : t)}
+                    className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all font-mono ${isActive ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-offset-0 ring-blue-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                  >
+                    {t.replace(/_/g, ' ')}
+                  </button>
+                );
+              })}
+              {(pbSearch || pbTactic) && (
+                <button
+                  onClick={() => { setPbSearch(''); setPbTactic(''); }}
+                  className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Create form */}
@@ -7931,28 +8308,46 @@ const KnowledgeBaseTab = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex-1 min-w-[240px] relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+          {/* Filter bar */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2.5">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
               <input
                 value={insightSearch}
                 onChange={e => setInsightSearch(e.target.value)}
                 placeholder="Search summary, attack pattern, threat actor…"
-                className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
+                className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
               />
+              {insightSearch && (
+                <button onClick={() => setInsightSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                  <X size={12} />
+                </button>
+              )}
             </div>
-          </div>
 
-          <div className="flex gap-1.5 flex-wrap">
-            {(['', 'TRIAGED', 'FALSE_POSITIVE', 'ESCALATED', 'CLOSED'] as const).map(o => (
-              <button
-                key={o || 'all'}
-                onClick={() => setInsightOutcome(o)}
-                className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors border ${insightOutcome === o
-                  ? (o === '' ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : (outcomeColor[o] || 'bg-[var(--p1)] text-white').replace('100', '600').replace('700', 'white'))
-                  : (o === '' ? 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]' : outcomeColor[o] || 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]')}`}
-              >{o || 'All'}</button>
-            ))}
+            <div className="flex gap-2 items-center flex-wrap">
+              <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Outcome:</span>
+              {(['TRIAGED', 'FALSE_POSITIVE', 'ESCALATED', 'CLOSED'] as const).map(o => {
+                const isActive = insightOutcome === o;
+                return (
+                  <button
+                    key={o}
+                    onClick={() => setInsightOutcome(isActive ? '' : o)}
+                    className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? (outcomeColor[o] || 'bg-[var(--p1)] text-white') + ' ring-2 ring-offset-0 ring-current' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                  >
+                    {o.replace(/_/g, ' ')}
+                  </button>
+                );
+              })}
+              {(insightSearch || insightOutcome) && (
+                <button
+                  onClick={() => { setInsightSearch(''); setInsightOutcome(''); }}
+                  className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
           </div>
 
           {insightsLoading ? (
@@ -8003,35 +8398,57 @@ const KnowledgeBaseTab = ({
       {/* ── IOCs ────────────────────────────────────────────────────────── */}
       {section === 'iocs' && (
         <div className="space-y-3">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex-1 min-w-[240px] relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
-              <input
-                value={iocSearch}
-                onChange={e => setIocSearch(e.target.value)}
-                placeholder="Search IOC value or notes…"
-                className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
-              />
+          {/* Filter bar */}
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2.5">
+            <div className="flex gap-2 items-center">
+              <div className="flex-1 relative">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+                <input
+                  value={iocSearch}
+                  onChange={e => setIocSearch(e.target.value)}
+                  placeholder="Search IOC value or notes…"
+                  className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
+                />
+                {iocSearch && (
+                  <button onClick={() => setIocSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              <select
+                value={iocSort}
+                onChange={e => setIocSort(e.target.value as any)}
+                className="py-1.5 px-2 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.7rem] font-bold text-[var(--t1)] focus:outline-none focus:border-[var(--p1)]"
+              >
+                <option value="alerts">Sort: Most alerts</option>
+                <option value="fp_ratio">Sort: Highest FP ratio</option>
+                <option value="last_seen">Sort: Recently seen</option>
+              </select>
             </div>
-            <select
-              value={iocSort}
-              onChange={e => setIocSort(e.target.value as any)}
-              className="px-3 py-2 border border-[var(--b2)] rounded-lg text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
-            >
-              <option value="alerts">Sort: Most alerts</option>
-              <option value="fp_ratio">Sort: Highest FP ratio</option>
-              <option value="last_seen">Sort: Recently seen</option>
-            </select>
-          </div>
 
-          <div className="flex gap-1.5 flex-wrap">
-            {(['', 'ip', 'domain', 'hash', 'user', 'url', 'file'] as const).map(t => (
-              <button
-                key={t || 'all'}
-                onClick={() => setIocType(t)}
-                className={`px-2.5 py-1 rounded text-[0.62rem] font-black uppercase tracking-wider transition-colors ${iocType === t ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)] hover:bg-[var(--s2)]'}`}
-              >{t || 'All'}</button>
-            ))}
+            <div className="flex gap-2 items-center flex-wrap">
+              <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Type:</span>
+              {(['ip', 'domain', 'hash', 'user', 'url', 'file'] as const).map(t => {
+                const isActive = iocType === t;
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setIocType(isActive ? '' : t)}
+                    className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all font-mono ${isActive ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-offset-0 ring-blue-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                  >
+                    {t}
+                  </button>
+                );
+              })}
+              {(iocSearch || iocType) && (
+                <button
+                  onClick={() => { setIocSearch(''); setIocType(''); }}
+                  className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
           </div>
 
           {sortedIocs.length === 0 ? (
@@ -9244,50 +9661,82 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
         })}
       </div>
 
-      {/* Search + filters */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex-1 min-w-[240px] relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by title or ID..."
-            className="w-full pl-9 pr-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
-        </div>
-        <select value={ownerF} onChange={e => setOwnerF(e.target.value === '' ? '' : Number(e.target.value))}
-          className="px-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] bg-[var(--s0)]">
-          <option value="">All owners</option>
-          {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
-        </select>
-        <select value={sevF} onChange={e => setSevF(e.target.value)}
-          className="px-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] bg-[var(--s0)]">
-          <option value="">All severities</option>
-          {['CRITICAL','HIGH','MEDIUM','LOW'].map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <select value={slaF} onChange={e => setSlaF(e.target.value)}
-          className="px-3 py-2 border border-[var(--b2)] rounded-xl text-[0.78rem] bg-[var(--s0)]">
-          <option value="">All SLA states</option>
-          <option value="on_track">On Track</option>
-          <option value="watch">Watch</option>
-          <option value="at_risk">At Risk</option>
-          <option value="breached">Breached</option>
-        </select>
-        {/* My Incidents toggle */}
-        <button onClick={() => setMyOnly(m => !m)}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[0.78rem] font-bold border transition-all ${
-            myOnly ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s0)] text-[var(--t4)] border-[var(--b2)] hover:border-[var(--p1)]'
-          }`}>
-          <User size={14} /> My Incidents
-        </button>
-      </div>
-
-      {/* Phase filter chips */}
-      <div className="flex gap-1.5 flex-wrap">
-        <button onClick={() => setPhaseF('')}
-          className={`px-2.5 py-1 rounded-lg text-[0.62rem] font-black uppercase tracking-wider transition-all ${phaseF === '' ? 'bg-[var(--p1)] text-white' : 'bg-[var(--s1)] text-[var(--t4)] border border-[var(--b2)]'}`}>All phases</button>
-        {INCIDENT_PHASES.map(p => (
-          <button key={p} onClick={() => setPhaseF(phaseF === p ? '' : p)}
-            className={`px-2.5 py-1 rounded-lg text-[0.62rem] font-black uppercase tracking-wider transition-all ${phaseF === p ? 'bg-[var(--p1)] text-white' : PHASE_COLORS[p] || 'bg-[var(--s1)]'}`}>
-            {PHASE_LABELS[p]}
+      {/* Filter bar */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2.5">
+        {/* Row 1: search + owner + SLA + My Incidents */}
+        <div className="flex gap-2 items-center flex-wrap">
+          <div className="flex-1 min-w-[240px] relative">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by title or ID…"
+              className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]" />
+            {search && (
+              <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                <X size={12} />
+              </button>
+            )}
+          </div>
+          <select value={ownerF} onChange={e => setOwnerF(e.target.value === '' ? '' : Number(e.target.value))}
+            className="py-1.5 px-2 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.7rem] font-bold text-[var(--t1)] focus:outline-none focus:border-[var(--p1)]">
+            <option value="">All owners</option>
+            {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
+          </select>
+          <select value={slaF} onChange={e => setSlaF(e.target.value)}
+            className="py-1.5 px-2 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.7rem] font-bold text-[var(--t1)] focus:outline-none focus:border-[var(--p1)]">
+            <option value="">All SLA states</option>
+            <option value="on_track">On Track</option>
+            <option value="watch">Watch</option>
+            <option value="at_risk">At Risk</option>
+            <option value="breached">Breached</option>
+          </select>
+          <button onClick={() => setMyOnly(m => !m)}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[0.62rem] font-bold transition-all ${
+              myOnly ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-offset-0 ring-blue-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'
+            }`}>
+            <User size={10} /> My Incidents
           </button>
-        ))}
+        </div>
+
+        {/* Row 2: severity chips */}
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Severity:</span>
+          {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).map(sv => {
+            const isActive = sevF === sv;
+            return (
+              <button
+                key={sv}
+                onClick={() => setSevF(isActive ? '' : sv)}
+                className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? severityChipColor(sv) + ' ring-2 ring-offset-0 ring-current' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+              >
+                {sv}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Row 3: phase chips + clear */}
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Phase:</span>
+          {INCIDENT_PHASES.map(p => {
+            const isActive = phaseF === p;
+            return (
+              <button
+                key={p}
+                onClick={() => setPhaseF(isActive ? '' : p)}
+                className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? 'bg-[var(--p1)] text-white border-[var(--p1)] ring-2 ring-offset-0 ring-[var(--p1)]/40' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+              >
+                {PHASE_LABELS[p]}
+              </button>
+            );
+          })}
+          {(search || ownerF !== '' || sevF || slaF || phaseF || myOnly || statusF) && (
+            <button
+              onClick={() => { setSearch(''); setOwnerF(''); setSevF(''); setSlaF(''); setPhaseF(''); setMyOnly(false); setStatusF(''); }}
+              className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Incident cards */}
@@ -9550,39 +9999,39 @@ const ReportsTab = ({
             </select>
           </div>
 
-          {/* Row 2: priority chips + sent-via chips + clear */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[0.58rem] font-black uppercase tracking-widest text-[var(--t3)] shrink-0">Priority:</span>
+          {/* Row 2: severity chips */}
+          <div className="flex gap-2 items-center flex-wrap">
+            <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] shrink-0">Severity:</span>
             {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).map(p => (
               <button
                 key={p}
                 onClick={() => togglePriority(p)}
-                className={`px-2 py-0.5 rounded border text-[0.62rem] font-black uppercase tracking-wider transition-colors ${activePriorities.has(p) ? priBtnActive[p] : (priColor[p] ?? 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)]')}`}
+                className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${activePriorities.has(p) ? severityChipColor(p) + ' ring-2 ring-offset-0 ring-current' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
               >
                 {p}
               </button>
             ))}
-            <span className="w-px h-4 bg-[var(--b2)] mx-1 shrink-0" />
-            <span className="text-[0.58rem] font-black uppercase tracking-widest text-[var(--t3)] shrink-0">Notified:</span>
+          </div>
+
+          {/* Row 3: notification channel chips + clear */}
+          <div className="flex gap-2 items-center flex-wrap">
+            <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] shrink-0">Notified via:</span>
             {(['email','glpi','telegram'] as const).map(v => (
               <button
                 key={v}
                 onClick={() => toggleSentVia(v)}
-                className={`px-2 py-0.5 rounded border text-[0.65rem] font-bold transition-colors ${activeSentVia.has(v) ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[0.62rem] font-bold transition-all ${activeSentVia.has(v) ? 'bg-blue-50 text-blue-700 border-blue-300 ring-2 ring-offset-0 ring-blue-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
               >
-                {intgIcon[v]} {v}
+                <span>{intgIcon[v]}</span> {v}
               </button>
             ))}
             {hasFilters && (
-              <>
-                <span className="w-px h-4 bg-[var(--b2)] mx-1 shrink-0" />
-                <button
-                  onClick={() => { setSearch(''); setActivePriorities(new Set()); setActiveSentVia(new Set()); }}
-                  className="flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--b2)] text-[0.62rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] transition-colors"
-                >
-                  <X size={10} /> Clear all
-                </button>
-              </>
+              <button
+                onClick={() => { setSearch(''); setActivePriorities(new Set()); setActiveSentVia(new Set()); }}
+                className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+              >
+                Clear filters
+              </button>
             )}
           </div>
         </div>

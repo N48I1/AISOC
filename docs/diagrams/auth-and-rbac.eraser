@@ -1,0 +1,149 @@
+title AISOC Authentication & Role-Based Access Control
+
+// ============================================================================
+//  TWO AUTH PATHS — JWT for humans, API keys for ingestion
+// ============================================================================
+Auth Surfaces [icon: shield, color: red] {
+  HUMAN  [icon: user,        label: "Analyst (browser)\nlogin form"]
+  SIEM   [icon: server,      label: "Wazuh / 3rd-party SIEM\nmachine-to-machine"]
+  LOGIN  [icon: log-in,      label: "POST /api/auth/login\nusername + password"]
+  INGEST [icon: webhook,     label: "POST /api/ingest\nX-Api-Key header"]
+}
+
+// ============================================================================
+//  LOGIN FLOW — lockout-aware, bcrypt-checked, JWT-signed
+// ============================================================================
+Login Pipeline [icon: log-in, color: orange] {
+  LOOKUP   [icon: search,        label: "SELECT user WHERE username=?\n401 if not found"]
+  LOCK_CHK [icon: lock,          label: "locked_until > now?\n→ 423 Locked + remaining min"]
+  BCRYPT   [icon: key,           label: "bcrypt.compareSync()\nvs stored hash"]
+  FAIL_INC [icon: alert-circle,  label: "Increment failed_logins"]
+  LOCK_SET [icon: lock,          label: "After 5 fails: set\nlocked_until = now + 15min\nWRITE_AUDIT 'ACCOUNT_LOCKED'"]
+  RESET    [icon: refresh-cw,    label: "Reset failed_logins=0\nUpdate last_login"]
+  JWT      [icon: badge,         label: "jwt.sign({id, username, role, email})\nJWT_SECRET"]
+  AUDIT_OK [icon: file-text,     label: "WRITE_AUDIT 'LOGIN'"]
+}
+
+// ============================================================================
+//  TOKEN-PROTECTED ROUTES — every /api/* (except /login, /password-rules)
+// ============================================================================
+Middleware Chain [icon: filter, color: blue] {
+  AUTHN    [icon: key,    label: "authenticate()\nverify Bearer JWT\n→ req.user = {id,role,...}"]
+  ADMIN_GD [icon: shield, label: "requireAdmin()\nrole === 'ADMIN'"]
+  ROLE_GD  [icon: scale,  label: "requireRole(...allowed)\nROLE_LEVEL gate"]
+}
+
+// ============================================================================
+//  ROLE HIERARCHY — ROLE_LEVEL[user] >= ROLE_LEVEL[required]
+// ============================================================================
+Role Hierarchy [icon: layers, color: purple] {
+  R_ANA  [icon: user,         label: "ANALYST (0)\nlegacy alias"]
+  R_T1   [icon: user-check,   label: "TIER1 (1)\nSOC Analyst L1\n(nelhilali)"]
+  R_T2   [icon: user-check,   label: "TIER2 (2)\nSOC Analyst L2"]
+  R_LEAD [icon: users,        label: "INCIDENT_LEAD (3)\nReassign + close"]
+  R_ADM  [icon: shield,       label: "ADMIN (4)\nFull access\n(admin)"]
+}
+
+// ============================================================================
+//  SELF-SERVICE — every authenticated user can manage their own profile
+// ============================================================================
+Profile Self-Service [icon: user-cog, color: teal] {
+  ME_GET    [icon: user,        label: "GET /api/auth/me\nGET /api/users/me/profile"]
+  ME_PATCH  [icon: edit,        label: "PATCH /api/users/me/profile\n(display_name, email, bio,\navatar_color, timezone, notify_*)"]
+  ME_PW     [icon: lock,        label: "PATCH /api/users/me/password\nvalidatePassword() rules"]
+  ME_ACT    [icon: clock,       label: "GET /api/users/me/activity\n(personal audit_logs)"]
+  PW_RULES  [icon: list-checks, label: "GET /api/auth/password-rules\n(public — for UI hints)"]
+}
+
+// ============================================================================
+//  ADMIN OPS — user management, unlock, audit, ingestion control
+// ============================================================================
+Admin Operations [icon: shield, color: yellow] {
+  U_LIST   [icon: list,         label: "GET /api/users\n+ failed_logins + locked_until"]
+  U_CREATE [icon: user-plus,    label: "POST /api/users\nrole + complexity check"]
+  U_ROLE   [icon: edit,         label: "PATCH /api/users/:id\nchange role"]
+  U_DEL    [icon: trash,        label: "DELETE /api/users/:id\nblocks self-delete"]
+  U_UNLOCK [icon: unlock,       label: "POST /api/admin/unlock-user/:id\nclears locked_until"]
+  AUDIT    [icon: file-text,    label: "GET /api/audit-logs\nall actions, 100 newest"]
+  API_KEYS [icon: key,          label: "/api/api-keys CRUD\nfor ingestion endpoints"]
+}
+
+// ============================================================================
+//  PASSWORD POLICY — enforced server-side; rules published to UI
+// ============================================================================
+Password Policy [icon: lock, color: pink] {
+  RULES [icon: list,        label: "PASSWORD_RULES\nmin 8 · upper · lower · digit · special"]
+  VAL   [icon: check-square, label: "validatePassword(pw)\n→ {ok, errors[]}"]
+}
+
+// ============================================================================
+//  AUDIT TRAIL — every meaningful action lands in audit_logs
+// ============================================================================
+Audit Trail [icon: clipboard, color: green] {
+  WRITE [icon: pen-tool, label: "writeAudit(user_id, action, details)\nINSERT audit_logs"]
+  EVENTS [icon: list, label: "Events:\nLOGIN · LOGOUT · ACCOUNT_LOCKED\nPASSWORD_CHANGED · PROFILE_UPDATED\nUSER_CREATED · USER_ROLE_CHANGED\nUSER_DELETED · USER_UNLOCKED\nALERT_STATUS_CHANGE · ..."]
+}
+
+// ============ LOGIN PATH ============
+HUMAN > LOGIN
+LOGIN > LOOKUP
+LOOKUP > LOCK_CHK
+LOCK_CHK > BCRYPT: not locked
+BCRYPT > FAIL_INC: wrong password
+FAIL_INC > LOCK_SET: attempts >= 5
+LOCK_SET > WRITE
+BCRYPT > RESET: success
+RESET > JWT
+JWT > AUDIT_OK
+AUDIT_OK > WRITE
+
+// ============ INGEST PATH (separate from JWT) ============
+SIEM > INGEST
+INGEST > API_KEYS: validate hash
+
+// ============ JWT-PROTECTED ROUTE GUARD CHAIN ============
+JWT > AUTHN: client sends Bearer
+AUTHN > ROLE_GD
+AUTHN > ADMIN_GD
+
+// ============ ROLE LEVELS ============
+R_ANA > R_T1: <
+R_T1 > R_T2: <
+R_T2 > R_LEAD: <
+R_LEAD > R_ADM: <
+
+// ============ SELF-SERVICE (any role) ============
+AUTHN > ME_GET
+AUTHN > ME_PATCH
+AUTHN > ME_PW
+AUTHN > ME_ACT
+ME_PW > VAL
+VAL > RULES
+PW_RULES > RULES
+
+// ============ ADMIN OPS (requireAdmin) ============
+ADMIN_GD > U_LIST
+ADMIN_GD > U_CREATE
+ADMIN_GD > U_ROLE
+ADMIN_GD > U_DEL
+ADMIN_GD > U_UNLOCK
+ADMIN_GD > AUDIT
+ADMIN_GD > API_KEYS
+
+U_CREATE > VAL
+U_UNLOCK > WRITE
+
+// ============ INCIDENT GATES (requireRole) ============
+ROLE_GD > R_T2: take incident
+ROLE_GD > R_LEAD: assign / phase / close
+ROLE_GD > R_ADM: any incident op
+
+// ============ AUDIT INTEGRATION ============
+ME_PATCH > WRITE
+ME_PW > WRITE
+U_CREATE > WRITE
+U_ROLE > WRITE
+U_DEL > WRITE
+WRITE > EVENTS
+EVENTS > AUDIT: surfaced to admins
+EVENTS > ME_ACT: filtered to own user

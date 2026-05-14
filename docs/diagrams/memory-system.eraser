@@ -1,57 +1,107 @@
-title AISOC Memory System (Real App Workflow)
+title AISOC Memory System — Reads, Writes, and the Learning Loop
 
-Orchestration Runtime [icon: cpu, color: orange] {
-  PRE [icon: search, label: "Pre-flight Memory Reads"]
-  PLAN [icon: brain, label: "Planner + Reflection"]
-  COMMIT [icon: refresh-cw, label: "Outcome Memory Commit"]
-}
-
+// ============================================================================
+//  STORES — five SQLite tables backing the agentic memory
+// ============================================================================
 Memory Stores [icon: database, color: purple] {
-  INSIGHTS [icon: file-search, label: "incident_insights (semantic history)"]
-  IOCS [icon: globe, label: "ioc_memory (counts + fp/tp ratios)"]
-  ASSETS [icon: server, label: "asset_context (known infra + fp_default)"]
-  SUPPRESS [icon: filter, label: "suppression_rules"]
-  WORKING [icon: list-tree, label: "working_memory (planner scratchpad)"]
+  T_INSIGHT [icon: file-search, label: "incident_insights\nsemantic history\n(summary + embedding BLOB)"]
+  T_IOC     [icon: hash,        label: "ioc_memory\nIOC observations\n(value PK, fp_count, tp_count,\nthreat_level)"]
+  T_ASSET   [icon: server,      label: "asset_context\nknown infra\n(fp_default flag for scanners,\nmonitors, backups)"]
+  T_SUPP    [icon: filter,      label: "suppression_rules\npatterns to flag as FP signal\n(CIDR/regex/rule_id)"]
+  T_WORK    [icon: list-tree,   label: "working_memory\nplanner scratchpad\n(per alert_id + trace_id)"]
 }
 
+// ============================================================================
+//  EMBEDDING — only insights and recall queries hit the embedding service
+// ============================================================================
 Embedding Layer [icon: sparkles, color: pink] {
-  EMBED_TEXT [icon: box, label: "embedText(query/summary)"]
-  VECTOR [icon: binary, label: "embedding BLOB"]
+  EMBED [icon: binary, label: "embedText(text)\n→ Float32Array → BLOB"]
 }
 
-Memory APIs [icon: webhooks, color: blue] {
-  API_INSIGHTS [icon: book-open, label: "GET /api/memory/insights"]
-  API_IOCS [icon: hash, label: "GET /api/memory/iocs/all"]
-  API_WORKING [icon: scroll-text, label: "GET /api/memory/working/:alertId"]
+// ============================================================================
+//  PRE-FLIGHT READS — Step 1, parallel, no LLM cost
+// ============================================================================
+Pre-Flight Reads [icon: search, color: orange] {
+  R_RECALL [icon: history, label: "semanticStore.search()\ntop-K=5, sim≥0.65"]
+  R_IOC    [icon: hash,    label: "lookupIocs(values)\nbulk select by value"]
+  R_ASSET  [icon: server,  label: "lookupAssetContext()\nfor extracted IPs/users/hosts"]
+  R_SUPP   [icon: filter,  label: "matchSuppression(alert)\nStep 0 pattern match"]
 }
 
-Learning Surface [icon: lightbulb, color: teal] {
-  FP_SUGGEST [icon: lightbulb, label: "GET /api/analytics/fp-suggestions"]
-  ACCEPT [icon: check-circle, label: "POST /api/analytics/accept-suggestion"]
+// ============================================================================
+//  WRITES — split by sync (blocking) vs async (fire-and-forget)
+// ============================================================================
+Memory Commits [icon: upload, color: blue] {
+  W_IOC     [icon: refresh-cw, label: "upsertIocs() — SYNC\nfp_count++ or tp_count++"]
+  W_INSIGHT [icon: zap,        label: "commitAsync() — ASYNC\nincident_insights + embedding"]
+  W_WORK    [icon: pen-tool,   label: "writeWorkingMemory()\nplanner & reflection traces"]
 }
 
-%% PRE-FLIGHT READS (run in orchestration/fp-scan/investigation)
-PRE > SUPPRESS
-PRE > ASSETS
-PRE > IOCS
-PRE > INSIGHTS
-INSIGHTS > EMBED_TEXT
-EMBED_TEXT > VECTOR
+// ============================================================================
+//  ORCHESTRATION TOUCHPOINTS — where the runtime calls memory functions
+// ============================================================================
+Orchestrator Steps [icon: cpu, color: red] {
+  S0 [icon: filter,    label: "Step 0\nsuppression check"]
+  S1 [icon: search,    label: "Step 1\nparallel pre-flight reads"]
+  S4 [icon: brain,     label: "Step 4\nplanner LLM"]
+  S5 [icon: refresh-cw, label: "Step 5\nreflection"]
+  S7 [icon: upload,    label: "Step 7\ncommit insights + IOCs"]
+}
 
-%% PLANNER TRACE
-PLAN > WORKING
+// ============================================================================
+//  PUBLIC APIS — UI surfaces the memory state to analysts
+// ============================================================================
+Memory APIs [icon: webhook, color: teal] {
+  API_INSIGHTS [icon: book-open,   label: "GET /api/memory/insights\n+ /recent (browse)"]
+  API_IOCS     [icon: hash,        label: "GET /api/memory/iocs\n/iocs/all + /iocs/recent"]
+  API_WORK     [icon: scroll,      label: "GET /api/memory/working/:alertId\n(planner debug trace)"]
+  API_ASSETS   [icon: server,      label: "GET /api/assets\nPOST/DELETE (admin only)"]
+  API_SUPP     [icon: filter,      label: "GET /api/suppression-rules\nPOST/PATCH/DELETE (admin)"]
+}
 
-%% MEMORY COMMIT WRITES
-COMMIT > IOCS
-COMMIT > INSIGHTS
-INSIGHTS > VECTOR
+// ============================================================================
+//  LEARNING LOOP — repeated FP IOCs become auto-suggestions for new rules
+// ============================================================================
+Learning Loop [icon: lightbulb, color: yellow] {
+  L_SUGG  [icon: lightbulb,    label: "GET /api/analytics/fp-suggestions\nstats over ioc_memory"]
+  L_ADMIN [icon: user-check,   label: "Admin reviews"]
+  L_ACC   [icon: plus-circle,  label: "POST /api/analytics/accept-suggestion\n→ new suppression_rule"]
+}
 
-%% SERVING LAYER
-INSIGHTS > API_INSIGHTS
-IOCS > API_IOCS
-WORKING > API_WORKING
+// ============ STEP 0: suppression match (deterministic) ============
+S0 > R_SUPP
+R_SUPP > T_SUPP: read
 
-%% LEARNING LOOP USED BY THE APP
-IOCS > FP_SUGGEST
-FP_SUGGEST > ACCEPT
-ACCEPT > ASSETS
+// ============ STEP 1: parallel pre-flight reads ============
+S1 > R_RECALL
+S1 > R_IOC
+S1 > R_ASSET
+R_RECALL > EMBED: embed query
+EMBED > T_INSIGHT: cosine-sim search
+R_IOC > T_IOC: read
+R_ASSET > T_ASSET: read
+
+// ============ STEPS 4/5: planner writes scratchpad ============
+S4 > W_WORK
+S5 > W_WORK
+W_WORK > T_WORK: insert per-step rows
+
+// ============ STEP 7: memory commits after composers ============
+S7 > W_IOC
+S7 > W_INSIGHT
+W_IOC > T_IOC: upsert counts
+W_INSIGHT > EMBED: embed summary
+EMBED > T_INSIGHT: insert with vector
+
+// ============ UI SERVING ============
+T_INSIGHT > API_INSIGHTS
+T_IOC > API_IOCS
+T_WORK > API_WORK
+T_ASSET > API_ASSETS
+T_SUPP > API_SUPP
+
+// ============ LEARNING LOOP ============
+T_IOC > L_SUGG: aggregate fp_ratio
+L_SUGG > L_ADMIN
+L_ADMIN > L_ACC: approve
+L_ACC > T_SUPP: insert new rule

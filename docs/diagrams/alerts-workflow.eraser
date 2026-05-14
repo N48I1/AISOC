@@ -1,67 +1,100 @@
-title AISOC Alerts Workflow (Real App Behavior)
+title AISOC Alert Lifecycle — Ingest to Incident
 
-Ingestion [icon: shield, color: red] {
-  WAZUH [icon: alert-triangle, label: "Wazuh Event"]
-  INGEST [icon: server, label: "POST /api/ingest"]
-  GUARDS [icon: lock, label: "API key + pause + rate-limit + dedup"]
-  AUTO_FP [icon: filter, label: "Severity/Time-window Auto FP"]
+// ============================================================================
+//  1. INGEST — Wazuh / external sources write to /api/ingest with API key auth
+// ============================================================================
+Ingest Pipeline [icon: shield, color: red] {
+  WAZUH    [icon: alert-triangle, label: "Wazuh / 3rd-party SIEM"]
+  POST     [icon: server,         label: "POST /api/ingest\n(X-Api-Key header)"]
+  AUTH     [icon: key,            label: "Auth: validate api_keys hash"]
+  PAUSE    [icon: pause,          label: "Pause check\n(per-key + global)"]
+  RATE     [icon: gauge,          label: "Rate limit\n(max_alerts_per_min)"]
+  DEDUP    [icon: copy,           label: "Dedup window\n(rule_id + source_ip)"]
+  SEV      [icon: filter,         label: "Min-severity filter"]
+  WINDOW   [icon: clock,          label: "Time-window filter\n(HH:MM 24h)"]
 }
 
-Pipeline [icon: cpu, color: orange] {
-  NEW [icon: bell, label: "Alert status: NEW"]
-  ANALYZING [icon: activity, label: "Alert status: ANALYZING"]
-  ORCH [icon: brain, label: "POST /api/ai/orchestrate (full swarm)"]
-  FPSCAN [icon: search, label: "POST /api/ai/fp-scan (steps 0-3)"]
-  INVEST [icon: search, label: "POST /api/ai/investigate (steps 4-7)"]
-  TRIAGED [icon: check-circle, label: "Alert status: TRIAGED"]
-  FP [icon: x-circle, label: "Alert status: FALSE_POSITIVE"]
-  FILTERED [icon: filter, label: "Alert status: FILTERED"]
+// ============================================================================
+//  2. ALERT STATUS MACHINE — every alert ends in one of these terminal states
+// ============================================================================
+Alert States [icon: activity, color: orange] {
+  NEW         [icon: bell,         label: "NEW\n(awaiting triage)"]
+  ANALYZING   [icon: loader,       label: "ANALYZING\n(agent run in progress)"]
+  AUTO_FP     [icon: x-circle,     label: "FALSE_POSITIVE\n(deterministic auto-FP)"]
+  FILTERED    [icon: filter,       label: "FILTERED\n(fp-scan said NOT_FP)"]
+  AI_FP       [icon: x-circle,     label: "FALSE_POSITIVE\n(AI verdict)"]
+  TRIAGED     [icon: check-circle, label: "TRIAGED\n(investigation complete)"]
+  ESCALATED   [icon: siren,        label: "ESCALATED\n(critical → incident)"]
+  FAILED      [icon: x-octagon,    label: "FAILED\n(orchestration error)"]
 }
 
-Analyst Actions [icon: users, color: blue] {
-  CONFIRM [icon: check-circle, label: "POST /api/alerts/:id/confirm-fp"]
-  OVERRIDE [icon: rotate-ccw, label: "POST /api/alerts/:id/override-fp"]
-  ESCALATE [icon: alert-octagon, label: "POST /api/alerts/:id/escalate"]
+// ============================================================================
+//  3. AI PIPELINE — two entry points share Steps 0-3, full orchestration adds 4-7
+// ============================================================================
+AI Pipeline [icon: cpu, color: blue] {
+  FPSCAN    [icon: search-check, label: "POST /api/ai/fp-scan\nSteps 0-3 (cheap)\nthreshold 0.72"]
+  ORCH      [icon: brain,        label: "POST /api/ai/orchestrate\nSteps 0-7 (full swarm)\nthreshold 0.85"]
+  INVEST    [icon: microscope,   label: "POST /api/ai/investigate\nresumes Steps 4-7\n(reuses triage_data)"]
 }
 
-Incident Layer [icon: database, color: purple] {
-  INCIDENT [icon: file-text, label: "createIncidentFromAlert"]
-  ESCALATED [icon: alert-octagon, label: "Alert status: ESCALATED"]
-  FP_CONF [icon: check-circle, label: "Alert status: FP_CONFIRMED"]
+// ============================================================================
+//  4. ANALYST DECISIONS — human-in-the-loop overrides
+// ============================================================================
+Analyst Actions [icon: users, color: teal] {
+  CONFIRM   [icon: thumbs-up,   label: "POST /confirm-fp\n→ FP_CONFIRMED"]
+  OVERRIDE  [icon: rotate-ccw,  label: "POST /override-fp\n→ FILTERED (re-queue)"]
+  ESCALATE  [icon: alert-octagon, label: "POST /escalate\n→ create incident"]
+  FP_CONF   [icon: check-square, label: "FP_CONFIRMED\n(locked archive)"]
 }
 
-%% INGEST ENTRY
-WAZUH > INGEST
-INGEST > GUARDS
-GUARDS > NEW
-GUARDS > AUTO_FP
-AUTO_FP > FP
+// ============================================================================
+//  5. BRIDGE — alert → incident (see incident-lifecycle diagram)
+// ============================================================================
+Incident Bridge [icon: file-plus, color: purple] {
+  INC_CREATE [icon: workflow, label: "createIncidentFromAlert()\nseeds incident_actions"]
+  INCIDENT   [icon: folder,   label: "Incident OPEN\n(see incident-lifecycle)"]
+}
 
-%% AUTO ORCHESTRATION FROM INGEST
-NEW > ORCH
-ORCH > ANALYZING
-ANALYZING > TRIAGED
-ANALYZING > FP
+// ============ INGEST PATH ============
+WAZUH > POST
+POST > AUTH: 401 if invalid
+AUTH > PAUSE: 503 if paused
+PAUSE > RATE: 429 if exceeded
+RATE > DEDUP: drop if duplicate
+DEDUP > SEV
+SEV > WINDOW: pass if in-range
+SEV > AUTO_FP: below threshold → archive
+WINDOW > NEW: in-window
+WINDOW > AUTO_FP: outside window → archive
 
-%% MANUAL FP-FIRST FLOW
-NEW > FPSCAN
+// ============ AUTO-ORCHESTRATE (config-gated) ============
+NEW > ORCH: if auto_orchestrate=true
+
+// ============ MANUAL CHEAP-PATH (analyst opens Noise Filter) ============
+NEW > FPSCAN: analyst triggers
 FPSCAN > ANALYZING
-ANALYZING > FP
-ANALYZING > FILTERED
+ANALYZING > AI_FP: is_fp && conf>0.72
+ANALYZING > FILTERED: NOT_FP verdict
 
-%% INVESTIGATION FROM FILTERED
-FILTERED > INVEST
+// ============ INVESTIGATION (from filtered queue) ============
+FILTERED > INVEST: analyst opens
 INVEST > ANALYZING
-ANALYZING > TRIAGED
-ANALYZING > FP
+ANALYZING > TRIAGED: priority HIGH/MED
+ANALYZING > ESCALATED: priority CRITICAL
+ANALYZING > AI_FP: aggregator fp_score≥0.55
+ANALYZING > FAILED: error / quota
 
-%% ANALYST DECISIONS
-FP > CONFIRM
+// ============ ANALYST DECISIONS ON AUTO/AI FP ============
+AUTO_FP > CONFIRM
+AI_FP > CONFIRM
 CONFIRM > FP_CONF
 
-FP > OVERRIDE
+AUTO_FP > OVERRIDE
+AI_FP > OVERRIDE
 OVERRIDE > FILTERED
 
+// ============ ESCALATION → INCIDENT ============
 TRIAGED > ESCALATE
-ESCALATE > INCIDENT
-INCIDENT > ESCALATED
+ESCALATED > ESCALATE: auto-suggest
+ESCALATE > INC_CREATE
+INC_CREATE > INCIDENT

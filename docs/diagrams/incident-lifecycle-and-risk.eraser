@@ -1,75 +1,145 @@
-title AISOC Incident Lifecycle and Risk Coupling
+title AISOC Incident Lifecycle — Phases, Status, Actions, and Risk
 
-Alert Escalation [icon: alert-octagon, color: red] {
-  TRIAGED_ALERT [icon: alert-triangle, label: "Alert status: TRIAGED"]
-  ESCALATE_API [icon: webhooks, label: "POST /api/alerts/:id/escalate"]
-  INCIDENT_CREATE [icon: file-plus, label: "createIncidentFromAlert()"]
-  ALERT_ESCALATED [icon: siren, label: "Alert status: ESCALATED"]
+// ============================================================================
+//  BRIDGE — alert escalation is the only way an incident is born
+// ============================================================================
+Alert Bridge [icon: alert-octagon, color: red] {
+  ALERT_TR  [icon: alert-triangle, label: "Alert: TRIAGED or ESCALATED"]
+  ESC_API   [icon: webhook,        label: "POST /api/alerts/:id/escalate"]
+  CREATE    [icon: workflow,       label: "createIncidentFromAlert()\nseeds actions from response.actions"]
+  ALERT_OUT [icon: siren,          label: "Alert: ESCALATED (locked)"]
+  GLPI      [icon: ticket,         label: "GLPI ticket (optional)\nif create_glpi=true"]
 }
 
-Incident Command [icon: users, color: orange] {
-  OPEN [icon: circle, label: "OPEN"]
-  IN_PROGRESS [icon: activity, label: "IN_PROGRESS"]
-  CONTAINED [icon: shield-check, label: "CONTAINED"]
-  RESOLVED [icon: check-circle, label: "RESOLVED"]
-  CLOSED [icon: lock, label: "CLOSED"]
-  RECLASS_FP [icon: filter, label: "RECLASSIFIED_FP"]
-}
-
+// ============================================================================
+//  PHASES — NIST-style incident workflow (src/types.ts:15)
+// ============================================================================
 Phase Engine [icon: route, color: blue] {
-  DETECTION [icon: search, label: "detection"]
-  ANALYSIS [icon: microscope, label: "analysis"]
-  CONTAINMENT [icon: shield, label: "containment"]
-  ERADICATION [icon: bug, label: "eradication"]
-  RECOVERY [icon: wrench, label: "recovery"]
-  POST [icon: file-check, label: "post_incident"]
+  P_DET  [icon: search,     label: "detection"]
+  P_ANA  [icon: microscope, label: "analysis"]
+  P_CON  [icon: shield,     label: "containment"]
+  P_ERA  [icon: bug,        label: "eradication"]
+  P_REC  [icon: wrench,     label: "recovery"]
+  P_POST [icon: file-check, label: "post_incident"]
 }
 
-Actions + Closure [icon: list-checks, color: teal] {
-  ACTIONS [icon: list, label: "incident_actions: pending -> approved -> executed"]
-  CLOSE_API [icon: x-circle, label: "POST /api/incidents/:id/close"]
-  RECLASS_API [icon: rotate-ccw, label: "POST /api/incidents/:id/reclassify-fp"]
+// ============================================================================
+//  STATUS — derived from phase + assigned_to (computeIncidentStatus)
+// ============================================================================
+Status Machine [icon: activity, color: orange] {
+  OPEN     [icon: circle,        label: "OPEN\n(detection/analysis,\nunassigned)"]
+  PROG     [icon: loader,        label: "IN_PROGRESS\n(assigned, mid-investigation\nor containment/eradication)"]
+  CONT     [icon: shield-check,  label: "CONTAINED\n(recovery phase)"]
+  RES      [icon: check-circle,  label: "RESOLVED\n(post_incident phase)"]
+  CLOSED   [icon: lock,          label: "CLOSED\n(terminal, locked)"]
+  RECL_FP  [icon: x-circle,      label: "RECLASSIFIED_FP\n(terminal, locked)"]
 }
 
-Dashboard Risk [icon: gauge, color: purple] {
-  GLOBAL [icon: donut, label: "Global Risk Score card"]
-  SERIES [icon: chart-line, label: "Risk & Pipeline Over Time card"]
-  MITIGATION [icon: trending-down, label: "Contained/Resolved/Closed reduce risk"]
+// ============================================================================
+//  INCIDENT ACTIONS — seeded from response agent, executed by analyst
+// ============================================================================
+Action Lifecycle [icon: list-checks, color: teal] {
+  A_PEND   [icon: clock,        label: "pending\n(seeded by AI)"]
+  A_APPR   [icon: thumbs-up,    label: "approved\n(analyst greenlight)"]
+  A_EXEC   [icon: play-circle,  label: "executed\n(BLOCK_IP, ISOLATE_HOST,\nDISABLE_USER, ...)"]
+  A_FAIL   [icon: alert-circle, label: "failed\n(retry or manual)"]
 }
 
-%% ESCALATION INTO INCIDENTS
-TRIAGED_ALERT > ESCALATE_API
-ESCALATE_API > INCIDENT_CREATE
-INCIDENT_CREATE > ALERT_ESCALATED
-INCIDENT_CREATE > OPEN
+// ============================================================================
+//  COMMAND ENDPOINTS — phase moves and terminal actions
+// ============================================================================
+Operator Commands [icon: terminal, color: purple] {
+  TAKE     [icon: user-check,  label: "POST /incidents/:id/take\n(TIER2+ claim)"]
+  ASSIGN   [icon: user-plus,   label: "POST /incidents/:id/assign\n(INCIDENT_LEAD/ADMIN)"]
+  MOVE     [icon: arrow-right, label: "PATCH /incidents/:id/phase\n(owner / lead / admin)"]
+  CLOSE    [icon: lock,        label: "POST /incidents/:id/close"]
+  RECLASS  [icon: rotate-ccw,  label: "POST /incidents/:id/reclassify-fp\n(rare; demotes to FP)"]
+  NOTE     [icon: message-square, label: "POST /incidents/:id/notes"]
+}
 
-%% STATUS PROGRESSION
-OPEN > IN_PROGRESS
-IN_PROGRESS > CONTAINED
-CONTAINED > RESOLVED
-RESOLVED > CLOSED
+// ============================================================================
+//  TIMELINE & AUDIT — every change writes a timeline event
+// ============================================================================
+Timeline [icon: clock, color: yellow] {
+  T_CREATE [icon: plus,         label: "created"]
+  T_ASSIGN [icon: user,         label: "assigned"]
+  T_PHASE  [icon: arrow-right,  label: "phase_change"]
+  T_STATUS [icon: refresh-cw,   label: "status_change"]
+  T_NOTE   [icon: message-circle, label: "note"]
+  T_CLOSE  [icon: lock,         label: "closed / reclassified_fp"]
+}
 
-%% PHASE TO STATUS MAPPING
-DETECTION > OPEN
-ANALYSIS > OPEN
-CONTAINMENT > IN_PROGRESS
-ERADICATION > IN_PROGRESS
-RECOVERY > CONTAINED
-POST > RESOLVED
+// ============================================================================
+//  DASHBOARD RISK — multi-metric, not a single global score
+// ============================================================================
+Dashboard Metrics [icon: gauge, color: green] {
+  M_ACTIVE [icon: bell,        label: "Active incidents\n(NEW/ANALYZING/ESCALATED)"]
+  M_MTTR   [icon: timer,       label: "MTTR\n(avg seconds to triage)"]
+  M_FPRATE [icon: percent,     label: "FP rate\n(fp / total alerts)"]
+  M_TREND  [icon: trending-up, label: "7-day volume trend"]
+  M_AUTO   [icon: cpu,         label: "Automation rate\n(analyzed / total)"]
+}
 
-%% OPERATOR ACTIONS
-IN_PROGRESS > ACTIONS
-ACTIONS > CLOSE_API
-CLOSE_API > CLOSED
+// ============ ESCALATION ============
+ALERT_TR > ESC_API
+ESC_API > CREATE
+CREATE > ALERT_OUT: lock alert
+CREATE > GLPI: if integration enabled
+CREATE > OPEN: incident born
+CREATE > T_CREATE
 
-IN_PROGRESS > RECLASS_API
-RECLASS_API > RECLASS_FP
+// ============ PHASE → STATUS MAPPING ============
+P_DET > OPEN: unassigned
+P_DET > PROG: assigned
+P_ANA > OPEN: unassigned
+P_ANA > PROG: assigned
+P_CON > PROG
+P_ERA > PROG
+P_REC > CONT
+P_POST > RES
 
-%% RISK COUPLING
-OPEN > GLOBAL
-IN_PROGRESS > GLOBAL
-CONTAINED > MITIGATION
-RESOLVED > MITIGATION
-CLOSED > MITIGATION
-MITIGATION > GLOBAL
-GLOBAL > SERIES
+// ============ OPERATOR FLOW ============
+OPEN > TAKE: any TIER2+
+OPEN > ASSIGN: lead/admin
+TAKE > PROG
+ASSIGN > PROG
+
+PROG > MOVE: phase forward
+MOVE > P_DET
+MOVE > P_ANA
+MOVE > P_CON
+MOVE > P_ERA
+MOVE > P_REC
+MOVE > P_POST
+
+RES > CLOSE
+CLOSE > CLOSED
+
+PROG > RECLASS: demote to FP
+RECLASS > RECL_FP
+
+// ============ ACTION LIFECYCLE ============
+CREATE > A_PEND: seeded by AI
+PROG > A_PEND: analyst adds
+A_PEND > A_APPR
+A_APPR > A_EXEC
+A_EXEC > A_FAIL: error
+A_FAIL > A_APPR: retry
+
+// ============ TIMELINE WRITES ============
+TAKE > T_ASSIGN
+ASSIGN > T_ASSIGN
+MOVE > T_PHASE
+MOVE > T_STATUS
+NOTE > T_NOTE
+CLOSE > T_CLOSE
+RECLASS > T_CLOSE
+
+// ============ DASHBOARD METRICS ============
+OPEN > M_ACTIVE
+PROG > M_ACTIVE
+ALERT_OUT > M_ACTIVE
+CLOSED > M_MTTR: contributes to MTTR
+RECL_FP > M_FPRATE: bumps FP rate
+ALERT_TR > M_TREND
+ALERT_TR > M_AUTO: if analyzed
