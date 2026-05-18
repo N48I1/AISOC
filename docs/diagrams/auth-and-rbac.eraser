@@ -1,19 +1,25 @@
 title AISOC Authentication & Role-Based Access Control
 
 // ============================================================================
-//  TWO AUTH PATHS — JWT for humans, API keys for ingestion
+//  THREE AUTH PATHS — local JWT, LDAP/AD SSO, API keys for ingestion
 // ============================================================================
 Auth Surfaces [icon: shield, color: red] {
   HUMAN  [icon: user,        label: "Analyst (browser)\nlogin form"]
   SIEM   [icon: server,      label: "Wazuh / 3rd-party SIEM\nmachine-to-machine"]
   LOGIN  [icon: log-in,      label: "POST /api/auth/login\nusername + password"]
   INGEST [icon: webhook,     label: "POST /api/ingest\nX-Api-Key header"]
+  HEART  [icon: activity,    label: "POST /api/heartbeat\nliveness ping (X-Api-Key)"]
 }
 
 // ============================================================================
-//  LOGIN FLOW — lockout-aware, bcrypt-checked, JWT-signed
+//  LOGIN FLOW — LDAP-first when enabled, falls back to local bcrypt
 // ============================================================================
 Login Pipeline [icon: log-in, color: orange] {
+  LDAP_CHK [icon: search,        label: "readLdapConfig()\nenabled + url + bind_dn + base_dn?"]
+  LDAP_SVC [icon: key,           label: "LDAP step 1\nservice-bind as bind_dn"]
+  LDAP_FND [icon: users,         label: "LDAP step 2\nsearch base_dn with user_filter"]
+  LDAP_USR [icon: lock,          label: "LDAP step 3\nre-bind as found DN\nwith submitted password"]
+  LDAP_OK  [icon: user-plus,     label: "Find or create local user\nauth_source='ldap'\nDefault role from config"]
   LOOKUP   [icon: search,        label: "SELECT user WHERE username=?\n401 if not found"]
   LOCK_CHK [icon: lock,          label: "locked_until > now?\n→ 423 Locked + remaining min"]
   BCRYPT   [icon: key,           label: "bcrypt.compareSync()\nvs stored hash"]
@@ -86,7 +92,18 @@ Audit Trail [icon: clipboard, color: green] {
 
 // ============ LOGIN PATH ============
 HUMAN > LOGIN
-LOGIN > LOOKUP
+LOGIN > LDAP_CHK
+
+// ── LDAP/AD branch (tried first when enabled) ──
+LDAP_CHK > LDAP_SVC: enabled
+LDAP_SVC > LDAP_FND
+LDAP_FND > LDAP_USR
+LDAP_USR > LDAP_OK: bind ok
+LDAP_OK > RESET
+LDAP_USR > LOOKUP: bind fails + allow_local_fallback=true
+
+// ── Local bcrypt branch (or fallback) ──
+LDAP_CHK > LOOKUP: ldap disabled
 LOOKUP > LOCK_CHK
 LOCK_CHK > BCRYPT: not locked
 BCRYPT > FAIL_INC: wrong password
@@ -97,9 +114,11 @@ RESET > JWT
 JWT > AUDIT_OK
 AUDIT_OK > WRITE
 
-// ============ INGEST PATH (separate from JWT) ============
+// ============ INGEST + HEARTBEAT PATHS (separate from JWT) ============
 SIEM > INGEST
+SIEM > HEART: every 60s
 INGEST > API_KEYS: validate hash
+HEART  > API_KEYS: validate hash + bump last_heartbeat_at
 
 // ============ JWT-PROTECTED ROUTE GUARD CHAIN ============
 JWT > AUTHN: client sends Bearer

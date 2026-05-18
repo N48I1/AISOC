@@ -2,13 +2,20 @@
 
 ## What It Does
 
-The platform dispatches notifications and creates tickets in external systems automatically when incidents are detected. Three integrations are supported out of the box:
+The platform dispatches notifications and creates tickets in external systems automatically when incidents are detected. Four notification integrations are supported out of the box:
 
 1. **Email** — SMTP-based incident alerts
 2. **Telegram** — Bot messages to a SOC chat channel
-3. **GLPI** — IT service management ticket creation
+3. **Slack** — Incoming-webhook posts to a channel
+4. **GLPI** — IT service management ticket creation
 
 Each integration can be independently enabled/disabled, configured with its own auto-send threshold, and tested from the UI.
+
+> **Non-notification integrations** (Wazuh ingest config, LDAP / AD SSO) live in their own sub-tabs of the Integrations page and are intentionally **excluded** from `GET /api/integrations` and the notification card grid. See the dedicated docs:
+> - [Wazuh integration](../wazuh-integration.md)
+> - [LDAP / AD SSO](./13-ldap-ad-sso.md)
+>
+> The previous Firewalls sub-tab and `/api/firewalls/*` endpoints were removed in 2026-05 — see [07-response-controls.md](./07-response-controls.md) for the new manual action flow.
 
 ---
 
@@ -145,8 +152,9 @@ Navigate to **Settings** → **Integrations**. Each integration card shows:
 ### API
 
 ```
-GET    /api/integrations                     # List all with 24h stats
-PATCH  /api/integrations/:name              # Update config/enabled/threshold
+GET    /api/integrations                     # List notification integrations (filters out 'wazuh' and 'ldap')
+GET    /api/integrations/:name              # Read a single row by name (bypasses the filter — used by Wazuh / LDAP sub-tabs)
+PATCH  /api/integrations/:name              # Update config/enabled/threshold (admin only)
 POST   /api/integrations/:name/test         # Send a test notification
 ```
 

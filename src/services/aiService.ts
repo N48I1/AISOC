@@ -188,6 +188,21 @@ export async function updateIntegration(name: string, payload: {
   return res.json();
 }
 
+export async function getIntegration(name: string): Promise<{ name: string; enabled: boolean; config: Record<string, string>; auto_send_threshold?: string } | null> {
+  const res = await fetch(`/api/integrations/${name}`, { headers: authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function testLdapConnection(username: string): Promise<{ ok: boolean; user?: any; error?: string }> {
+  const res = await fetch('/api/admin/integrations/ldap/test', {
+    method:  'POST',
+    headers: authHeaders(),
+    body:    JSON.stringify({ username }),
+  });
+  return res.json();
+}
+
 export async function testIntegration(name: string): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`/api/integrations/${name}/test`, {
     method:  "POST",
@@ -371,6 +386,50 @@ export async function deleteIncidentAction(incidentId: string, actionId: number)
 
 export async function reorderIncidentActions(incidentId: string, ordered_ids: number[]): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`/api/incidents/${incidentId}/actions/reorder`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ ordered_ids }) });
+  return res.json();
+}
+
+export type ResponseActionRow = {
+  id: number;
+  incident_id: string;
+  action_type: string;
+  target: string | null;
+  priority: string | null;
+  status: IncidentActionStatus;
+  source: string | null;
+  description: string | null;
+  notes: string | null;
+  order_index: number;
+  created_at: string;
+  executed_at: string | null;
+  created_by_username: string | null;
+  executed_by_username: string | null;
+  incident_title: string | null;
+  incident_severity: string | null;
+  incident_phase: string | null;
+  incident_status: string | null;
+  incident_assigned_to: number | null;
+  incident_assigned_to_username: string | null;
+  incident_escalated_at: string | null;
+  incident_created_at: string;
+};
+
+export type ResponseActionsResponse = {
+  actions: ResponseActionRow[];
+  totals: {
+    total: number;
+    pending: number;
+    approved: number;
+    executed: number;
+    failed: number;
+    skipped: number;
+    incidents: number;
+  };
+};
+
+export async function getResponseActions(): Promise<ResponseActionsResponse> {
+  const res = await fetch('/api/response-actions', { headers: authHeaders() });
+  if (!res.ok) return { actions: [], totals: { total: 0, pending: 0, approved: 0, executed: 0, failed: 0, skipped: 0, incidents: 0 } };
   return res.json();
 }
 

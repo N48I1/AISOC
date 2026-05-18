@@ -78,12 +78,12 @@ The agents use this memory automatically during recall pre-flight. Analysts use 
 
 | Integration | Purpose | Status |
 |---|---|---|
-| **Wazuh** | Primary alert source via webhook | Production |
+| **Wazuh** | Primary alert source via webhook + 60s liveness heartbeat | Production |
 | **Telegram** | Real-time incident notifications | Production |
 | **Slack** | Incoming webhook alerts to channels | Production |
 | **Email (SMTP)** | Incident emails with full report | Production |
 | **GLPI** | Helpdesk ticket creation for escalations | Production |
-| **Firewall (ipset/iptables)** | Auto-block on response agent recommendation | Production |
+| **LDAP / AD** | SSO for analyst login with auto-provisioned local mirror accounts | Production |
 
 Notifications are gated by configurable priority threshold. Telegram on CRITICAL only, email on HIGH+, etc. Each integration has a Test button and a 24-hour stats panel.
 
@@ -144,7 +144,7 @@ When off, alerts queue at status `NEW` for manual scanning via the "Scan All" bu
 │  │  - incident_insights     │   │  - Slack                 │  │
 │  │  - asset_context         │   │  - Email (SMTP)          │  │
 │  │  - working_memory        │   │  - GLPI                  │  │
-│  │  - suppression_rules     │   │  - Firewall              │  │
+│  │  - suppression_rules     │   │  - LDAP / AD SSO         │  │
 │  └──────────────────────────┘   └──────────────────────────┘  │
 └──────────────────────┬─────────────────────────┬────────────────┘
                        │                         │

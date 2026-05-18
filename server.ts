@@ -17,7 +17,7 @@ import { rateLimit } from 'express-rate-limit';
 import nodemailer from 'nodemailer';
 import { createGlpiTicket }   from './agents/shared/glpi.js';
 import { sendTelegramMessage } from './agents/shared/telegram.js';
-import { firewallBlockIp, firewallTestConnection, type FirewallType } from './agents/shared/firewall.js';
+import { findLdapUser, ldapAuthenticate, type LdapConfig } from './agents/shared/ldap.js';
 import { setLocalLLMBaseUrl } from './agents/shared/client.js';
 import {
   AGENT_METADATA,
@@ -264,33 +264,6 @@ try {
     CREATE INDEX IF NOT EXISTS idx_action_logs_created     ON action_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_action_logs_integration ON action_logs(integration);
 
-    CREATE TABLE IF NOT EXISTS firewalls (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
-      type TEXT NOT NULL,
-      enabled INTEGER DEFAULT 0,
-      config TEXT DEFAULT '{}',
-      auto_block INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS firewall_blocks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      firewall_id INTEGER NOT NULL,
-      ip TEXT NOT NULL,
-      alert_id TEXT,
-      reason TEXT,
-      status TEXT DEFAULT 'blocked',
-      blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      unblocked_at DATETIME,
-      FOREIGN KEY(firewall_id) REFERENCES firewalls(id),
-      FOREIGN KEY(alert_id) REFERENCES alerts(id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_fw_blocks_ip ON firewall_blocks(ip);
-    CREATE INDEX IF NOT EXISTS idx_fw_blocks_status ON firewall_blocks(status);
-
     CREATE TABLE IF NOT EXISTS local_llm_config (
       key   TEXT PRIMARY KEY,
       value TEXT
@@ -408,6 +381,8 @@ try {
   safeAlter('ALTER TABLE incident_insights   ADD COLUMN triggered_by TEXT DEFAULT \'triage\'');
   safeAlter('ALTER TABLE api_keys            ADD COLUMN paused               INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE api_keys            ADD COLUMN min_severity_override INTEGER');
+  safeAlter('ALTER TABLE api_keys            ADD COLUMN last_heartbeat_at    DATETIME');
+  safeAlter("ALTER TABLE users               ADD COLUMN auth_source          TEXT DEFAULT 'local'");
   // Legacy users table migration must run before user seeding.
   safeAlter('ALTER TABLE users ADD COLUMN display_name TEXT');
   safeAlter("ALTER TABLE users ADD COLUMN avatar_color TEXT DEFAULT '#3b82f6'");
@@ -1302,6 +1277,23 @@ try {
   seedIntegration.run('slack', 0,
     JSON.stringify({ webhook_url: '' }), 'HIGH');
 
+  // LDAP / AD authentication. Disabled by default. config keys:
+  //   url, bind_dn, bind_password, base_dn, user_filter (use {{username}} placeholder),
+  //   username_attr, default_role, allow_local_fallback
+  seedIntegration.run('ldap', 0,
+    JSON.stringify({
+      url:                  '',
+      bind_dn:              '',
+      bind_password:        '',
+      base_dn:              '',
+      user_filter:          '(sAMAccountName={{username}})',
+      username_attr:        'sAMAccountName',
+      email_attr:           'mail',
+      display_name_attr:    'displayName',
+      default_role:         'ANALYST',
+      allow_local_fallback: 'true',
+    }), 'NEVER');
+
   // Wazuh ingest filter config — INSERT OR IGNORE preserves user changes across restarts
   seedIntegration.run('wazuh', 1,
     JSON.stringify({
@@ -1349,6 +1341,28 @@ function writeAudit(userId: number | null, action: string, details: string) {
   } catch (err: any) {
     console.warn('[Audit] write failed:', err?.message);
   }
+}
+
+// Read the saved LDAP config from the integrations table. Returns null if the
+// row is missing, disabled, or the config blob is empty/unparseable.
+function readLdapConfig(): (LdapConfig & { allow_local_fallback: boolean; default_role: string }) | null {
+  const row: any = db.prepare("SELECT enabled, config FROM integrations WHERE name='ldap'").get();
+  if (!row || !row.enabled) return null;
+  let cfg: any = {};
+  try { cfg = JSON.parse(row.config || '{}'); } catch { return null; }
+  if (!cfg.url || !cfg.bind_dn || !cfg.base_dn) return null;
+  return {
+    url:                  String(cfg.url),
+    bind_dn:              String(cfg.bind_dn),
+    bind_password:        String(cfg.bind_password || ''),
+    base_dn:              String(cfg.base_dn),
+    user_filter:          String(cfg.user_filter || '(sAMAccountName={{username}})'),
+    username_attr:        String(cfg.username_attr || 'sAMAccountName'),
+    email_attr:           cfg.email_attr        ? String(cfg.email_attr)        : 'mail',
+    display_name_attr:    cfg.display_name_attr ? String(cfg.display_name_attr) : 'displayName',
+    allow_local_fallback: String(cfg.allow_local_fallback ?? 'true') === 'true',
+    default_role:         String(cfg.default_role || 'ANALYST').toUpperCase(),
+  };
 }
 
 // --- Integration dispatch helper -------------------------------------------
@@ -1432,35 +1446,6 @@ async function dispatchActions(params: {
       logAction.run(alertId, 'glpi', 'create_ticket', result.ok ? 'success' : 'failed',
         result.ok ? `Ticket #${result.ticketId}` : ticket.title?.slice(0, 120) || '', result.error || null);
     }
-  }
-
-  // Auto-block IPs from response agent actions on enabled firewalls
-  try {
-    const alert: any = database.prepare('SELECT ai_analysis FROM alerts WHERE id = ?').get(alertId);
-    if (alert?.ai_analysis) {
-      const ai       = JSON.parse(alert.ai_analysis);
-      const actions  = ai?.response?.actions || ai?.phaseData?.response?.actions || [];
-      const blockIps = actions.filter((a: any) => a.type === 'BLOCK_IP' && a.target).map((a: any) => a.target as string);
-      if (blockIps.length > 0) {
-        const fws = database.prepare('SELECT * FROM firewalls WHERE enabled=1 AND auto_block=1').all() as any[];
-        for (const fw of fws) {
-          let cfg: Record<string, string> = {};
-          try { cfg = JSON.parse(fw.config || '{}'); } catch {}
-          for (const ip of blockIps) {
-            const result = await firewallBlockIp(fw.type as FirewallType, cfg, ip, 'block');
-            database.prepare(
-              'INSERT INTO firewall_blocks (firewall_id, ip, alert_id, reason, status) VALUES (?, ?, ?, ?, ?)'
-            ).run(fw.id, ip, alertId, 'Auto-blocked by BLOCK_IP response action', result.ok ? 'blocked' : 'failed');
-            database.prepare(
-              'INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)'
-            ).run(alertId, `fw_${fw.name}`, 'block_ip', result.ok ? 'success' : 'failed', `Block ${ip}`, result.error || null);
-            console.log(`[Firewall][${fw.name}] ${result.ok ? '✓' : '✗'} block ${ip}: ${result.detail || result.error}`);
-          }
-        }
-      }
-    }
-  } catch (fwErr: any) {
-    console.warn('[Firewall] Auto-block error:', fwErr?.message);
   }
 
   socketIo.emit('action_logged', { alert_id: alertId });
@@ -1599,12 +1584,56 @@ async function startServer() {
   // ── Auth ──────────────────────────────────────────────────────────────────
   const userProfileFields = 'id, username, email, role, display_name, avatar_color, timezone, notify_email, notify_critical, notify_assignments, bio, last_login, password_changed_at, created_at';
 
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
+    if (!username || !password) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const issueToken = (u: any) => {
+      const token = jwt.sign({ id: u.id, username: u.username, role: u.role, email: u.email }, JWT_SECRET);
+      const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(u.id);
+      return { token, user: profile };
+    };
+
+    // ── LDAP / AD path (tried first if enabled) ──────────────────────────────
+    const ldapCfg = readLdapConfig();
+    if (ldapCfg) {
+      const r = await ldapAuthenticate(ldapCfg, username, password);
+      if (r.ok && r.user) {
+        // Find or auto-provision the local mirror.
+        let local: any = db.prepare('SELECT * FROM users WHERE username = ?').get(r.user.username);
+        if (!local) {
+          db.prepare(
+            "INSERT INTO users (username, password, email, role, display_name, auth_source) VALUES (?, ?, ?, ?, ?, 'ldap')"
+          ).run(
+            r.user.username,
+            bcrypt.hashSync(Math.random().toString(36) + Date.now(), 4),   // unusable local password
+            r.user.email || null,
+            ldapCfg.default_role,
+            r.user.display_name || r.user.username,
+          );
+          local = db.prepare('SELECT * FROM users WHERE username = ?').get(r.user.username);
+          writeAudit(local.id, 'USER_CREATED', `Auto-provisioned from LDAP (${r.user.dn})`);
+        }
+        db.prepare("UPDATE users SET failed_logins = 0, locked_until = NULL, last_login = datetime('now') WHERE id = ?").run(local.id);
+        writeAudit(local.id, 'LOGIN', `LDAP login (${r.user.dn})`);
+        return res.json(issueToken(local));
+      }
+      // If LDAP rejected the user *and* local fallback is disabled, stop here.
+      if (!ldapCfg.allow_local_fallback) {
+        return res.status(401).json({ error: r.error || 'LDAP authentication failed' });
+      }
+      // Otherwise fall through to local auth below.
+    }
+
+    // ── Local password path ──────────────────────────────────────────────────
     const user: any = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    // Account lockout check
+    // LDAP-sourced users cannot use local password unless an admin set one explicitly.
+    if (user.auth_source === 'ldap' && !ldapCfg) {
+      return res.status(401).json({ error: 'LDAP is disabled — this account cannot log in locally.' });
+    }
+
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
       const remaining = Math.ceil((new Date(user.locked_until).getTime() - Date.now()) / 60000);
       return res.status(423).json({ error: `Account locked. Try again in ${remaining} min.`, locked: true });
@@ -1622,13 +1651,9 @@ async function startServer() {
       return res.status(401).json({ error: 'Invalid credentials', attemptsRemaining: MAX_FAILED_LOGINS - attempts });
     }
 
-    // Success — reset failed counter, update last_login
-    db.prepare('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login = datetime(\'now\') WHERE id = ?').run(user.id);
+    db.prepare("UPDATE users SET failed_logins = 0, locked_until = NULL, last_login = datetime('now') WHERE id = ?").run(user.id);
     writeAudit(user.id, 'LOGIN', `User ${username} logged in`);
-
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role, email: user.email }, JWT_SECRET);
-    const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(user.id);
-    res.json({ token, user: profile });
+    res.json(issueToken(user));
   });
 
   app.get('/api/auth/me', authenticate, (req: any, res) => {
@@ -1691,12 +1716,13 @@ async function startServer() {
   });
 
   // ── Ingest health ─────────────────────────────────────────────────────────
-  // We don't poll Wazuh — Wazuh POSTs to /api/ingest. So "is Wazuh online?" really
-  // means "has Wazuh hit our ingest endpoint recently?". We look at api_keys.last_used_at
-  // (updated on every /api/ingest call) plus the most recent alert timestamp.
+  // We don't poll Wazuh — Wazuh POSTs to us. Liveness signal priority:
+  //   1. last_heartbeat_at (forwarder pings POST /api/heartbeat every 60s — definitive)
+  //   2. last_used_at      (any /api/ingest call — proves the forwarder ran, may be sparse)
+  //   3. last alert.timestamp (last write to the alerts table — fallback)
   app.get('/api/ingest/status', authenticate, (_req, res) => {
     const keyRow: any = db.prepare(
-      "SELECT MAX(last_used_at) AS last_used_at FROM api_keys WHERE revoked=0"
+      "SELECT MAX(last_used_at) AS last_used_at, MAX(last_heartbeat_at) AS last_heartbeat_at FROM api_keys WHERE revoked=0"
     ).get();
     const alertRow: any = db.prepare(
       "SELECT MAX(timestamp) AS last_ts FROM alerts"
@@ -1711,14 +1737,44 @@ async function startServer() {
       "SELECT COUNT(*) AS total, SUM(CASE WHEN revoked=0 AND paused=0 THEN 1 ELSE 0 END) AS active FROM api_keys"
     ).get();
 
+    // SQLite stores CURRENT_TIMESTAMP as "YYYY-MM-DD HH:MM:SS" (UTC, no zone).
+    // The browser's Date parser treats that format as LOCAL time, which makes
+    // recent timestamps look hours stale and flips the pill to red. Force ISO+Z.
+    const toIso = (ts: string | null | undefined): string | null => {
+      if (!ts) return null;
+      if (ts.includes('T') && (ts.endsWith('Z') || /[+-]\d\d:\d\d$/.test(ts))) return ts;
+      return new Date(ts.replace(' ', 'T') + 'Z').toISOString();
+    };
+
     res.json({
-      lastIngestAt:   keyRow?.last_used_at || null,
-      lastAlertAt:    alertRow?.last_ts || null,
-      alertsLast5m:   alerts5m?.c ?? 0,
-      alertsLastHour: alerts60m?.c ?? 0,
-      totalKeys:      keys?.total ?? 0,
-      activeKeys:     keys?.active ?? 0,
+      lastHeartbeatAt: toIso(keyRow?.last_heartbeat_at),
+      lastIngestAt:    toIso(keyRow?.last_used_at),
+      lastAlertAt:     toIso(alertRow?.last_ts),
+      alertsLast5m:    alerts5m?.c ?? 0,
+      alertsLastHour:  alerts60m?.c ?? 0,
+      totalKeys:       keys?.total ?? 0,
+      activeKeys:      keys?.active ?? 0,
     });
+  });
+
+  // ── Forwarder heartbeat ───────────────────────────────────────────────────
+  // The Wazuh-side forwarder pings this every 60s to prove it's alive,
+  // independent of alert volume. Mirrors /api/ingest's key validation but
+  // does nothing except bump last_heartbeat_at.
+  app.post('/api/heartbeat', (req, res) => {
+    const authHeader   = (req.headers['authorization'] as string) || '';
+    const apiKeyHeader = (req.headers['x-api-key'] as string) || '';
+    const provided     = apiKeyHeader || (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '');
+    if (!provided) {
+      return res.status(401).json({ error: 'API key required. Set X-Api-Key or Authorization: Bearer header.' });
+    }
+    const keyHash = crypto.createHash('sha256').update(provided).digest('hex');
+    const keyRow  = db.prepare("SELECT id, paused FROM api_keys WHERE key_hash=? AND revoked=0 LIMIT 1").get(keyHash) as any;
+    if (!keyRow) {
+      return res.status(401).json({ error: 'Invalid or revoked API key.' });
+    }
+    db.prepare("UPDATE api_keys SET last_heartbeat_at=CURRENT_TIMESTAMP WHERE id=?").run(keyRow.id);
+    res.json({ ok: true, paused: !!keyRow.paused, at: new Date().toISOString() });
   });
 
   // ── Stats ─────────────────────────────────────────────────────────────────
@@ -1884,6 +1940,17 @@ async function startServer() {
     db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now') WHERE id = ?").run(bcrypt.hashSync(newPassword, 10), req.user.id);
     writeAudit(req.user.id, 'PASSWORD_CHANGED', `User ${user.username} changed password`);
     res.json({ message: 'Password updated.' });
+  });
+
+  // Admin: test the LDAP/AD connection. Body: { username }.
+  // Uses the saved integration row's config; does NOT require sending creds again.
+  app.post('/api/admin/integrations/ldap/test', authenticate, requireAdmin, async (req: any, res) => {
+    const { username } = req.body || {};
+    if (!username) return res.status(400).json({ ok: false, error: 'username required' });
+    const cfg = readLdapConfig();
+    if (!cfg) return res.status(400).json({ ok: false, error: 'LDAP integration not configured' });
+    const r = await findLdapUser(cfg, String(username));
+    res.json(r);
   });
 
   // Admin: unlock a locked account
@@ -3120,6 +3187,45 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  // Aggregated view: every incident_action joined with its incident, for the
+  // Response Actions page. Avoids N+1 fetches.
+  app.get('/api/response-actions', authenticate, (_req, res) => {
+    const rows = db.prepare(`
+      SELECT
+        a.id, a.incident_id, a.action_type, a.target, a.priority, a.status,
+        a.source, a.description, a.notes, a.order_index,
+        a.created_at, a.executed_at,
+        cu.username AS created_by_username,
+        eu.username AS executed_by_username,
+        i.title           AS incident_title,
+        i.severity        AS incident_severity,
+        i.phase           AS incident_phase,
+        i.status          AS incident_status,
+        i.assigned_to     AS incident_assigned_to,
+        au.username       AS incident_assigned_to_username,
+        i.escalated_at    AS incident_escalated_at,
+        i.created_at      AS incident_created_at
+      FROM incident_actions a
+      INNER JOIN incidents i ON i.id = a.incident_id
+      LEFT JOIN users cu ON cu.id = a.created_by
+      LEFT JOIN users eu ON eu.id = a.executed_by
+      LEFT JOIN users au ON au.id = i.assigned_to
+      ORDER BY i.escalated_at DESC, i.id ASC, a.order_index ASC, a.created_at ASC, a.id ASC
+    `).all() as any[];
+
+    const totals = {
+      total:    rows.length,
+      pending:  rows.filter(r => r.status === 'pending').length,
+      approved: rows.filter(r => r.status === 'approved').length,
+      executed: rows.filter(r => r.status === 'executed').length,
+      failed:   rows.filter(r => r.status === 'failed').length,
+      skipped:  rows.filter(r => r.status === 'skipped').length,
+      incidents: new Set(rows.map(r => r.incident_id)).size,
+    };
+
+    res.json({ actions: rows, totals });
+  });
+
   // Update incident metadata (report_body, title, severity, status)
   app.patch('/api/incidents/:id', authenticate, (req: any, res) => {
     const { id } = req.params;
@@ -3617,9 +3723,13 @@ async function startServer() {
   });
 
   // ── Integrations ─────────────────────────────────────────────────────────
+  // Non-notification integrations (ingest config, auth backends) are managed in
+  // their own dedicated sub-tabs and must not appear in the notification grid.
+  const NON_NOTIFICATION = new Set(['wazuh', 'ldap']);
+
   app.get('/api/integrations', authenticate, (_req, res) => {
     const rows = db.prepare('SELECT * FROM integrations').all() as any[];
-    const result = rows.filter(r => r.name !== 'wazuh').map(r => {
+    const result = rows.filter(r => !NON_NOTIFICATION.has(r.name)).map(r => {
       let cfg: any = {};
       try { cfg = JSON.parse(r.config || '{}'); } catch {}
       const stats = db.prepare(`
@@ -3640,6 +3750,18 @@ async function startServer() {
       };
     });
     res.json(result);
+  });
+
+  // Single-row read by name. Bypasses the notification-filter so the dedicated
+  // LDAP / Wazuh sub-tabs can still hydrate themselves.
+  app.get('/api/integrations/:name', authenticate, (req: any, res) => {
+    const row: any = db.prepare('SELECT * FROM integrations WHERE name = ?').get(req.params.name);
+    if (!row) return res.status(404).json({ error: 'Integration not found' });
+    let cfg: any = {};
+    try { cfg = JSON.parse(row.config || '{}'); } catch {}
+    // Hide bind_password for non-admins on the LDAP row.
+    if (row.name === 'ldap' && req.user?.role !== 'ADMIN') cfg.bind_password = '';
+    res.json({ name: row.name, enabled: !!row.enabled, config: cfg, auto_send_threshold: row.auto_send_threshold });
   });
 
   app.patch('/api/integrations/:name', authenticate, requireAdmin, (req: any, res) => {
@@ -3801,107 +3923,6 @@ async function startServer() {
     }).filter(r => !priority || r.priority === priority).slice(0, pageSize);
 
     res.json({ reports, total: totalRow, page, pageSize });
-  });
-
-  // ── Firewalls ─────────────────────────────────────────────────────────────
-  app.get('/api/firewalls', authenticate, (_req, res) => {
-    const rows = db.prepare('SELECT * FROM firewalls ORDER BY created_at DESC').all() as any[];
-    const result = rows.map(fw => {
-      let cfg: any = {};
-      try { cfg = JSON.parse(fw.config || '{}'); } catch {}
-      const blocks = db.prepare("SELECT COUNT(*) as c FROM firewall_blocks WHERE firewall_id=? AND status='blocked'").get(fw.id) as any;
-      return { ...fw, config: cfg, enabled: fw.enabled === 1, auto_block: fw.auto_block === 1, active_blocks: blocks?.c || 0 };
-    });
-    res.json(result);
-  });
-
-  app.post('/api/firewalls', authenticate, requireAdmin, (req: any, res) => {
-    const { name, type, config, enabled, auto_block } = req.body;
-    if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
-    if (!['fortigate','pfsense','sophos'].includes(type)) return res.status(400).json({ error: 'type must be fortigate, pfsense, or sophos' });
-    try {
-      const result = db.prepare(
-        'INSERT INTO firewalls (name, type, enabled, config, auto_block) VALUES (?, ?, ?, ?, ?)'
-      ).run(name, type, enabled ? 1 : 0, JSON.stringify(config || {}), auto_block ? 1 : 0);
-      writeAudit(req.user?.id, 'FIREWALL_CREATED', `Firewall ${name} (${type}) added`);
-      res.json({ id: result.lastInsertRowid, name, type });
-    } catch (err: any) {
-      if (err.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Firewall name already exists' });
-      res.status(500).json({ error: 'Failed to create firewall' });
-    }
-  });
-
-  app.patch('/api/firewalls/:id', authenticate, requireAdmin, (req: any, res) => {
-    const { id } = req.params;
-    const { name, enabled, config, auto_block } = req.body;
-    const updates = ['updated_at = datetime("now")'];
-    const values: any[] = [];
-    if (name      !== undefined) { updates.push('name = ?');       values.push(name); }
-    if (enabled   !== undefined) { updates.push('enabled = ?');    values.push(enabled ? 1 : 0); }
-    if (config    !== undefined) { updates.push('config = ?');     values.push(JSON.stringify(config)); }
-    if (auto_block!== undefined) { updates.push('auto_block = ?'); values.push(auto_block ? 1 : 0); }
-    values.push(id);
-    db.prepare(`UPDATE firewalls SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-    writeAudit(req.user?.id, 'FIREWALL_UPDATED', `Firewall #${id} updated`);
-    res.json({ ok: true });
-  });
-
-  app.delete('/api/firewalls/:id', authenticate, requireAdmin, (req: any, res) => {
-    db.prepare('DELETE FROM firewalls WHERE id = ?').run(req.params.id);
-    writeAudit(req.user?.id, 'FIREWALL_DELETED', `Firewall #${req.params.id} deleted`);
-    res.json({ ok: true });
-  });
-
-  app.post('/api/firewalls/:id/test', authenticate, requireAdmin, async (req: any, res) => {
-    const fw = db.prepare('SELECT * FROM firewalls WHERE id = ?').get(req.params.id) as any;
-    if (!fw) return res.status(404).json({ ok: false, error: 'Firewall not found' });
-    let cfg: Record<string, string> = {};
-    try { cfg = JSON.parse(fw.config || '{}'); } catch {}
-    const result = await firewallTestConnection(fw.type as FirewallType, cfg);
-    db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(null, `fw_${fw.name}`, 'test', result.ok ? 'success' : 'failed', 'Connection test', result.error || null);
-    res.json(result);
-  });
-
-  app.post('/api/firewalls/:id/block', authenticate, async (req: any, res) => {
-    const { ip, alert_id, reason } = req.body;
-    if (!ip) return res.status(400).json({ error: 'ip is required' });
-    const fw = db.prepare('SELECT * FROM firewalls WHERE id = ?').get(req.params.id) as any;
-    if (!fw) return res.status(404).json({ ok: false, error: 'Firewall not found' });
-    let cfg: Record<string, string> = {};
-    try { cfg = JSON.parse(fw.config || '{}'); } catch {}
-    const result = await firewallBlockIp(fw.type as FirewallType, cfg, ip, 'block');
-    db.prepare('INSERT INTO firewall_blocks (firewall_id, ip, alert_id, reason, status) VALUES (?, ?, ?, ?, ?)')
-      .run(fw.id, ip, alert_id || null, reason || 'Manual block', result.ok ? 'blocked' : 'failed');
-    db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(alert_id || null, `fw_${fw.name}`, 'block_ip', result.ok ? 'success' : 'failed', `Block ${ip}`, result.error || null);
-    writeAudit(req.user?.id, 'FIREWALL_BLOCK', `${ip} blocked on ${fw.name}`);
-    io.emit('action_logged', { firewall_id: fw.id });
-    res.json(result);
-  });
-
-  app.post('/api/firewalls/:id/unblock', authenticate, requireAdmin, async (req: any, res) => {
-    const { ip } = req.body;
-    if (!ip) return res.status(400).json({ error: 'ip is required' });
-    const fw = db.prepare('SELECT * FROM firewalls WHERE id = ?').get(req.params.id) as any;
-    if (!fw) return res.status(404).json({ ok: false, error: 'Firewall not found' });
-    let cfg: Record<string, string> = {};
-    try { cfg = JSON.parse(fw.config || '{}'); } catch {}
-    const result = await firewallBlockIp(fw.type as FirewallType, cfg, ip, 'unblock');
-    db.prepare('UPDATE firewall_blocks SET status=?, unblocked_at=datetime("now") WHERE firewall_id=? AND ip=? AND status="blocked"')
-      .run('unblocked', fw.id, ip);
-    db.prepare('INSERT INTO action_logs (alert_id, integration, action, status, payload, error) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(null, `fw_${fw.name}`, 'unblock_ip', result.ok ? 'success' : 'failed', `Unblock ${ip}`, result.error || null);
-    writeAudit(req.user?.id, 'FIREWALL_UNBLOCK', `${ip} unblocked on ${fw.name}`);
-    io.emit('action_logged', { firewall_id: fw.id });
-    res.json(result);
-  });
-
-  app.get('/api/firewalls/:id/blocks', authenticate, (_req, res) => {
-    const blocks = db.prepare(
-      "SELECT * FROM firewall_blocks WHERE firewall_id=? ORDER BY blocked_at DESC LIMIT 100"
-    ).all(_req.params.id);
-    res.json(blocks);
   });
 
   // ── Frontend serving ──────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogO
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, testLdapConnection, getIntegration, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from './types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from './types';
 import PageHeader from './components/ui/PageHeader';
@@ -275,6 +275,7 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
 const Header = () => {
   const { user, token, logout } = useAuth();
   const [ingestInfo, setIngestInfo] = useState<{
+    lastHeartbeatAt: string | null;
     lastIngestAt: string | null;
     lastAlertAt: string | null;
     alertsLast5m: number;
@@ -296,21 +297,33 @@ const Header = () => {
     return () => clearInterval(id);
   }, [token]);
 
-  // Status derived from ingest activity, not from a fake "is enabled" toggle:
-  //   healthy  — Wazuh POSTed something in the last 5 minutes
-  //   degraded — last activity 5–30 minutes ago
-  //   offline  — no activity 30+ min, or no active API key configured
-  const minsSinceIngest = (() => {
-    const ts = ingestInfo?.lastIngestAt || ingestInfo?.lastAlertAt;
-    if (!ts) return Infinity;
-    return (Date.now() - new Date(ts).getTime()) / 60_000;
-  })();
+  // Liveness signal priority:
+  //   1. heartbeat — definitive, fires every 60s from the Wazuh-side forwarder
+  //   2. ingest    — every alert hits /api/ingest, but quiet networks have none
+  //   3. alert ts  — same as ingest, just a different timestamp source
+  // We rank by heartbeat first because "no alerts" ≠ "Wazuh broken" on a quiet net.
+  const minsSince = (ts: string | null | undefined) =>
+    ts ? (Date.now() - new Date(ts).getTime()) / 60_000 : Infinity;
 
-  const wazuhStatus: 'healthy' | 'degraded' | 'offline' =
-    !ingestInfo || ingestInfo.activeKeys === 0 ? 'offline' :
-    minsSinceIngest < 5  ? 'healthy' :
-    minsSinceIngest < 30 ? 'degraded' :
-                           'offline';
+  const minsSinceHeartbeat = minsSince(ingestInfo?.lastHeartbeatAt);
+  const minsSinceIngest    = minsSince(ingestInfo?.lastIngestAt || ingestInfo?.lastAlertAt);
+  const heartbeatConfigured = isFinite(minsSinceHeartbeat);
+
+  // 'unknown' means "no heartbeat configured yet AND no recent ingest" — quiet
+  // network, can't claim broken. Show as amber/info, not red.
+  // Pill must hold green for at least 5 min after the last heartbeat. After
+  // that, a short amber "Lagging" band gives a visible warning before red.
+  // <5 min  = Live
+  // <10 min = Lagging (multiple beats missed but possibly transient)
+  // >10 min = Offline (definitive failure)
+  const wazuhStatus: 'healthy' | 'degraded' | 'offline' | 'unknown' =
+    !ingestInfo || ingestInfo.activeKeys === 0     ? 'offline' :
+    heartbeatConfigured && minsSinceHeartbeat < 5  ? 'healthy' :
+    heartbeatConfigured && minsSinceHeartbeat < 10 ? 'degraded' :
+    heartbeatConfigured                            ? 'offline' :
+    minsSinceIngest < 5                            ? 'healthy' :
+    minsSinceIngest < 30                           ? 'degraded' :
+                                                     'unknown';
 
   const formatAgo = (mins: number) => {
     if (!isFinite(mins)) return 'never';
@@ -321,18 +334,35 @@ const Header = () => {
     return `${Math.floor(h / 24)}d ago`;
   };
 
-  const tooltipText =
-    !ingestInfo ? 'Checking ingest status…' :
-    ingestInfo.activeKeys === 0
-      ? 'No active API keys — Wazuh cannot push alerts. Create a key in Integrations.'
-      : `Last alert: ${formatAgo(minsSinceIngest)} · ${ingestInfo.alertsLast5m} in 5m · ${ingestInfo.alertsLastHour} in 1h · ${ingestInfo.activeKeys} active key${ingestInfo.activeKeys !== 1 ? 's' : ''}`;
+  const tooltipText = (() => {
+    if (!ingestInfo) return 'Checking ingest status…';
+    if (ingestInfo.activeKeys === 0) return 'No active API keys — Wazuh cannot push alerts. Create a key in Integrations.';
+    const parts: string[] = [];
+    if (heartbeatConfigured)         parts.push(`Heartbeat ${formatAgo(minsSinceHeartbeat)}`);
+    else                              parts.push('Heartbeat: not configured');
+    parts.push(`Last alert ${formatAgo(minsSinceIngest)}`);
+    parts.push(`${ingestInfo.alertsLast5m} in 5m · ${ingestInfo.alertsLastHour} in 1h`);
+    parts.push(`${ingestInfo.activeKeys} active key${ingestInfo.activeKeys !== 1 ? 's' : ''}`);
+    return parts.join(' · ');
+  })();
 
-  const statusColors = { healthy: 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]', degraded: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]', offline: 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' };
-  const statusTextColors = { healthy: 'text-green-700', degraded: 'text-amber-700', offline: 'text-red-700' };
+  const statusColors = {
+    healthy:  'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]',
+    degraded: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]',
+    offline:  'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]',
+    unknown:  'bg-slate-400 shadow-[0_0_8px_rgba(148,163,184,0.4)]',
+  };
+  const statusTextColors = {
+    healthy:  'text-green-700',
+    degraded: 'text-amber-700',
+    offline:  'text-red-700',
+    unknown:  'text-slate-600',
+  };
   const statusLabels = {
     healthy:  ingestInfo ? `Wazuh: Live (${ingestInfo.alertsLast5m}/5m)` : 'Wazuh: Live',
-    degraded: `Wazuh: Idle ${formatAgo(minsSinceIngest)}`,
-    offline:  ingestInfo?.activeKeys === 0 ? 'Wazuh: No API Key' : 'Wazuh: Silent',
+    degraded: heartbeatConfigured ? `Wazuh: Lagging ${formatAgo(minsSinceHeartbeat)}` : `Wazuh: Idle ${formatAgo(minsSinceIngest)}`,
+    offline:  ingestInfo?.activeKeys === 0 ? 'Wazuh: No API Key' : 'Wazuh: Offline',
+    unknown:  'Wazuh: Awaiting events',
   };
   return (
     <header className="h-[60px] bg-[var(--s0)] border-b border-[var(--b1)] text-[var(--t1)] flex items-center justify-between px-6 z-[100] sticky top-0 transition-all">
@@ -3649,327 +3679,254 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
   );
 };
 
-// ─── Firewall Section (embedded in ActionsTab) ────────────────────────────────
-const FirewallSection = () => {
-  const showToast = useToast();
-  const { user }  = useAuth();
-  const isAdmin   = user?.role === 'ADMIN';
+// ─── LDAP / AD Section (replaces former Firewall section in Integrations) ─────
+const LdapSection = () => {
+  const toast    = useToast();
+  const { user } = useAuth();
+  const isAdmin  = user?.role === 'ADMIN';
 
-  const [firewalls, setFirewalls]  = useState<any[]>([]);
-  const [blocks,    setBlocks]     = useState<Record<number, any[]>>({});
-  const [testing,   setTesting]    = useState<Record<number, boolean>>({});
-  const [blocking,  setBlocking]   = useState<Record<number, boolean>>({});
-  const [showAdd,   setShowAdd]    = useState(false);
-  const [blockIpInput, setBlockIpInput] = useState<Record<number, string>>({});
-  const [expandedFw, setExpandedFw] = useState<number | null>(null);
-  const [form, setForm] = useState({ name: '', type: 'fortigate', url: '', api_token: '', client_id: '', client_token: '', username: '', password: '', group_name: '', alias: '' });
-
-  const FW_META: Record<string, { label: string; color: string; fields: Array<{ key: string; label: string; secret?: boolean; placeholder?: string }> }> = {
-    fortigate: {
-      label: 'FortiGate',
-      color: 'text-red-700 bg-red-50 border-red-200',
-      fields: [
-        { key: 'url',        label: 'Management URL',     placeholder: 'https://192.168.1.1' },
-        { key: 'api_token',  label: 'API Token',          secret: true, placeholder: 'REST API admin token' },
-        { key: 'group_name', label: 'Block Group Name',   placeholder: 'BBS-AISOC-Blocked (default)' },
-      ],
-    },
-    pfsense: {
-      label: 'pfSense',
-      color: 'text-blue-700 bg-blue-50 border-blue-200',
-      fields: [
-        { key: 'url',          label: 'pfSense URL',        placeholder: 'https://192.168.1.1' },
-        { key: 'client_id',    label: 'API Client ID',      placeholder: 'From System > API' },
-        { key: 'client_token', label: 'API Client Token',   secret: true, placeholder: 'From System > API' },
-        { key: 'alias',        label: 'Block Alias Name',   placeholder: 'BBS_AISOC_Blocked (default)' },
-      ],
-    },
-    sophos: {
-      label: 'Sophos XG / SFOS',
-      color: 'text-blue-900 bg-blue-50 border-blue-300',
-      fields: [
-        { key: 'url',      label: 'Firewall URL (port 4444)', placeholder: 'https://192.168.1.1:4444' },
-        { key: 'username', label: 'Admin Username',           placeholder: 'admin' },
-        { key: 'password', label: 'Admin Password',           secret: true },
-      ],
-    },
+  type LdapCfg = {
+    url:                  string;
+    bind_dn:              string;
+    bind_password:        string;
+    base_dn:              string;
+    user_filter:          string;
+    username_attr:        string;
+    email_attr:           string;
+    display_name_attr:    string;
+    default_role:         string;
+    allow_local_fallback: string;
+  };
+  const DEFAULT_CFG: LdapCfg = {
+    url:                  '',
+    bind_dn:              '',
+    bind_password:        '',
+    base_dn:              '',
+    user_filter:          '(sAMAccountName={{username}})',
+    username_attr:        'sAMAccountName',
+    email_attr:           'mail',
+    display_name_attr:    'displayName',
+    default_role:         'ANALYST',
+    allow_local_fallback: 'true',
   };
 
-  const configFromForm = (type: string) => {
-    const meta = FW_META[type];
-    const cfg: Record<string, string> = {};
-    meta?.fields.forEach(f => { if (form[f.key as keyof typeof form]) cfg[f.key] = form[f.key as keyof typeof form] as string; });
-    return cfg;
-  };
+  const [enabled, setEnabled] = useState(false);
+  const [cfg, setCfg]         = useState<LdapCfg>(DEFAULT_CFG);
+  const [showPw, setShowPw]   = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testUser, setTestUser]     = useState('');
+  const [testResult, setTestResult] = useState<{ ok: boolean; user?: any; error?: string } | null>(null);
 
-  const loadFirewalls = useCallback(async () => {
-    const res  = await fetch('/api/firewalls', { headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
-    if (res.ok) setFirewalls(await res.json());
+  const load = useCallback(() => {
+    getIntegration('ldap').then(row => {
+      if (row) {
+        setEnabled(!!row.enabled);
+        setCfg({ ...DEFAULT_CFG, ...(row.config || {}) } as LdapCfg);
+      }
+    }).catch(() => {});
   }, []);
+  useEffect(() => { load(); }, [load]);
 
-  const loadBlocks = useCallback(async (fwId: number) => {
-    const res  = await fetch(`/api/firewalls/${fwId}/blocks`, { headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
-    if (res.ok) { const data = await res.json(); setBlocks(prev => ({ ...prev, [fwId]: data })); }
-  }, []);
-
-  useEffect(() => { loadFirewalls(); }, [loadFirewalls]);
-
-  const handleAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const res = await fetch('/api/firewalls', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
-      body: JSON.stringify({ name: form.name, type: form.type, config: configFromForm(form.type), enabled: false, auto_block: false }),
-    });
-    const data = await res.json();
-    if (data.error) { showToast(data.error, 'error'); return; }
-    showToast(`Firewall "${form.name}" added`);
-    setShowAdd(false);
-    setForm({ name: '', type: 'fortigate', url: '', api_token: '', client_id: '', client_token: '', username: '', password: '', group_name: '', alias: '' });
-    loadFirewalls();
+  const handleSave = async () => {
+    if (!isAdmin) return;
+    setSaving(true);
+    try {
+      await updateIntegration('ldap', { enabled, config: cfg as any });
+      toast('LDAP settings saved', 'success');
+    } catch (e: any) {
+      toast(e?.message || 'Failed to save', 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleToggle = async (fw: any, field: 'enabled' | 'auto_block') => {
-    await fetch(`/api/firewalls/${fw.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
-      body: JSON.stringify({ [field]: !fw[field] }),
-    });
-    loadFirewalls();
+  const handleTest = async () => {
+    if (!testUser.trim()) { toast('Enter a username to look up', 'error'); return; }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await testLdapConnection(testUser.trim());
+      setTestResult(r);
+      if (r.ok) toast(`Found ${r.user?.dn || testUser}`, 'success');
+      else      toast(r.error || 'LDAP test failed', 'error');
+    } finally {
+      setTesting(false);
+    }
   };
 
-  const handleTest = async (fw: any) => {
-    setTesting(prev => ({ ...prev, [fw.id]: true }));
-    const res = await fetch(`/api/firewalls/${fw.id}/test`, { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
-    const data = await res.json();
-    showToast(data.ok ? `${fw.name} connection OK` : `${fw.name} test failed: ${data.error}`, data.ok ? 'success' : 'error');
-    setTesting(prev => ({ ...prev, [fw.id]: false }));
-  };
-
-  const handleBlockIp = async (fw: any) => {
-    const ip = blockIpInput[fw.id]?.trim();
-    if (!ip) return;
-    setBlocking(prev => ({ ...prev, [fw.id]: true }));
-    const res = await fetch(`/api/firewalls/${fw.id}/block`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
-      body: JSON.stringify({ ip, reason: 'Manual block via SOC console' }),
-    });
-    const data = await res.json();
-    showToast(data.ok ? `${ip} blocked on ${fw.name}` : `Block failed: ${data.error}`, data.ok ? 'success' : 'error');
-    setBlocking(prev => ({ ...prev, [fw.id]: false }));
-    setBlockIpInput(prev => ({ ...prev, [fw.id]: '' }));
-    loadFirewalls();
-    if (expandedFw === fw.id) loadBlocks(fw.id);
-  };
-
-  const handleUnblock = async (fw: any, ip: string) => {
-    await fetch(`/api/firewalls/${fw.id}/unblock`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('soc_token')}` },
-      body: JSON.stringify({ ip }),
-    });
-    showToast(`${ip} unblocked on ${fw.name}`, 'info');
-    loadBlocks(fw.id);
-    loadFirewalls();
-  };
-
-  const handleDelete = async (fw: any) => {
-    await fetch(`/api/firewalls/${fw.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${localStorage.getItem('soc_token')}` } });
-    showToast(`${fw.name} removed`, 'info');
-    loadFirewalls();
-  };
-
-  const statusDot = (enabled: boolean) => (
-    <span className={`inline-block w-2 h-2 rounded-full ${enabled ? 'bg-[#1e8e3e]' : 'bg-slate-300'}`} />
+  const Field = ({ label, k, type = 'text', mono = false, placeholder, hint }: {
+    label: string; k: keyof LdapCfg; type?: string; mono?: boolean; placeholder?: string; hint?: string;
+  }) => (
+    <div>
+      <label className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--t3)]">{label}</label>
+      <input
+        type={type === 'password' && showPw ? 'text' : type}
+        value={cfg[k]}
+        onChange={e => setCfg({ ...cfg, [k]: e.target.value })}
+        placeholder={placeholder}
+        disabled={!isAdmin}
+        className={`w-full mt-1 border border-[var(--b2)] rounded-lg px-2.5 py-1.5 text-[0.75rem] bg-[var(--s0)] focus:outline-none focus:border-[var(--p1)] ${mono ? 'font-mono' : ''}`}
+      />
+      {hint && <p className="text-[0.6rem] text-[var(--t3)] mt-1">{hint}</p>}
+    </div>
   );
 
   return (
     <div className="space-y-4">
-      {/* Section header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5 text-[var(--p1)]" />
-          <h3 className="text-[1rem] font-black text-[var(--p1)]">Firewall Integrations</h3>
-          <span className="text-[0.65rem] text-[var(--t3)] font-semibold">Sophos · FortiGate · pfSense</span>
+      {/* Header card */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 flex items-start gap-3">
+        <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0">
+          <User size={18} className="text-indigo-600" />
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-[0.95rem] font-black text-[var(--t1)]">LDAP / Active Directory SSO</h3>
+            <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest ${enabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-300' : 'bg-[var(--s1)] text-[var(--t3)] border border-[var(--b2)]'}`}>
+              {enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+          <p className="text-[0.72rem] text-[var(--t3)] mt-1">
+            Let analysts sign in with their AD credentials. On first successful login, a local mirror account is auto-created with the default role; admins can promote later.
+          </p>
         </div>
         {isAdmin && (
           <button
-            onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.75rem] font-bold hover:bg-[var(--pd)] transition-colors"
+            onClick={() => setEnabled(v => !v)}
+            className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.7rem] font-bold border transition-colors ${enabled ? 'bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100' : 'bg-[var(--s1)] border-[var(--b2)] text-[var(--t5)] hover:bg-[var(--s2)]'}`}
           >
-            <Plus size={13} />
-            Add Firewall
+            {enabled ? <><ToggleRight size={14} /> On</> : <><ToggleLeft size={14} /> Off</>}
           </button>
         )}
       </div>
 
-      {/* Add form */}
-      {showAdd && isAdmin && (
-        <form onSubmit={handleAdd} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-5 shadow-sm space-y-4">
-          <p className="text-[0.78rem] font-black text-[var(--t5)] uppercase tracking-wide">New Firewall Integration</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Display Name</label>
-              <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Perimeter-FW-01" className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
-            </div>
-            <div>
-              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Firewall Type</label>
-              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
-                <option value="fortigate">FortiGate (FortiOS)</option>
-                <option value="pfsense">pfSense (REST API)</option>
-                <option value="sophos">Sophos XG / SFOS</option>
-              </select>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {FW_META[form.type]?.fields.map(f => (
-              <div key={f.key}>
-                <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">{f.label}</label>
-                <input
-                  type={f.secret ? 'password' : 'text'}
-                  value={form[f.key as keyof typeof form] as string}
-                  onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
-                  placeholder={f.placeholder}
-                  className="w-full border border-[var(--b2)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--p1)] font-mono"
-                />
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-2 pt-1">
-            <button type="submit" className="px-4 py-2 rounded-lg bg-[var(--p1)] text-[var(--t7)] text-[0.78rem] font-bold hover:bg-[var(--pd)]">Add Firewall</button>
-            <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.78rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
-          </div>
-        </form>
-      )}
-
-      {/* No firewalls */}
-      {firewalls.length === 0 && !showAdd && (
-        <div className="bg-[var(--s0)] border border-dashed border-[var(--b1)] rounded-xl p-8 text-center space-y-2">
-          <Shield className="w-10 h-10 text-[var(--t2)] mx-auto" />
-          <p className="text-[var(--t4)] font-semibold">No firewalls configured</p>
-          <p className="text-[var(--t3)] text-[0.78rem]">Add a FortiGate, pfSense, or Sophos XG to enable automatic IP blocking from agent response actions.</p>
-        </div>
-      )}
-
-      {/* Firewall cards */}
-      {firewalls.map(fw => {
-        const meta     = FW_META[fw.type];
-        const fwBlocks = blocks[fw.id];
-        const isExpanded = expandedFw === fw.id;
-
-        return (
-          <div key={fw.id} className={`bg-[var(--s0)] border rounded-xl shadow-sm overflow-hidden ${fw.enabled ? 'border-[var(--p1)]/30' : 'border-[var(--b1)]'}`}>
-            {/* Card header */}
-            <div className={`flex items-center justify-between px-5 py-3 border-b ${fw.enabled ? 'bg-[var(--sa)]' : 'bg-[var(--s1)]'}`}>
-              <div className="flex items-center gap-3">
-                {statusDot(fw.enabled)}
-                <div>
-                  <p className="text-[0.88rem] font-black text-[var(--t7)]">{fw.name}</p>
-                  <span className={`text-[0.6rem] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${meta?.color || 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)]'}`}>{meta?.label || fw.type}</span>
-                </div>
-                <div className="ml-2 text-[0.72rem]">
-                  <span className="font-mono text-[var(--t4)]">{fw.active_blocks || 0}</span>
-                  <span className="text-[var(--t3)]"> IPs blocked</span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {/* Auto-block badge */}
-                {fw.auto_block && (
-                  <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-800 text-[0.6rem] font-black uppercase tracking-wide border border-red-200">⚡ Auto-block ON</span>
-                )}
-
-                {isAdmin && (
-                  <>
-                    <button onClick={() => handleToggle(fw, 'enabled')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.enabled ? 'border-[#1e8e3e] text-[#1e8e3e] hover:bg-green-50' : 'border-[var(--b1)] text-[var(--t4)] hover:bg-[var(--s1)]'}`}>
-                      {fw.enabled ? 'Enabled' : 'Disabled'}
-                    </button>
-                    <button onClick={() => handleToggle(fw, 'auto_block')} className={`text-[0.68rem] font-bold px-2.5 py-1 rounded border transition-colors ${fw.auto_block ? 'border-red-400 text-red-600 hover:bg-red-50' : 'border-[var(--b1)] text-[var(--t3)] hover:bg-[var(--s1)]'}`} title="Auto-block IPs from BLOCK_IP agent actions">
-                      Auto-block
-                    </button>
-                    <button onClick={() => handleTest(fw)} disabled={testing[fw.id]} className="text-[0.68rem] font-bold px-2.5 py-1 rounded border border-[var(--p1)] text-[var(--p1)] hover:bg-[var(--sa)] transition-colors disabled:opacity-50">
-                      {testing[fw.id] ? '…' : 'Test'}
-                    </button>
-                    <button onClick={() => handleDelete(fw)} className="p-1.5 rounded hover:bg-red-50 text-[var(--t2)] hover:text-red-500 transition-colors">
-                      <Trash2 size={13} />
-                    </button>
-                  </>
-                )}
-
-                <button onClick={() => { setExpandedFw(isExpanded ? null : fw.id); if (!isExpanded) loadBlocks(fw.id); }} className="p-1.5 rounded hover:bg-[var(--s1)] transition-colors">
-                  <ChevronDown size={14} className={`text-[var(--t3)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                </button>
-              </div>
-            </div>
-
-            {/* Manual block input */}
-            <div className="px-5 py-3 flex items-center gap-2 border-b border-[var(--b3)]">
+      {/* Connection */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-3">
+        <p className="text-[0.72rem] font-black text-[var(--t7)]">Connection</p>
+        <Field label="Server URL" k="url" mono placeholder="ldaps://dc01.bbs.local:636" hint="Use ldaps:// for TLS (port 636) or ldap:// for plaintext (port 389)." />
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Bind DN" k="bind_dn" mono placeholder="CN=svc-aisoc,OU=Service Accounts,DC=bbs,DC=local" />
+          <div>
+            <label className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--t3)]">Bind Password</label>
+            <div className="relative mt-1">
               <input
-                type="text"
-                value={blockIpInput[fw.id] || ''}
-                onChange={e => setBlockIpInput(prev => ({ ...prev, [fw.id]: e.target.value }))}
-                onKeyDown={e => e.key === 'Enter' && handleBlockIp(fw)}
-                placeholder="Block IP address manually (e.g. 185.220.101.47)"
-                className="flex-1 border border-[var(--b2)] rounded px-3 py-1.5 text-[0.78rem] font-mono outline-none focus:border-red-400 focus:ring-1 focus:ring-red-100"
+                type={showPw ? 'text' : 'password'}
+                value={cfg.bind_password}
+                onChange={e => setCfg({ ...cfg, bind_password: e.target.value })}
+                disabled={!isAdmin}
+                className="w-full border border-[var(--b2)] rounded-lg pl-2.5 pr-8 py-1.5 text-[0.75rem] bg-[var(--s0)] font-mono focus:outline-none focus:border-[var(--p1)]"
               />
-              <button
-                onClick={() => handleBlockIp(fw)}
-                disabled={blocking[fw.id] || !blockIpInput[fw.id]?.trim()}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#d93025] text-white text-[0.72rem] font-bold hover:bg-red-700 transition-colors disabled:opacity-50"
-              >
-                {blocking[fw.id] ? <div className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" /> : <Shield size={12} />}
-                Block
+              <button onClick={() => setShowPw(s => !s)} type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                <Eye size={13} />
               </button>
             </div>
+          </div>
+        </div>
+        <Field label="Base DN" k="base_dn" mono placeholder="DC=bbs,DC=local" />
+      </div>
 
-            {/* Blocked IPs list (expanded) */}
-            {isExpanded && (
-              <div className="border-t border-[var(--b3)]">
-                {!fwBlocks ? (
-                  <div className="p-4 text-center text-[var(--t3)] text-[0.75rem]">Loading…</div>
-                ) : fwBlocks.filter((b: any) => b.status === 'blocked').length === 0 ? (
-                  <div className="p-4 text-center text-[var(--t3)] text-[0.75rem]">No IPs currently blocked on this firewall.</div>
-                ) : (
-                  <table className="w-full text-[0.75rem]">
-                    <thead className="bg-[var(--s1)] border-b border-[var(--b3)]">
-                      <tr className="text-[0.6rem] text-[var(--t3)] font-black uppercase tracking-wider">
-                        <th className="px-4 py-2 text-left">IP Address</th>
-                        <th className="px-4 py-2 text-left">Reason</th>
-                        <th className="px-4 py-2 text-left">Blocked At</th>
-                        <th className="px-4 py-2 text-left">Alert</th>
-                        {isAdmin && <th className="px-4 py-2" />}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50">
-                      {fwBlocks.filter((b: any) => b.status === 'blocked').map((b: any) => (
-                        <tr key={b.id} className="hover:bg-[var(--s1)]">
-                          <td className="px-4 py-2 font-mono font-bold text-red-700">{b.ip}</td>
-                          <td className="px-4 py-2 text-[var(--t5)] truncate max-w-[180px]">{b.reason}</td>
-                          <td className="px-4 py-2 text-[var(--t4)] text-[0.68rem] whitespace-nowrap">
-                            {new Date(b.blocked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                          </td>
-                          <td className="px-4 py-2 font-mono text-[var(--p1)] text-[0.65rem]">{b.alert_id?.substring(0, 8).toUpperCase() || '—'}</td>
-                          {isAdmin && (
-                            <td className="px-4 py-2">
-                              <button onClick={() => handleUnblock(fw, b.ip)} className="px-2 py-0.5 rounded border border-[var(--b2)] text-[0.62rem] font-bold text-[var(--t4)] hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors">
-                                Unblock
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+      {/* User search */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-3">
+        <p className="text-[0.72rem] font-black text-[var(--t7)]">User search & attributes</p>
+        <Field label="User filter" k="user_filter" mono placeholder="(sAMAccountName={{username}})" hint="Use {{username}} as the placeholder. AD: sAMAccountName · OpenLDAP: uid." />
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Username attr" k="username_attr"     mono />
+          <Field label="Email attr"    k="email_attr"        mono />
+          <Field label="Display name"  k="display_name_attr" mono />
+        </div>
+      </div>
+
+      {/* Provisioning */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-3">
+        <p className="text-[0.72rem] font-black text-[var(--t7)]">Provisioning & fallback</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--t3)]">Default role on first login</label>
+            <select
+              value={cfg.default_role}
+              onChange={e => setCfg({ ...cfg, default_role: e.target.value })}
+              disabled={!isAdmin}
+              className="w-full mt-1 border border-[var(--b2)] rounded-lg px-2.5 py-1.5 text-[0.75rem] bg-[var(--s0)] focus:outline-none focus:border-[var(--p1)]"
+            >
+              <option value="ANALYST">ANALYST</option>
+              <option value="TIER1">TIER1 (SOC Analyst L1)</option>
+              <option value="TIER2">TIER2 (SOC Analyst L2)</option>
+              <option value="INCIDENT_LEAD">INCIDENT_LEAD</option>
+              <option value="ADMIN">ADMIN</option>
+            </select>
+            <p className="text-[0.6rem] text-[var(--t3)] mt-1">Admins can change individual roles after the account is auto-created.</p>
+          </div>
+          <div>
+            <label className="text-[0.62rem] font-black uppercase tracking-widest text-[var(--t3)]">Allow local fallback</label>
+            <button
+              onClick={() => isAdmin && setCfg({ ...cfg, allow_local_fallback: cfg.allow_local_fallback === 'true' ? 'false' : 'true' })}
+              disabled={!isAdmin}
+              className={`w-full mt-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[0.7rem] font-bold border transition-colors ${cfg.allow_local_fallback === 'true' ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100' : 'bg-[var(--s1)] border-[var(--b2)] text-[var(--t5)] hover:bg-[var(--s2)]'}`}
+            >
+              {cfg.allow_local_fallback === 'true' ? <><ToggleRight size={14} /> Local fallback ON</> : <><ToggleLeft size={14} /> Local fallback OFF</>}
+            </button>
+            <p className="text-[0.6rem] text-[var(--t3)] mt-1">When ON, local password is tried if LDAP rejects the user. Useful for the seed admin.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Test connection */}
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-3">
+        <p className="text-[0.72rem] font-black text-[var(--t7)]">Test connection</p>
+        <p className="text-[0.65rem] text-[var(--t3)]">
+          Binds with the service account above and searches for the username you enter — verifies URL, bind, base DN, and filter without checking the user's password.
+        </p>
+        <div className="flex gap-2">
+          <input
+            value={testUser}
+            onChange={e => setTestUser(e.target.value)}
+            placeholder="username to look up (e.g. nelhilali)"
+            className="flex-1 border border-[var(--b2)] rounded-lg px-2.5 py-1.5 text-[0.75rem] bg-[var(--s0)] focus:outline-none focus:border-[var(--p1)]"
+          />
+          <button
+            onClick={handleTest}
+            disabled={!isAdmin || testing || !cfg.url}
+            className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.7rem] font-bold disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {testing ? <><RefreshCw size={11} className="animate-spin" /> Testing…</> : <><Zap size={11} /> Test lookup</>}
+          </button>
+        </div>
+        {testResult && (
+          <div className={`rounded-lg border p-2.5 text-[0.7rem] ${testResult.ok ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-red-50 border-red-300 text-red-800'}`}>
+            {testResult.ok ? (
+              <div>
+                <p className="font-bold mb-1">✓ Found in directory</p>
+                <p className="font-mono text-[0.65rem] break-all">{testResult.user?.dn}</p>
+                {testResult.user?.email        && <p className="font-mono text-[0.65rem] mt-0.5">email: {testResult.user.email}</p>}
+                {testResult.user?.display_name && <p className="font-mono text-[0.65rem] mt-0.5">name: {testResult.user.display_name}</p>}
+              </div>
+            ) : (
+              <div>
+                <p className="font-bold mb-1">✗ Lookup failed</p>
+                <p className="font-mono text-[0.65rem] break-all">{testResult.error}</p>
               </div>
             )}
           </div>
-        );
-      })}
+        )}
+      </div>
+
+      {/* Save */}
+      {isAdmin && (
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.75rem] font-bold disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {saving ? <><RefreshCw size={12} className="animate-spin" /> Saving…</> : <>Save settings</>}
+          </button>
+        </div>
+      )}
     </div>
   );
 };
+
 const AgentsTab = () => {
   const showToast = useToast();
   const { token, user } = useAuth();
@@ -4928,24 +4885,6 @@ const timeAgo = (ts: number) => {
   return `${d}d ago`;
 };
 
-// ── Priority scoring ────────────────────────────────────────────────────────
-// Each action item is keyed by (type, target). Score is an absolute 0–100
-// with a transparent breakdown: Threat (worst risk among related alerts),
-// Reach (how many alerts reference this target), and Urgency (recency +
-// approval pressure). The final score weights them 60 / 25 / 15.
-type PriorityBreakdown = { score: number; threat: number; reach: number; urgency: number };
-
-const computePriority = (entries: { riskScore: number; timestamp: number; approvalRequired: boolean }[]): PriorityBreakdown => {
-  const threat = Math.min(100, Math.max(...entries.map(e => e.riskScore)));
-  const reach  = Math.min(100, entries.length * 20);
-  const newest = Math.max(...entries.map(e => e.timestamp));
-  const ageH   = (Date.now() - newest) / 3_600_000;
-  let urgency  = ageH < 1 ? 100 : ageH < 6 ? 70 : ageH < 24 ? 50 : ageH < 168 ? 30 : 10;
-  if (entries.some(e => e.approvalRequired)) urgency = Math.min(100, urgency + 20);
-  const score = Math.round(threat * 0.6 + reach * 0.25 + urgency * 0.15);
-  return { score, threat, reach, urgency };
-};
-
 const tierFor = (score: number) =>
   score >= 80 ? { label: 'CRITICAL', text: 'text-red-700',     bg: 'bg-red-50',     border: 'border-red-300',     stroke: '#dc2626' } :
   score >= 60 ? { label: 'HIGH',     text: 'text-orange-700',  bg: 'bg-orange-50',  border: 'border-orange-300',  stroke: '#ea580c' } :
@@ -4979,130 +4918,216 @@ const PriorityDonut = ({ value, size = 40 }: { value: number; size?: number }) =
   );
 };
 
+
+// ─── Response Actions ───────────────────────────────────────────────────────
+type ResponseActionStatus = 'pending' | 'approved' | 'executed' | 'failed' | 'skipped';
+
+const ACTION_STATUS_META: Record<ResponseActionStatus, { label: string; chip: string }> = {
+  pending:  { label: 'Pending',  chip: 'bg-amber-50 text-amber-800 border-amber-300' },
+  approved: { label: 'Approved', chip: 'bg-blue-50 text-blue-800 border-blue-300' },
+  executed: { label: 'Executed', chip: 'bg-emerald-50 text-emerald-800 border-emerald-300' },
+  failed:   { label: 'Failed',   chip: 'bg-red-50 text-red-800 border-red-300' },
+  skipped:  { label: 'Skipped',  chip: 'bg-[var(--s1)] text-[var(--t3)] border-[var(--b2)]' },
+};
+
+const incSeverityScore = (s: string | null): number =>
+  s === 'CRITICAL' ? 100 : s === 'HIGH' ? 80 : s === 'MEDIUM' ? 55 : s === 'LOW' ? 30 : 40;
+
+const actionPriorityScore = (p: string | null | undefined): number => {
+  const v = (p || '').toUpperCase();
+  return v === 'CRITICAL' ? 100 : v === 'HIGH' ? 80 : v === 'MEDIUM' ? 55 : v === 'LOW' ? 30 : 0;
+};
+
+type ActionPriorityBreakdown = { score: number; threat: number; reach: number; urgency: number };
+
 const ResponseActionsTab = ({
-  alerts,
   setActiveTab,
-  setSelectedAlert,
+  setSelectedIncidentId,
 }: {
-  alerts: Alert[];
   setActiveTab: (t: string) => void;
-  setSelectedAlert: (a: Alert | null) => void;
+  setSelectedIncidentId: (id: string | null) => void;
 }) => {
+  const [rows, setRows]                 = useState<ResponseActionRow[]>([]);
+  const [loading, setLoading]           = useState(true);
   const [search, setSearch]             = useState('');
   const [activeCats, setActiveCats]     = useState<Set<ActionCategory>>(new Set());
   const [activeTypes, setActiveTypes]   = useState<Set<string>>(new Set());
   const [activeSevs, setActiveSevs]     = useState<Set<string>>(new Set());
+  const [activeStatuses, setActiveStatuses] = useState<Set<ResponseActionStatus>>(new Set());
   const [sortBy, setSortBy]             = useState<'priority' | 'count' | 'latest' | 'threat'>('priority');
-  const [onlyApproval, setOnlyApproval] = useState(false);
+  const [showDone, setShowDone]         = useState(false);
 
-  // Each action card represents ONE (type, target) pair, not a type group.
-  const actionData = React.useMemo(() => {
-    type Entry = {
-      alertId: string; sv: string; riskScore: number;
-      alertObj: Alert; timestamp: number;
-      approvalRequired: boolean;
-    };
-    type ActionItem = {
-      key: string; type: string; target: string; category: ActionCategory;
-      entries: Entry[]; count: number;
-      latestTimestamp: number;
-      approvalRequired: boolean;
-      sevCounts: Record<string, number>;
-      priority: PriorityBreakdown;
-    };
+  const refresh = useCallback(() => {
+    setLoading(true);
+    getResponseActions().then(d => setRows(d.actions || [])).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
 
-    const map: Record<string, { type: string; target: string; entries: Entry[] }> = {};
+  type Entry = {
+    actionId: number;
+    status: ResponseActionStatus;
+    incidentId: string;
+    incidentTitle: string | null;
+    incidentSeverity: string | null;
+    incidentStatus: string | null;
+    incidentPhase: string | null;
+    timestamp: number;
+    actionPriority: string | null;
+  };
 
-    for (const alert of alerts) {
-      if (['FALSE_POSITIVE','FP_CONFIRMED'].includes(alert.status)) continue;
-      let ai: any = null;
-      try { ai = alert.ai_analysis ? JSON.parse(alert.ai_analysis) : null; } catch {}
-      if (!ai) continue;
-      const pd = ai.phaseData || {};
-      const acts: any[] = pd.response?.actions || ai.response?.actions || [];
-      if (!acts.length) continue;
-      const riskScore: number = pd.analysis?.risk_score ?? ai.analysis?.risk_score ?? (alert.severity * 4);
-      const sv: string = pd.analysis?.severity_validation ?? ai.analysis?.severity_validation ?? 'MEDIUM';
-      const ts = new Date(alert.timestamp).getTime();
-      const approvalRequired = !!(pd.response?.approval_required ?? ai.response?.approval_required);
+  type ActionGroup = {
+    key: string;
+    type: string;
+    target: string;
+    category: ActionCategory;
+    entries: Entry[];
+    distinctIncidents: number;
+    statusCounts: Record<ResponseActionStatus, number>;
+    severityCounts: Record<string, number>;
+    latestTimestamp: number;
+    priority: ActionPriorityBreakdown;
+    isAllDone: boolean;
+  };
 
-      for (const ac of acts) {
-        if (!ac.type) continue;
-        const target = (ac.target || '').trim();
-        const key = `${ac.type}::${target || '__no_target__'}`;
-        if (!map[key]) map[key] = { type: ac.type, target, entries: [] };
-        map[key].entries.push({ alertId: alert.id, sv, riskScore, alertObj: alert, timestamp: ts, approvalRequired });
-      }
+  // Each card represents one (action_type, target) pair across all incidents.
+  const groups: ActionGroup[] = React.useMemo(() => {
+    const map = new Map<string, Entry[]>();
+    for (const a of rows) {
+      const key = `${a.action_type}::${(a.target || '').trim() || '__no_target__'}`;
+      const e: Entry = {
+        actionId:         a.id,
+        status:           (a.status as ResponseActionStatus) || 'pending',
+        incidentId:       a.incident_id,
+        incidentTitle:    a.incident_title,
+        incidentSeverity: a.incident_severity,
+        incidentStatus:   a.incident_status,
+        incidentPhase:    a.incident_phase,
+        timestamp:        new Date(a.created_at).getTime(),
+        actionPriority:   a.priority,
+      };
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(e);
     }
 
-    const items: ActionItem[] = Object.entries(map).map(([key, { type, target, entries }]) => {
-      const sevCounts = entries.reduce((acc, e) => { acc[e.sv] = (acc[e.sv] || 0) + 1; return acc; }, {} as Record<string, number>);
-      return {
+    const out: ActionGroup[] = [];
+    for (const [key, entries] of map.entries()) {
+      const [type, targetRaw] = key.split('::');
+      const target = targetRaw === '__no_target__' ? '' : targetRaw;
+
+      const statusCounts: Record<ResponseActionStatus, number> = { pending:0, approved:0, executed:0, failed:0, skipped:0 };
+      const severityCounts: Record<string, number> = {};
+      const incSet = new Set<string>();
+      let latest = 0;
+      for (const e of entries) {
+        statusCounts[e.status]++;
+        if (e.incidentSeverity) severityCounts[e.incidentSeverity] = (severityCounts[e.incidentSeverity] || 0) + 1;
+        incSet.add(e.incidentId);
+        if (e.timestamp > latest) latest = e.timestamp;
+      }
+
+      // Priority — weigh only entries that still need work; fall back to all entries if none.
+      const live = entries.filter(e => e.status === 'pending' || e.status === 'approved' || e.status === 'failed');
+      const sample = live.length ? live : entries;
+
+      const threat = Math.min(100, Math.max(...sample.map(e =>
+        Math.max(incSeverityScore(e.incidentSeverity), actionPriorityScore(e.actionPriority))
+      )));
+      const reach  = Math.min(100, incSet.size * 25);
+      const newest = Math.max(...sample.map(e => e.timestamp));
+      const ageH   = (Date.now() - newest) / 3_600_000;
+      let urgency  = ageH < 1 ? 100 : ageH < 6 ? 75 : ageH < 24 ? 55 : ageH < 168 ? 35 : 15;
+      if (statusCounts.pending > 0) urgency = Math.min(100, urgency + 10);
+      if (statusCounts.failed > 0)  urgency = Math.min(100, urgency + 15);
+      const score = Math.round(threat * 0.6 + reach * 0.25 + urgency * 0.15);
+
+      out.push({
         key, type, target,
         category: categorize(type),
         entries,
-        count: entries.length,
-        latestTimestamp: Math.max(...entries.map(e => e.timestamp)),
-        approvalRequired: entries.some(e => e.approvalRequired),
-        sevCounts,
-        priority: computePriority(entries),
-      };
-    });
-
-    return items;
-  }, [alerts]);
+        distinctIncidents: incSet.size,
+        statusCounts,
+        severityCounts,
+        latestTimestamp: latest,
+        priority: { score, threat, reach, urgency },
+        isAllDone: entries.every(e => e.status === 'executed' || e.status === 'skipped'),
+      });
+    }
+    return out;
+  }, [rows]);
 
   const availableTypes = React.useMemo(
-    () => Array.from(new Set(actionData.map(a => a.type))).sort(),
-    [actionData],
+    () => Array.from(new Set(groups.map(g => g.type))).sort(),
+    [groups],
   );
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
-    return actionData
-      .filter(a => {
-        if (activeCats.size  > 0 && !activeCats.has(a.category)) return false;
-        if (activeTypes.size > 0 && !activeTypes.has(a.type))    return false;
-        if (activeSevs.size  > 0 && !a.entries.some(e => activeSevs.has(e.sv))) return false;
-        if (onlyApproval && !a.approvalRequired) return false;
+    return groups
+      .filter(g => {
+        if (!showDone && g.isAllDone) return false;
+        if (activeCats.size  > 0 && !activeCats.has(g.category)) return false;
+        if (activeTypes.size > 0 && !activeTypes.has(g.type))    return false;
+        if (activeSevs.size  > 0 && !g.entries.some(e => e.incidentSeverity && activeSevs.has(e.incidentSeverity))) return false;
+        if (activeStatuses.size > 0 && !g.entries.some(e => activeStatuses.has(e.status))) return false;
         if (q) {
-          const inType   = a.type.toLowerCase().includes(q);
-          const inTarget = a.target.toLowerCase().includes(q);
-          const inAlert  = a.entries.some(e => e.alertId.toLowerCase().includes(q));
-          if (!inType && !inTarget && !inAlert) return false;
+          const inType   = g.type.toLowerCase().includes(q);
+          const inTarget = g.target.toLowerCase().includes(q);
+          const inInc    = g.entries.some(e => e.incidentId.toLowerCase().includes(q) || (e.incidentTitle || '').toLowerCase().includes(q));
+          if (!inType && !inTarget && !inInc) return false;
         }
         return true;
       })
       .sort((a, b) => {
-        if (sortBy === 'count')  return b.count - a.count;
+        if (sortBy === 'count')  return b.distinctIncidents - a.distinctIncidents;
         if (sortBy === 'latest') return b.latestTimestamp - a.latestTimestamp;
         if (sortBy === 'threat') return b.priority.threat - a.priority.threat;
         return b.priority.score - a.priority.score;
       });
-  }, [actionData, activeCats, activeTypes, activeSevs, onlyApproval, search, sortBy]);
+  }, [groups, activeCats, activeTypes, activeSevs, activeStatuses, search, sortBy, showDone]);
 
-  const stats = {
-    items:        actionData.length,
-    totalAlerts:  actionData.reduce((s, a) => s + a.count, 0),
-    critical:     actionData.filter(a => a.priority.score >= 80).length,
-    needApproval: actionData.filter(a => a.approvalRequired).length,
-  };
+  const stats = React.useMemo(() => {
+    const liveGroups = groups.filter(g => !g.isAllDone);
+    return {
+      items:    liveGroups.length,
+      total:    rows.length,
+      critical: liveGroups.filter(g => g.priority.score >= 80).length,
+      pending:  rows.filter(r => r.status === 'pending').length,
+    };
+  }, [rows, groups]);
 
-  const toggleSet = <T extends string>(set: Set<T>, val: T): Set<T> => {
+  const toggleSet = <T,>(set: Set<T>, val: T): Set<T> => {
     const next = new Set(set);
     next.has(val) ? next.delete(val) : next.add(val);
     return next;
   };
 
-  const filtersActive = activeCats.size > 0 || activeTypes.size > 0 || activeSevs.size > 0 || !!search || onlyApproval;
+  const filtersActive =
+    activeCats.size > 0 || activeTypes.size > 0 || activeSevs.size > 0 ||
+    activeStatuses.size > 0 || !!search || showDone;
 
-  if (actionData.length === 0) {
+  const openIncident = (id: string) => {
+    setSelectedIncidentId(id);
+    setActiveTab('incidents');
+  };
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-16 text-center h-full">
+        <div>
+          <RefreshCw size={28} className="mx-auto text-[var(--t3)] mb-3 animate-spin" />
+          <p className="text-[var(--t3)] text-sm font-semibold">Loading response actions…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center p-16 text-center h-full">
         <div>
           <Shield size={40} className="mx-auto text-[var(--t3)] mb-4 opacity-30" />
           <p className="text-[var(--t3)] text-sm font-semibold">No response actions yet</p>
-          <p className="text-[var(--t4)] text-xs mt-1">Run agents on alerts to generate response plans.</p>
+          <p className="text-[var(--t4)] text-xs mt-1">Escalate an alert to create an incident — its action plan will appear here.</p>
         </div>
       </div>
     );
@@ -5112,20 +5137,28 @@ const ResponseActionsTab = ({
     <div className="h-full overflow-y-auto">
       <div className="p-6 max-w-5xl mx-auto space-y-4">
         {/* Header */}
-        <div>
-          <h2 className="text-xl font-black text-[var(--t1)]">Response Actions</h2>
-          <p className="text-[0.75rem] text-[var(--t3)] mt-1">
-            One card per <span className="font-mono text-[var(--t5)]">action × target</span>. Priority is a 0–100 score derived from threat severity, reach, and urgency.
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-black text-[var(--t1)]">Response Actions</h2>
+            <p className="text-[0.75rem] text-[var(--t3)] mt-1">
+              One card per <span className="font-mono text-[var(--t5)]">action × target</span>, ranked so the highest-impact work is first. Priority blends incident severity, reach, and urgency.
+            </p>
+          </div>
+          <button
+            onClick={refresh}
+            className="flex items-center gap-1.5 text-[0.7rem] font-bold px-2.5 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[var(--t4)] hover:bg-[var(--s1)]"
+          >
+            <RefreshCw size={12} /> Refresh
+          </button>
         </div>
 
         {/* Stat strip */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: 'Action Items',  value: stats.items,        icon: Zap,            tone: 'text-[var(--t1)]' },
-            { label: 'Total Alerts',  value: stats.totalAlerts,  icon: AlertTriangle,  tone: 'text-[var(--t1)]' },
-            { label: 'Critical',      value: stats.critical,     icon: Shield,         tone: 'text-red-600' },
-            { label: 'Need Approval', value: stats.needApproval, icon: Bell,           tone: 'text-amber-600' },
+            { label: 'Action Items',  value: stats.items,    icon: Zap,         tone: 'text-[var(--t1)]' },
+            { label: 'Total Actions', value: stats.total,    icon: ListChecks,  tone: 'text-[var(--t1)]' },
+            { label: 'Critical',      value: stats.critical, icon: Shield,      tone: 'text-red-600' },
+            { label: 'Pending',       value: stats.pending,  icon: Clock,       tone: 'text-amber-600' },
           ].map(s => (
             <div key={s.label} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 flex items-center gap-3">
               <div className={`w-9 h-9 rounded-lg bg-[var(--s1)] flex items-center justify-center ${s.tone}`}>
@@ -5147,7 +5180,7 @@ const ResponseActionsTab = ({
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search action type, target, or alert ID…"
+                placeholder="Search action type, target, or incident…"
                 className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
               />
               {search && (
@@ -5163,7 +5196,7 @@ const ResponseActionsTab = ({
             >
               <option value="priority">Sort: Priority</option>
               <option value="threat">Sort: Threat level</option>
-              <option value="count">Sort: Most alerts</option>
+              <option value="count">Sort: Most incidents</option>
               <option value="latest">Sort: Latest</option>
             </select>
           </div>
@@ -5219,15 +5252,31 @@ const ResponseActionsTab = ({
                 </button>
               );
             })}
+
+            <span className="ml-3 text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Status:</span>
+            {(Object.keys(ACTION_STATUS_META) as ResponseActionStatus[]).map(s => {
+              const m = ACTION_STATUS_META[s];
+              const isActive = activeStatuses.has(s);
+              return (
+                <button
+                  key={s}
+                  onClick={() => setActiveStatuses(toggleSet(activeStatuses, s))}
+                  className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? `${m.chip} ring-2 ring-offset-0 ring-current` : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
+
             <button
-              onClick={() => setOnlyApproval(!onlyApproval)}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[0.62rem] font-bold transition-all ${onlyApproval ? 'bg-amber-50 text-amber-700 border-amber-300 ring-2 ring-offset-0 ring-amber-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+              onClick={() => setShowDone(!showDone)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[0.62rem] font-bold transition-all ${showDone ? 'bg-emerald-50 text-emerald-700 border-emerald-300 ring-2 ring-offset-0 ring-emerald-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
             >
-              <Bell size={10} /> Approval only
+              <CheckCircle size={10} /> {showDone ? 'Showing done' : 'Hide done'}
             </button>
             {filtersActive && (
               <button
-                onClick={() => { setActiveCats(new Set()); setActiveTypes(new Set()); setActiveSevs(new Set()); setSearch(''); setOnlyApproval(false); }}
+                onClick={() => { setActiveCats(new Set()); setActiveTypes(new Set()); setActiveSevs(new Set()); setActiveStatuses(new Set()); setSearch(''); setShowDone(false); }}
                 className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
               >
                 Clear filters
@@ -5236,27 +5285,26 @@ const ResponseActionsTab = ({
           </div>
         </div>
 
-        {/* Result count */}
         <div className="text-[0.65rem] font-bold text-[var(--t3)]">
-          Showing <span className="text-[var(--t1)]">{filtered.length}</span> of <span className="text-[var(--t1)]">{actionData.length}</span> action item{actionData.length !== 1 ? 's' : ''}
+          Showing <span className="text-[var(--t1)]">{filtered.length}</span> of <span className="text-[var(--t1)]">{groups.length}</span> action item{groups.length !== 1 ? 's' : ''}
         </div>
 
-        {/* Action cards */}
+        {/* Ranked action cards */}
         {filtered.length === 0 ? (
           <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-10 text-center">
             <Filter size={28} className="mx-auto text-[var(--t3)] mb-2 opacity-40" />
             <p className="text-[0.78rem] font-semibold text-[var(--t3)]">No actions match your filters.</p>
           </div>
         ) : (
-          filtered.map((a, rank) => {
-            const cat   = ACTION_CATEGORIES[a.category];
+          filtered.map((g, rank) => {
+            const cat   = ACTION_CATEGORIES[g.category];
             const Icon  = cat.icon;
-            const tier  = tierFor(a.priority.score);
+            const tier  = tierFor(g.priority.score);
 
             return (
-              <div key={a.key} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+              <div key={g.key} className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
                 <div className="p-4 space-y-3">
-                  {/* Top row */}
+                  {/* Top row: rank, category icon, type, target, priority */}
                   <div className="flex items-start gap-3">
                     <span className="w-6 h-6 rounded-full bg-[var(--s1)] border border-[var(--b2)] text-[0.65rem] font-black text-[var(--t4)] flex items-center justify-center shrink-0 mt-0.5">
                       {rank + 1}
@@ -5268,70 +5316,78 @@ const ResponseActionsTab = ({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
                         <span className="text-[0.85rem] font-black text-[var(--t1)] tracking-tight uppercase">
-                          {a.type.replace(/_/g, ' ')}
+                          {g.type.replace(/_/g, ' ')}
                         </span>
                         <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-wider ${cat.bg} ${cat.tint}`}>
                           {cat.label}
                         </span>
-                        {a.approvalRequired && (
-                          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[0.55rem] font-black uppercase tracking-wider">
-                            <Bell size={9} /> Approval
+                        {g.isAllDone && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 text-[0.55rem] font-black uppercase tracking-wider">
+                            <CheckCircle size={9} /> All done
                           </span>
                         )}
                       </div>
-                      <div className="font-mono text-[0.85rem] font-bold text-[var(--t7)] truncate" title={a.target || 'no target specified'}>
-                        {a.target || <span className="italic text-[var(--t3)] font-sans font-normal text-[0.75rem]">no target specified</span>}
+                      <div className="font-mono text-[0.85rem] font-bold text-[var(--t7)] truncate" title={g.target || 'no target specified'}>
+                        {g.target || <span className="italic text-[var(--t3)] font-sans font-normal text-[0.75rem]">no target specified</span>}
                       </div>
                       <div className="flex items-center gap-3 text-[0.62rem] text-[var(--t4)] font-medium mt-1">
-                        <span><span className="font-mono font-bold text-[var(--t6)]">{a.count}</span> alert{a.count !== 1 ? 's' : ''}</span>
+                        <span><span className="font-mono font-bold text-[var(--t6)]">{g.distinctIncidents}</span> incident{g.distinctIncidents !== 1 ? 's' : ''}</span>
                         <span className="text-[var(--t3)]">·</span>
-                        <span className="flex items-center gap-1"><Clock size={9} /> Latest {timeAgo(a.latestTimestamp)}</span>
+                        <span><span className="font-mono font-bold text-[var(--t6)]">{g.entries.length}</span> action{g.entries.length !== 1 ? 's' : ''}</span>
+                        <span className="text-[var(--t3)]">·</span>
+                        <span className="flex items-center gap-1"><Clock size={9} /> Latest {timeAgo(g.latestTimestamp)}</span>
                       </div>
                     </div>
 
-                    {/* Priority — tier + donut */}
+                    {/* Priority tier + donut */}
                     <div className="text-right shrink-0 space-y-2">
                       <div className="flex items-center justify-end gap-2">
                         <span className={`px-1.5 py-0.5 rounded border text-[0.55rem] font-black uppercase tracking-wider ${tier.bg} ${tier.text} ${tier.border}`}>
                           {tier.label}
                         </span>
-                        <PriorityDonut value={a.priority.score} size={40} />
+                        <PriorityDonut value={g.priority.score} size={40} />
                       </div>
                     </div>
                   </div>
 
-                  {/* Severity distribution */}
+                  {/* Severity + status distribution */}
                   <div className="flex items-center gap-1.5 flex-wrap pl-[3.75rem]">
-                    {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).filter(sv => a.sevCounts[sv]).map(sv => (
+                    {(['CRITICAL','HIGH','MEDIUM','LOW'] as const).filter(sv => g.severityCounts[sv]).map(sv => (
                       <span key={sv} className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-wider ${severityChipColor(sv)} pointer-events-none`}>
-                        {a.sevCounts[sv]} {sv}
+                        {g.severityCounts[sv]} {sv}
+                      </span>
+                    ))}
+                    <span className="text-[var(--t3)] text-[0.55rem] px-1">|</span>
+                    {(Object.keys(ACTION_STATUS_META) as ResponseActionStatus[]).filter(s => g.statusCounts[s]).map(s => (
+                      <span key={s} className={`px-1.5 py-0.5 rounded border text-[0.55rem] font-black uppercase tracking-wider ${ACTION_STATUS_META[s].chip}`}>
+                        {g.statusCounts[s]} {ACTION_STATUS_META[s].label}
                       </span>
                     ))}
                   </div>
 
-                  {/* Alert chips & Urgency bar */}
+                  {/* Incident chips + urgency bar */}
                   <div className="flex items-end justify-between gap-6 pl-[3.75rem]">
                     <div className="flex flex-wrap gap-1.5 items-center">
-                      <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Alerts:</span>
-                      {a.entries.slice(0, 16).map(e => (
+                      <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Incidents:</span>
+                      {g.entries.slice(0, 16).map(e => (
                         <button
-                          key={e.alertId}
-                          onClick={() => { setSelectedAlert(e.alertObj); setActiveTab('investigation'); }}
-                          className={`font-mono text-[0.6rem] font-bold px-1.5 py-0.5 rounded transition-colors ${severityChipColor(e.sv)}`}
-                          title={`${e.alertObj.description} — Risk ${e.riskScore} · ${timeAgo(e.timestamp)}`}
+                          key={e.actionId}
+                          onClick={() => openIncident(e.incidentId)}
+                          className={`font-mono text-[0.6rem] font-bold px-1.5 py-0.5 rounded transition-colors ${severityChipColor(e.incidentSeverity || 'LOW')} ${e.status === 'executed' || e.status === 'skipped' ? 'opacity-60' : ''}`}
+                          title={`${e.incidentTitle || e.incidentId} — ${e.incidentSeverity || '?'} · ${e.status} · ${timeAgo(e.timestamp)}`}
                         >
-                          #{e.alertId.substring(0, 8).toUpperCase()}
+                          {e.incidentId}
                         </button>
                       ))}
-                      {a.entries.length > 16 && (
-                        <span className="text-[0.58rem] text-[var(--t3)]">+{a.entries.length - 16} more</span>
+                      {g.entries.length > 16 && (
+                        <span className="text-[0.58rem] text-[var(--t3)]">+{g.entries.length - 16} more</span>
                       )}
                     </div>
 
-                    <div className="shrink-0 w-32 space-y-1 pb-0.5" title="Urgency = recency of latest alert + approval pressure">
+                    <div className="shrink-0 w-32 space-y-1 pb-0.5" title="Urgency = recency of latest action + pending/failed pressure">
                       <div className="flex items-center justify-between text-[0.55rem]">
                         <span className="font-black uppercase tracking-widest text-[var(--t3)]">Urgency</span>
-                        <span className="font-mono font-bold text-[var(--t6)] tabular-nums">{a.priority.urgency}%</span>
+                        <span className="font-mono font-bold text-[var(--t6)] tabular-nums">{g.priority.urgency}%</span>
                       </div>
                       <div className="relative h-1 w-full rounded-full overflow-hidden bg-[var(--s1)]">
                         <div
@@ -5340,7 +5396,7 @@ const ResponseActionsTab = ({
                         />
                         <div
                           className="absolute inset-y-0 right-0 bg-[var(--s1)] transition-[width] duration-500"
-                          style={{ width: `${100 - a.priority.urgency}%` }}
+                          style={{ width: `${100 - g.priority.urgency}%` }}
                         />
                       </div>
                     </div>
@@ -5354,6 +5410,7 @@ const ResponseActionsTab = ({
     </div>
   );
 };
+
 
 // ─── Profile Tab ─────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#ef4444','#06b6d4','#6366f1','#84cc16','#f97316'];
@@ -7152,7 +7209,7 @@ const IntegrationsTab = () => {
   const toast = useToast();
   const { user, token } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
-  const [activeSection, setActiveSection] = useState<'notifications' | 'firewalls' | 'logs' | 'ingest'>('notifications');
+  const [activeSection, setActiveSection] = useState<'notifications' | 'ldap' | 'logs' | 'ingest'>('notifications');
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
@@ -7273,7 +7330,7 @@ const IntegrationsTab = () => {
       <div className="flex gap-2 flex-wrap">
         {[
           { id: 'notifications' as const, label: 'Notifications' },
-          { id: 'firewalls' as const, label: 'Firewalls' },
+          { id: 'ldap' as const, label: 'LDAP / AD' },
           { id: 'logs' as const, label: 'Activity Log' },
           ...(isAdmin ? [{ id: 'ingest' as const, label: 'Alert Ingest' }] : []),
         ].map(s => (
@@ -7386,8 +7443,8 @@ const IntegrationsTab = () => {
         </div>
       )}
 
-      {/* Firewalls */}
-      {activeSection === 'firewalls' && <FirewallSection />}
+      {/* LDAP / AD */}
+      {activeSection === 'ldap' && <LdapSection />}
 
       {/* Activity Log */}
       {activeSection === 'logs' && (
@@ -7790,6 +7847,7 @@ export default function App() {
   });
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => localStorage.getItem('soc_selected_alert_id'));
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [autoFilter, setAutoFilter] = useState(() => localStorage.getItem('soc_auto_filter') === 'true');
@@ -7942,6 +8000,8 @@ export default function App() {
             autoFilter={autoFilter}
             setAutoFilter={setAutoFilterSynced}
             refreshAlerts={refreshAlerts}
+            selectedIncidentId={selectedIncidentId}
+            setSelectedIncidentId={setSelectedIncidentId}
           />
         </AuthProvider>
         <ToastContainer toasts={toasts} />
@@ -8774,7 +8834,7 @@ const ActionRow: React.FC<ActionRowProps> = ({
   );
 };
 
-const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
+const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId }: { setActiveTab: (t: string) => void; initialIncidentId?: string | null; clearInitialIncidentId?: () => void }) => {
   const toast = useToast();
   const { user } = useAuth();
   const isAdminOrLead = user?.role === 'ADMIN' || user?.role === 'INCIDENT_LEAD';
@@ -8821,6 +8881,15 @@ const IncidentsTab = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =
 
   useEffect(() => { fetchList(); }, [fetchList]);
   useEffect(() => { listAnalysts().then(setAnalysts).catch(() => {}); }, []);
+
+  // Deep-link from the Response Actions page: open the requested incident once on mount.
+  useEffect(() => {
+    if (initialIncidentId) {
+      setActiveId(initialIncidentId);
+      clearInitialIncidentId?.();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchDetail = useCallback((id: string) => {
     setLoadingDetail(true);
@@ -10149,7 +10218,7 @@ const ReportsTab = ({
   );
 };
 
-const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction, autoFilter, setAutoFilter, refreshAlerts }: any) => {
+const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction, autoFilter, setAutoFilter, refreshAlerts, selectedIncidentId, setSelectedIncidentId }: any) => {
   const { user } = useAuth();
 
   if (!user) return <LoginPage />;
@@ -10165,9 +10234,9 @@ const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelec
           {activeTab === 'fp-archive'       && <FpArchiveTab />}
           {activeTab === 'reports'          && <ReportsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
           {activeTab === 'knowledge'        && <KnowledgeBaseTab setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} alerts={alerts} />}
-          {activeTab === 'response-actions' && <ResponseActionsTab alerts={alerts} setActiveTab={setActiveTab} setSelectedAlert={setSelectedAlert} />}
+          {activeTab === 'response-actions' && <ResponseActionsTab setActiveTab={setActiveTab} setSelectedIncidentId={setSelectedIncidentId} />}
           {activeTab === 'investigation'    && <InvestigationTab alerts={alerts} selectedAlert={selectedAlert} setSelectedAlert={setSelectedAlert} onAlertAction={onAlertAction} setActiveTab={setActiveTab} />}
-          {activeTab === 'incidents'        && <IncidentsTab setActiveTab={setActiveTab} />}
+          {activeTab === 'incidents'        && <IncidentsTab setActiveTab={setActiveTab} initialIncidentId={selectedIncidentId} clearInitialIncidentId={() => setSelectedIncidentId(null)} />}
           {activeTab === 'integrations'     && <IntegrationsTab />}
           {activeTab === 'settings'       && <SettingsTab />}
           {activeTab === 'profile'        && <ProfileTab />}

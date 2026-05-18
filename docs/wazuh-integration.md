@@ -269,6 +269,134 @@ AISOC accepts both Wazuh alert formats.
 
 ---
 
+## Liveness heartbeat (recommended)
+
+Because Wazuh **pushes** to AISOC and we never call back, AISOC can't tell a healthy-but-quiet network apart from a dead Wazuh manager just by watching alert volume. The heartbeat solves that with a tiny one-shot script on the Wazuh box that pings `/api/heartbeat` every 60 s. The Wazuh status pill in the AISOC header turns green / amber / red based on that signal.
+
+### How it differs from `/api/ingest`
+
+| Endpoint | Triggered by | Purpose |
+|---|---|---|
+| `POST /api/ingest` | Wazuh `<integration>` block on every matching alert | Carries an actual alert payload |
+| `POST /api/heartbeat` | systemd timer or cron, every 60 s | Bumps `api_keys.last_heartbeat_at`, nothing else |
+
+Both use the **same API key** — there's no second secret to manage. The heartbeat endpoint accepts an empty body and returns `{ ok: true, paused, at }`.
+
+### 1. Create the heartbeat script on the Wazuh server
+
+Save as `/var/ossec/integrations/aisoc-heartbeat`:
+
+```python
+#!/usr/bin/env python3
+"""Wazuh -> AISOC heartbeat. Single shot. Run from a timer/cron every 60s."""
+import json, os, ssl, sys, urllib.error, urllib.request
+from datetime import datetime, timezone
+
+LOG_FILE = "/var/ossec/logs/aisoc-heartbeat.log"
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{datetime.now(timezone.utc).isoformat()}] {msg}\n")
+
+def main():
+    url     = os.getenv("AISOC_HEARTBEAT_URL", "").strip()
+    api_key = os.getenv("AISOC_API_KEY", "").strip()
+    timeout = int(os.getenv("AISOC_TIMEOUT_SEC", "5"))
+    verify  = os.getenv("AISOC_VERIFY_TLS", "0").strip().lower() in {"1","true","yes"}
+    if not url or not api_key:
+        log("ERROR missing AISOC_HEARTBEAT_URL or AISOC_API_KEY"); return 2
+
+    req = urllib.request.Request(url, data=b"{}", method="POST",
+        headers={"Content-Type":"application/json","X-Api-Key":api_key,
+                 "X-Integration-Forwarder":"aisoc-heartbeat"})
+    ctx = ssl.create_default_context()
+    if not verify: ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return 0 if 200 <= resp.status < 300 else 1
+    except Exception as exc:
+        log(f"WARN {exc}"); return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+```bash
+sudo chmod +x /var/ossec/integrations/aisoc-heartbeat
+sudo chown root:wazuh /var/ossec/integrations/aisoc-heartbeat
+```
+
+### 2. systemd timer (recommended)
+
+`/etc/systemd/system/aisoc-heartbeat.service`:
+```ini
+[Unit]
+Description=AISOC heartbeat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/aisoc/heartbeat.env
+ExecStart=/var/ossec/integrations/aisoc-heartbeat
+```
+
+`/etc/systemd/system/aisoc-heartbeat.timer`:
+```ini
+[Unit]
+Description=Run AISOC heartbeat every 60 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=aisoc-heartbeat.service
+
+[Install]
+WantedBy=timers.target
+```
+
+`/etc/aisoc/heartbeat.env` (chmod 600):
+```env
+AISOC_HEARTBEAT_URL=https://soar.bbs.lan:3001/api/heartbeat
+AISOC_API_KEY=sk_aisoc_YOUR_KEY_HERE
+AISOC_VERIFY_TLS=0
+AISOC_TIMEOUT_SEC=5
+```
+
+Enable:
+```bash
+sudo mkdir -p /etc/aisoc && sudo chmod 700 /etc/aisoc
+# (write heartbeat.env, chmod 600)
+sudo systemctl daemon-reload
+sudo systemctl enable --now aisoc-heartbeat.timer
+sudo systemctl list-timers aisoc-heartbeat.timer
+```
+
+### 3. (Tip) Skip DNS for snappier heartbeats
+
+If `aisoc-heartbeat.log` shows repeated "DNS fallback succeeded" lines, each run is paying a multi-second timeout before the POST. Use the IP directly — AISOC's cert TLS-verification is already disabled by the script, so this works fine:
+
+```env
+AISOC_HEARTBEAT_URL=https://<aisoc-ip>:3001/api/heartbeat
+```
+
+### Status thresholds (UI header pill)
+
+| Pill | Heartbeat age | Meaning |
+|---|---|---|
+| Green — "Wazuh: Live" | < 5 min | Forwarder is healthy |
+| Amber — "Wazuh: Lagging Xm ago" | 5–10 min | Multiple beats missed, transient issues |
+| Red — "Wazuh: Offline" | > 10 min, OR no active API key | Definitive failure |
+| Slate — "Wazuh: Awaiting events" | Heartbeat never configured AND ingest also quiet | Honest "we don't know" state |
+
+If the script is configured but the pill still says Offline immediately after enabling, check:
+- The browser was hard-refreshed (the header polls every 30 s, but the bundle must be current)
+- `last_heartbeat_at` is non-null: `SELECT MAX(last_heartbeat_at) FROM api_keys`
+- The timestamp the API returns ends with `Z` (server normalizes SQLite's space-separated format to ISO+Z to avoid browser timezone mis-parsing)
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
