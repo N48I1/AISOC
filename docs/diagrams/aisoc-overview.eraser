@@ -1,0 +1,107 @@
+title AISOC — End-to-End Workflow
+
+Sources [icon: server, color: red] {
+  SIEM     [icon: alert-triangle, label: "Wazuh / SIEM"]
+  ANALYST  [icon: user,           label: "Analyst"]
+}
+
+Ingest [icon: shield, color: orange] {
+  API   [icon: webhook, label: "POST /api/ingest"]
+  AUTH  [icon: key,     label: "API key"]
+  FILT  [icon: filter,  label: "Severity · Rate · Dedup · Hours"]
+}
+
+FP Pipeline (9 layers) [icon: layers, color: pink] {
+  L1 [icon: filter,        label: "1-3: Severity · Time · Suppression"]
+  L2 [icon: history,       label: "4: Memory match"]
+  L3 [icon: server,        label: "5: Asset fast-FP"]
+  L4 [icon: brain,         label: "6: Triage LLM"]
+  L5 [icon: calculator,    label: "7: Confidence aggregator"]
+  L6 [icon: gauge,         label: "8-9: Risk · Priority gate"]
+}
+
+Multi-Agent (LangGraph) [icon: cpu, color: blue] {
+  PLAN   [icon: brain-circuit, label: "Planner"]
+  INTEL  [icon: radar,         label: "Threat Intel"]
+  KNOW   [icon: book-open,     label: "Knowledge / RAG"]
+  CORR   [icon: network,       label: "Correlation"]
+  TICKET [icon: file-text,     label: "Ticketing"]
+  RESP   [icon: shield-check,  label: "Response"]
+  VALID  [icon: badge-check,   label: "Validation"]
+}
+
+Memory [icon: database, color: purple] {
+  M_INSIGHT [icon: file-search, label: "Incident insights"]
+  M_IOC     [icon: hash,        label: "IOC memory"]
+  M_ASSET   [icon: server,      label: "Asset context"]
+  M_SUPP    [icon: filter,      label: "Suppression rules"]
+  M_WORK    [icon: list-tree,   label: "Working memory"]
+}
+
+Storage [icon: database, color: yellow] {
+  DB    [icon: database,  label: "SQLite (WAL)"]
+  EMBED [icon: sparkles,  label: "Ollama embeddings"]
+}
+
+Outcomes [icon: flag, color: green] {
+  FP  [icon: x-circle,     label: "FP Archive"]
+  INC [icon: alert-octagon, label: "Incident"]
+}
+
+Notify [icon: bell, color: teal] {
+  TG    [icon: send,       label: "Telegram"]
+  SLACK [icon: message-square, label: "Slack"]
+  MAIL  [icon: mail,       label: "Email"]
+  GLPI  [icon: ticket,     label: "GLPI"]
+}
+
+Frontend [icon: monitor, color: gray] {
+  UI [icon: layout, label: "Dashboard · Incidents\nKnowledge · Reports · Admin"]
+}
+
+SIEM > API
+API > AUTH
+AUTH > FILT
+FILT > L1
+L1 > L2
+L2 > L3
+L3 > L4
+L4 > L5
+L5 > L6
+L6 > FP: low priority
+L6 > PLAN: real threat
+
+PLAN > INTEL
+PLAN > KNOW
+PLAN > CORR
+INTEL > TICKET
+KNOW > TICKET
+CORR > TICKET
+TICKET > RESP
+RESP > VALID
+VALID > INC
+
+L1 > M_SUPP
+L2 > M_INSIGHT
+L3 > M_ASSET
+PLAN > M_WORK
+INC > M_IOC
+INC > M_INSIGHT
+
+M_INSIGHT > EMBED
+EMBED > DB
+M_IOC > DB
+M_ASSET > DB
+M_SUPP > DB
+M_WORK > DB
+
+INC > TG
+INC > SLACK
+INC > MAIL
+INC > GLPI
+
+DB > UI
+FP > UI
+INC > UI
+ANALYST > UI
+UI > ANALYST: confirm · override · escalate
