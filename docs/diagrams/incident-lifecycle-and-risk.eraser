@@ -1,145 +1,57 @@
-title AISOC Incident Lifecycle — Phases, Status, Actions, and Risk
+title Incident Lifecycle
 
-// ============================================================================
-//  BRIDGE — alert escalation is the only way an incident is born
-// ============================================================================
-Alert Bridge [icon: alert-octagon, color: red] {
-  ALERT_TR  [icon: alert-triangle, label: "Alert: TRIAGED or ESCALATED"]
-  ESC_API   [icon: webhook,        label: "POST /api/alerts/:id/escalate"]
-  CREATE    [icon: workflow,       label: "createIncidentFromAlert()\nseeds actions from response.actions"]
-  ALERT_OUT [icon: siren,          label: "Alert: ESCALATED (locked)"]
-  GLPI      [icon: ticket,         label: "GLPI ticket (optional)\nif create_glpi=true"]
+Bridge [icon: alert-octagon, color: red] {
+  ALERT  [icon: siren,    label: "Escalated alert"]
+  CREATE [icon: workflow, label: "Create incident"]
 }
 
-// ============================================================================
-//  PHASES — NIST-style incident workflow (src/types.ts:15)
-// ============================================================================
-Phase Engine [icon: route, color: blue] {
-  P_DET  [icon: search,     label: "detection"]
-  P_ANA  [icon: microscope, label: "analysis"]
-  P_CON  [icon: shield,     label: "containment"]
-  P_ERA  [icon: bug,        label: "eradication"]
-  P_REC  [icon: wrench,     label: "recovery"]
-  P_POST [icon: file-check, label: "post_incident"]
+Phases [icon: route, color: blue] {
+  P_DET  [icon: search,     label: "Detection"]
+  P_ANA  [icon: microscope, label: "Analysis"]
+  P_CON  [icon: shield,     label: "Containment"]
+  P_ERA  [icon: bug,        label: "Eradication"]
+  P_REC  [icon: wrench,     label: "Recovery"]
+  P_POST [icon: file-check, label: "Post-incident"]
 }
 
-// ============================================================================
-//  STATUS — derived from phase + assigned_to (computeIncidentStatus)
-// ============================================================================
-Status Machine [icon: activity, color: orange] {
-  OPEN     [icon: circle,        label: "OPEN\n(detection/analysis,\nunassigned)"]
-  PROG     [icon: loader,        label: "IN_PROGRESS\n(assigned, mid-investigation\nor containment/eradication)"]
-  CONT     [icon: shield-check,  label: "CONTAINED\n(recovery phase)"]
-  RES      [icon: check-circle,  label: "RESOLVED\n(post_incident phase)"]
-  CLOSED   [icon: lock,          label: "CLOSED\n(terminal, locked)"]
-  RECL_FP  [icon: x-circle,      label: "RECLASSIFIED_FP\n(terminal, locked)"]
+Status [icon: activity, color: orange] {
+  OPEN   [icon: circle,       label: "OPEN"]
+  PROG   [icon: loader,       label: "IN_PROGRESS"]
+  CONT   [icon: shield-check, label: "CONTAINED"]
+  RES    [icon: check-circle, label: "RESOLVED"]
+  CLOSED [icon: lock,         label: "CLOSED"]
 }
 
-// ============================================================================
-//  INCIDENT ACTIONS — seeded from response agent, executed by analyst
-// ============================================================================
-Action Lifecycle [icon: list-checks, color: teal] {
-  A_PEND   [icon: clock,        label: "pending\n(seeded by AI)"]
-  A_APPR   [icon: thumbs-up,    label: "approved\n(analyst greenlight)"]
-  A_EXEC   [icon: play-circle,  label: "executed\n(BLOCK_IP, ISOLATE_HOST,\nDISABLE_USER, ...)"]
-  A_FAIL   [icon: alert-circle, label: "failed\n(retry or manual)"]
+Actions [icon: list-checks, color: teal] {
+  A_PEND [icon: clock,       label: "Pending"]
+  A_APPR [icon: thumbs-up,   label: "Approved"]
+  A_EXEC [icon: play-circle, label: "Executed"]
 }
 
-// ============================================================================
-//  COMMAND ENDPOINTS — phase moves and terminal actions
-// ============================================================================
-Operator Commands [icon: terminal, color: purple] {
-  TAKE     [icon: user-check,  label: "POST /incidents/:id/take\n(TIER2+ claim)"]
-  ASSIGN   [icon: user-plus,   label: "POST /incidents/:id/assign\n(INCIDENT_LEAD/ADMIN)"]
-  MOVE     [icon: arrow-right, label: "PATCH /incidents/:id/phase\n(owner / lead / admin)"]
-  CLOSE    [icon: lock,        label: "POST /incidents/:id/close"]
-  RECLASS  [icon: rotate-ccw,  label: "POST /incidents/:id/reclassify-fp\n(rare; demotes to FP)"]
-  NOTE     [icon: message-square, label: "POST /incidents/:id/notes"]
+Metrics [icon: gauge, color: green] {
+  M_ACTIVE [icon: bell,        label: "Active count"]
+  M_MTTR   [icon: timer,       label: "MTTR"]
+  M_FP     [icon: percent,     label: "FP rate"]
+  M_AUTO   [icon: cpu,         label: "Automation rate"]
 }
 
-// ============================================================================
-//  TIMELINE & AUDIT — every change writes a timeline event
-// ============================================================================
-Timeline [icon: clock, color: yellow] {
-  T_CREATE [icon: plus,         label: "created"]
-  T_ASSIGN [icon: user,         label: "assigned"]
-  T_PHASE  [icon: arrow-right,  label: "phase_change"]
-  T_STATUS [icon: refresh-cw,   label: "status_change"]
-  T_NOTE   [icon: message-circle, label: "note"]
-  T_CLOSE  [icon: lock,         label: "closed / reclassified_fp"]
-}
-
-// ============================================================================
-//  DASHBOARD RISK — multi-metric, not a single global score
-// ============================================================================
-Dashboard Metrics [icon: gauge, color: green] {
-  M_ACTIVE [icon: bell,        label: "Active incidents\n(NEW/ANALYZING/ESCALATED)"]
-  M_MTTR   [icon: timer,       label: "MTTR\n(avg seconds to triage)"]
-  M_FPRATE [icon: percent,     label: "FP rate\n(fp / total alerts)"]
-  M_TREND  [icon: trending-up, label: "7-day volume trend"]
-  M_AUTO   [icon: cpu,         label: "Automation rate\n(analyzed / total)"]
-}
-
-// ============ ESCALATION ============
-ALERT_TR > ESC_API
-ESC_API > CREATE
-CREATE > ALERT_OUT: lock alert
-CREATE > GLPI: if integration enabled
-CREATE > OPEN: incident born
-CREATE > T_CREATE
-
-// ============ PHASE → STATUS MAPPING ============
-P_DET > OPEN: unassigned
-P_DET > PROG: assigned
-P_ANA > OPEN: unassigned
-P_ANA > PROG: assigned
-P_CON > PROG
-P_ERA > PROG
+ALERT > CREATE
+CREATE > OPEN
+CREATE > A_PEND
+OPEN > PROG: assigned
+PROG > P_DET
+P_DET > P_ANA
+P_ANA > P_CON
+P_CON > P_ERA
+P_ERA > P_REC
 P_REC > CONT
+CONT > P_POST
 P_POST > RES
-
-// ============ OPERATOR FLOW ============
-OPEN > TAKE: any TIER2+
-OPEN > ASSIGN: lead/admin
-TAKE > PROG
-ASSIGN > PROG
-
-PROG > MOVE: phase forward
-MOVE > P_DET
-MOVE > P_ANA
-MOVE > P_CON
-MOVE > P_ERA
-MOVE > P_REC
-MOVE > P_POST
-
-RES > CLOSE
-CLOSE > CLOSED
-
-PROG > RECLASS: demote to FP
-RECLASS > RECL_FP
-
-// ============ ACTION LIFECYCLE ============
-CREATE > A_PEND: seeded by AI
-PROG > A_PEND: analyst adds
+RES > CLOSED
 A_PEND > A_APPR
 A_APPR > A_EXEC
-A_EXEC > A_FAIL: error
-A_FAIL > A_APPR: retry
-
-// ============ TIMELINE WRITES ============
-TAKE > T_ASSIGN
-ASSIGN > T_ASSIGN
-MOVE > T_PHASE
-MOVE > T_STATUS
-NOTE > T_NOTE
-CLOSE > T_CLOSE
-RECLASS > T_CLOSE
-
-// ============ DASHBOARD METRICS ============
 OPEN > M_ACTIVE
 PROG > M_ACTIVE
-ALERT_OUT > M_ACTIVE
-CLOSED > M_MTTR: contributes to MTTR
-RECL_FP > M_FPRATE: bumps FP rate
-ALERT_TR > M_TREND
-ALERT_TR > M_AUTO: if analyzed
+CLOSED > M_MTTR
+CLOSED > M_AUTO
+CLOSED > M_FP

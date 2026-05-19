@@ -121,14 +121,17 @@ export async function getAgentModelConfig(): Promise<AgentModelConfig> {
   return res.json();
 }
 
-export async function updateAgentModel(phase: AgentPhase, model: string): Promise<AgentModelConfig> {
+export async function updateAgentModel(phase: AgentPhase, model: string, stepUpToken?: string): Promise<AgentModelConfig> {
+  const headers: Record<string, string> = { ...authHeaders() };
+  if (stepUpToken) headers['X-Step-Up-Token'] = stepUpToken;
   const res = await fetch(`${API}/models/${phase}`, {
     method:  "PATCH",
-    headers: authHeaders(),
+    headers,
     body:    JSON.stringify({ model }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (err.step_up_required) { const e: any = new Error(err.error || 'Re-authentication required'); e.step_up_required = true; throw e; }
     throw new Error(err.error || `Failed to update model (${res.status})`);
   }
   const data = await res.json();
@@ -143,8 +146,15 @@ export async function getLocalLLMConfig(): Promise<{ url: string; enabled: boole
   return res.json();
 }
 
-export async function updateLocalLLMConfig(payload: { url?: string; enabled?: boolean }): Promise<void> {
-  await fetch('/api/local-llm/config', { method: 'PATCH', headers: authHeaders(), body: JSON.stringify(payload) });
+export async function updateLocalLLMConfig(payload: { url?: string; enabled?: boolean }, stepUpToken?: string): Promise<void> {
+  const headers: Record<string, string> = { ...authHeaders() };
+  if (stepUpToken) headers['X-Step-Up-Token'] = stepUpToken;
+  const res = await fetch('/api/local-llm/config', { method: 'PATCH', headers, body: JSON.stringify(payload) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    if (err.step_up_required) { const e: any = new Error(err.error || 'Re-authentication required'); e.step_up_required = true; throw e; }
+    throw new Error(err.error || 'Failed to update Local LLM config');
+  }
 }
 
 export async function testLocalLLM(): Promise<{ ok: boolean; model_count?: number; message?: string; error?: string }> {
@@ -201,6 +211,140 @@ export async function testLdapConnection(username: string): Promise<{ ok: boolea
     body:    JSON.stringify({ username }),
   });
   return res.json();
+}
+
+// ── Step-up re-authentication ─────────────────────────────────────────────
+// Exchange the user's password for a short-lived step-up token. The caller
+// then includes the token in X-Step-Up-Token on any destructive admin op.
+export async function verifyPassword(password: string): Promise<{ token: string; expires_in: number }> {
+  const res = await fetch('/api/auth/verify-password', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Password verification failed');
+  return data;
+}
+
+// ── Admin: user management ─────────────────────────────────────────────────
+export interface CreateUserPayload {
+  username: string;
+  password?: string;
+  password_confirm?: string;
+  email?: string;
+  role?: string;
+  display_name?: string;
+  generate_temp_password?: boolean;
+  must_change_password?: boolean;
+}
+export async function createUser(payload: CreateUserPayload): Promise<any> {
+  const res = await fetch('/api/users', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to create user');
+  return data;
+}
+
+export interface UpdateUserPayload {
+  role?: string;
+  display_name?: string;
+  email?: string;
+  status?: 'active' | 'disabled';
+  must_change_password?: boolean;
+  access_expires_at?: string | null;
+}
+export async function updateUser(id: number, payload: UpdateUserPayload): Promise<any> {
+  const res = await fetch(`/api/users/${id}`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to update user');
+  return data;
+}
+
+export async function adminResetPassword(id: number): Promise<{ temp_password: string }> {
+  const res = await fetch(`/api/users/${id}/reset-password`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to reset password');
+  return data;
+}
+
+// ── Admin: audit logs ─────────────────────────────────────────────────────
+export interface AuditLogQuery {
+  user_id?: number | string;
+  action?: string;
+  from?: string;
+  to?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}
+export async function getAuditLogs(query: AuditLogQuery = {}): Promise<{
+  rows: Array<{ id: string; timestamp: string; user_id: number | null; username: string | null; action: string; details: string }>;
+  total: number;
+  page: number;
+  pageSize: number;
+}> {
+  const qs = new URLSearchParams();
+  Object.entries(query).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  const res = await fetch(`/api/audit-logs?${qs}`, { headers: authHeaders() });
+  return res.json();
+}
+
+export async function getAuditLogActions(): Promise<string[]> {
+  const res = await fetch('/api/audit-logs/actions', { headers: authHeaders() });
+  return res.json();
+}
+
+export function auditLogsExportUrl(query: AuditLogQuery): string {
+  const qs = new URLSearchParams();
+  Object.entries(query).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  return `/api/audit-logs/export.csv?${qs}`;
+}
+
+// ── Admin: failed-login dashboard ────────────────────────────────────────
+export async function getFailedLogins(window: '24h' | '7d' = '24h'): Promise<{
+  window: string;
+  since: string;
+  total: number;
+  byUser: Array<{ username: string; count: number }>;
+  sparkline: Array<{ hour: string; count: number }>;
+}> {
+  const res = await fetch(`/api/admin/failed-logins?window=${window}`, { headers: authHeaders() });
+  return res.json();
+}
+
+// ── Lightweight password strength estimator (used in admin Add-User modal).
+// Returns 0-4 where 4 is "very strong". Pure entropy heuristic — no zxcvbn dep.
+export function estimatePasswordStrength(pw: string): { score: 0 | 1 | 2 | 3 | 4; bits: number; label: string } {
+  if (!pw) return { score: 0, bits: 0, label: 'empty' };
+  let pool = 0;
+  if (/[a-z]/.test(pw)) pool += 26;
+  if (/[A-Z]/.test(pw)) pool += 26;
+  if (/[0-9]/.test(pw)) pool += 10;
+  if (/[^A-Za-z0-9]/.test(pw)) pool += 32;
+  if (pool === 0) pool = 26;
+  const rawBits = Math.log2(pool) * pw.length;
+  // Penalize repeats and common sequences
+  const repeats = (pw.match(/(.)\1{2,}/g) || []).length;
+  const sequences = /(0123|1234|2345|3456|4567|5678|6789|abcd|qwer|asdf)/i.test(pw) ? 1 : 0;
+  const bits = Math.max(0, rawBits - repeats * 6 - sequences * 8);
+  let score: 0 | 1 | 2 | 3 | 4 = 0;
+  if (bits >= 28) score = 1;
+  if (bits >= 40) score = 2;
+  if (bits >= 60) score = 3;
+  if (bits >= 80) score = 4;
+  const labels = ['very weak', 'weak', 'fair', 'good', 'strong'] as const;
+  return { score, bits: Math.round(bits), label: labels[score] };
 }
 
 export async function testIntegration(name: string): Promise<{ ok: boolean; error?: string }> {

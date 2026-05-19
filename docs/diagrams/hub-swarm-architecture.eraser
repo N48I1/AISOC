@@ -1,102 +1,54 @@
-title AISOC Hub-and-Swarm Orchestration — Steps 0 through 7
+title Hub-and-Swarm Orchestration
 
-// ============================================================================
-//  ENTRY — mode toggle (AGENT_MODE env var); swarm is default since v2
-// ============================================================================
 Entry [icon: power, color: red] {
-  ALERT      [icon: alert-triangle, label: "Alert (id + payload)"]
-  ORCH_API   [icon: webhook,        label: "POST /api/ai/orchestrate"]
-  MODE       [icon: git-branch,     label: "AGENT_MODE switch"]
-  SWARM      [icon: network,        label: "swarm (default)\nrunHubAndSwarm()"]
-  LINEAR     [icon: list,           label: "linear (legacy)\nrunLinearLegacy()"]
+  ALERT [icon: alert-triangle, label: "Alert"]
 }
 
-// ============================================================================
-//  HUB CONTROL PLANE — deterministic + 1 mandatory LLM call (Step 2)
-// ============================================================================
-Hub Control [icon: brain, color: orange] {
-  S0  [icon: filter,        label: "Step 0\nsuppression_rules check\n(deterministic)"]
-  S1  [icon: search,        label: "Step 1\nparallel pre-flight reads:\nrecall + IOCs + assets"]
-  S15 [icon: zap,           label: "Step 1.5\nasset fast-FP\n(skip LLM if all fp_default=1)"]
-  S2  [icon: activity,      label: "Step 2 (mandatory)\nTriage Agent LLM\n→ is_fp, risk, category"]
-  S3  [icon: scale,         label: "Step 3\nFP short-circuit\nis_fp && conf > 0.85"]
-  S4  [icon: brain-circuit, label: "Step 4\nPlanner LLM\nchooses workers + composers"]
-  S5  [icon: refresh-cw,    label: "Step 5 (optional)\nreflection round\nif re_evaluate &&\ncost_budget remaining"]
+Hub [icon: brain, color: orange] {
+  S0 [icon: filter,        label: "Suppression check"]
+  S1 [icon: search,        label: "Pre-flight reads\n(recall · IOCs · assets)"]
+  S2 [icon: activity,      label: "Triage LLM"]
+  S3 [icon: scale,         label: "FP short-circuit?"]
+  S4 [icon: brain-circuit, label: "Planner LLM"]
 }
 
-// ============================================================================
-//  INVESTIGATORS — dispatched in parallel by planner (Step 5)
-// ============================================================================
-Workers Parallel [icon: cpu, color: blue] {
-  W_INTEL  [icon: radar,    label: "intel\nMITRE ATT&CK enrichment"]
-  W_KNOW   [icon: book-open, label: "knowledge\nRAG over playbooks"]
-  W_CORR   [icon: network,   label: "correlation\n72h campaign detection"]
-  W_RECALL [icon: history,   label: "recall (deterministic)\nsemantic insights search"]
-  W_IOC    [icon: hash,      label: "ioc_check (deterministic)\nIOC enrichment + memory"]
+Workers (parallel) [icon: cpu, color: blue] {
+  W_INTEL [icon: radar,     label: "Intel"]
+  W_KNOW  [icon: book-open, label: "Knowledge"]
+  W_CORR  [icon: network,   label: "Correlation"]
+  W_MEM   [icon: history,   label: "Recall + IOC"]
 }
 
-// ============================================================================
-//  COMPOSERS — sequential, each reads prior outputs (Step 6)
-// ============================================================================
-Composers Sequential [icon: layers, color: teal] {
-  C_TICKET [icon: file-text,    label: "ticketing\ndraft incident ticket\npriority + title + SLA"]
-  C_RESP   [icon: shield-check, label: "response\ncontainment action plan"]
-  C_VALID  [icon: badge-check,  label: "validation\nSLA + completeness check"]
+Composers (sequential) [icon: layers, color: teal] {
+  C_TICKET [icon: file-text,    label: "Ticketing"]
+  C_RESP   [icon: shield-check, label: "Response"]
+  C_VALID  [icon: badge-check,  label: "Validation"]
 }
 
-// ============================================================================
-//  TERMINAL — aggregator + priority gate + memory commit + final status
-// ============================================================================
 Finalize [icon: flag, color: purple] {
-  S65   [icon: calculator, label: "Step 6.5\nFP aggregator\nfp_score = 0.45*triage + 0.20*assets\n+ 0.15*IOC + 0.20*recall"]
-  GATE  [icon: gauge,      label: "Priority gate\nMED/LOW → FALSE_POSITIVE\nHIGH → TRIAGED\nCRITICAL → ESCALATED"]
-  S7    [icon: upload,     label: "Step 7\nmemory commit\n(sync IOCs + async insights)"]
-  OUT   [icon: monitor,    label: "Return result to UI\n+ emit socket events"]
+  AGG    [icon: calculator, label: "FP aggregator"]
+  GATE   [icon: gauge,      label: "Priority gate"]
+  COMMIT [icon: upload,     label: "Memory commit"]
+  OUT    [icon: monitor,    label: "Return result"]
 }
 
-// ============ MODE SELECTION ============
-ALERT > ORCH_API
-ORCH_API > MODE
-MODE > SWARM: default
-MODE > LINEAR: legacy fallback
-
-// ============ SWARM CONTROL FLOW ============
-SWARM > S0
-S0 > S1: continue (signal only)
-S1 > S15
-S15 > S7: fast-FP short-circuit
-S15 > S2: normal path
+ALERT > S0
+S0 > S1
+S1 > S2
 S2 > S3
-S3 > S7: is_fp && conf > 0.85 (early exit)
-S3 > S4: continue investigation
-
-// ============ PLANNER DISPATCH ============
+S3 > COMMIT: FP confirmed
+S3 > S4: continue
 S4 > W_INTEL
 S4 > W_KNOW
 S4 > W_CORR
-S4 > W_RECALL
-S4 > W_IOC
-
-// ============ REFLECTION (optional second round) ============
-W_INTEL > S5
-W_KNOW > S5
-W_CORR > S5
-W_RECALL > S5
-W_IOC > S5
-S5 > S4: re_evaluate && budget OK
-S5 > C_TICKET: no reflection / done
-
-// ============ COMPOSER CHAIN ============
-C_TICKET > C_RESP: unless composer_skip
-C_RESP > C_VALID: unless composer_skip
-C_VALID > S65
-
-// ============ AGGREGATOR + GATE + COMMIT ============
-S65 > GATE
-GATE > S7
-S7 > OUT
-
-// ============ LEGACY LINEAR PATH ============
-LINEAR > S2: skip pre-flight
-S2 > C_TICKET: skip planner
-C_TICKET > OUT: skip aggregator
+S4 > W_MEM
+W_INTEL > C_TICKET
+W_KNOW > C_TICKET
+W_CORR > C_TICKET
+W_MEM > C_TICKET
+C_TICKET > C_RESP
+C_RESP > C_VALID
+C_VALID > AGG
+AGG > GATE
+GATE > COMMIT
+COMMIT > OUT

@@ -1,123 +1,61 @@
-title AISOC False-Positive Detection — Three Thresholds, Four Signals
+title False-Positive Detection
 
-// ============================================================================
-//  ENTRY — both pipelines share the same FP machinery (fp-scan vs orchestrate)
-// ============================================================================
 Entry [icon: shield, color: red] {
-  ALERT [icon: alert-triangle, label: "Alert payload\n(Wazuh / API)"]
-  FPSCAN_API  [icon: search-check, label: "POST /api/ai/fp-scan\nthreshold 0.72"]
-  ORCH_API    [icon: brain,        label: "POST /api/ai/orchestrate\nthreshold 0.85"]
+  ALERT [icon: alert-triangle, label: "Alert"]
 }
 
-// ============================================================================
-//  DETERMINISTIC SIGNALS — no LLM cost, run in parallel as pre-flight context
-// ============================================================================
-Pre-Flight Signals [icon: database, color: orange] {
-  SUPPRESS  [icon: filter,    label: "suppression_rules\n(CIDR / regex / agent / rule_id)\nsignal, not veto"]
-  ASSETS    [icon: server,    label: "asset_context\n(fp_default=1 for scanners,\nbackups, monitoring)"]
-  IOCS      [icon: hash,      label: "ioc_memory\n(historical fp_count / tp_count)"]
-  RECALL    [icon: history,   label: "incident_insights\n(semantic search via embeddings)"]
+Signals (parallel) [icon: database, color: orange] {
+  SUPPRESS [icon: filter,  label: "Suppression rules"]
+  ASSETS   [icon: server,  label: "Asset context"]
+  IOCS     [icon: hash,    label: "IOC memory"]
+  RECALL   [icon: history, label: "Past insights"]
 }
 
-// ============================================================================
-//  EARLY EXIT — Asset Fast-FP (Step 1.5) bypasses LLM entirely
-// ============================================================================
-Fast Path [icon: zap, color: yellow] {
-  ASSET_FP [icon: x-circle, label: "Step 1.5: Asset Fast-FP\nALL assets fp_default=1\n+ no high-risk keywords"]
+Triage [icon: brain-circuit, color: blue] {
+  FAST [icon: zap,      label: "Asset fast-FP\n(skip LLM)"]
+  LLM  [icon: activity, label: "Triage LLM\n→ is_fp, confidence"]
 }
 
-// ============================================================================
-//  AI TRIAGE — Step 2: mandatory LLM call with all signals as context
-// ============================================================================
-AI Triage [icon: brain-circuit, color: blue] {
-  TRIAGE_LLM [icon: activity, label: "Step 2: Triage Agent\ninputs: alert + 4 signals\noutputs: is_fp, fp_confidence,\nrisk_score, attack_category"]
+Decide [icon: git-branch, color: purple] {
+  GATE [icon: scale,      label: "Confidence gate"]
+  AGG  [icon: calculator, label: "FP aggregator\n(weighted score)"]
 }
 
-// ============================================================================
-//  DECISION POINTS — three different confidence bars depending on caller
-// ============================================================================
-Decision Gates [icon: git-branch, color: purple] {
-  GATE_SCAN [icon: scale,        label: "fp-scan gate\nis_fp && conf > 0.72"]
-  GATE_ORCH [icon: scale,        label: "orchestrate gate\nis_fp && conf > 0.85"]
-  CORR_VETO [icon: alert-octagon, label: "Correlation veto\ncampaign_detected ||\nescalation_needed\noverrides FP verdict"]
-  AGG       [icon: calculator,    label: "Step 6.5: Aggregator\ntriage 45% + assets 20%\n+ IOC 15% + recall 20%\n→ fp_score ≥ 0.55"]
-}
-
-// ============================================================================
-//  OUTCOMES
-// ============================================================================
 Outcomes [icon: flag, color: green] {
-  FP        [icon: x-circle,     label: "status: FALSE_POSITIVE\n(archived)"]
-  NOT_FP    [icon: search,       label: "status: FILTERED\n(back to investigation queue)"]
-  TRIAGED   [icon: check-circle, label: "status: TRIAGED\n(send to composers)"]
+  FP      [icon: x-circle,     label: "FALSE_POSITIVE"]
+  TRIAGED [icon: check-circle, label: "TRIAGED"]
 }
 
-// ============================================================================
-//  HUMAN-IN-THE-LOOP — analyst confirms or overrides FP verdict
-// ============================================================================
-Human Review [icon: users, color: teal] {
-  CONFIRM   [icon: thumbs-up,  label: "Analyst CONFIRMS\nstatus → FP_CONFIRMED"]
-  OVERRIDE  [icon: rotate-ccw, label: "Analyst OVERRIDES\nstatus → FILTERED"]
+Review [icon: users, color: teal] {
+  CONFIRM  [icon: thumbs-up,  label: "Analyst confirms"]
+  OVERRIDE [icon: rotate-ccw, label: "Analyst overrides"]
 }
 
-// ============================================================================
-//  LEARNING LOOP — repeated FP IOCs surface as suppression suggestions
-// ============================================================================
-Learning Loop [icon: sparkles, color: pink] {
-  IOC_STATS [icon: trending-up, label: "Update ioc_memory\nfp_count++ / tp_count++"]
-  SUGGEST   [icon: lightbulb,   label: "GET /api/analytics/fp-suggestions\n(ratio + frequency threshold)"]
-  ADMIN     [icon: user-check,  label: "Admin reviews suggestion"]
-  PROMOTE   [icon: plus-circle, label: "POST /api/analytics/accept-suggestion\n→ creates suppression_rule"]
+Learn [icon: sparkles, color: pink] {
+  STATS   [icon: trending-up, label: "Update IOC stats"]
+  SUGGEST [icon: lightbulb,   label: "FP suggestion"]
+  PROMOTE [icon: plus-circle, label: "New suppression rule"]
 }
 
-// ============ ENTRY ROUTING ============
-ALERT > FPSCAN_API
-ALERT > ORCH_API
-
-// ============ PRE-FLIGHT (parallel, no LLM) ============
-FPSCAN_API > SUPPRESS
-FPSCAN_API > ASSETS
-FPSCAN_API > IOCS
-FPSCAN_API > RECALL
-ORCH_API > SUPPRESS
-ORCH_API > ASSETS
-ORCH_API > IOCS
-ORCH_API > RECALL
-
-// ============ FAST PATH — skip LLM ============
-ASSETS > ASSET_FP: all fp_default=1
-ASSET_FP > FP: short-circuit
-
-// ============ TRIAGE LLM ============
-SUPPRESS > TRIAGE_LLM
-ASSETS > TRIAGE_LLM
-IOCS > TRIAGE_LLM
-RECALL > TRIAGE_LLM
-
-// ============ FP-SCAN PATH (cheap, 0.72 threshold + correlation veto) ============
-TRIAGE_LLM > GATE_SCAN: from fp-scan
-GATE_SCAN > CORR_VETO: is_fp=true
-CORR_VETO > NOT_FP: campaign_detected
-CORR_VETO > FP: no veto
-GATE_SCAN > NOT_FP: is_fp=false
-
-// ============ ORCHESTRATE PATH (full, 0.85 short-circuit + 0.55 aggregator) ============
-TRIAGE_LLM > GATE_ORCH: from orchestrate
-GATE_ORCH > FP: is_fp && conf>0.85 (short-circuit)
-GATE_ORCH > AGG: continue to investigation
-AGG > FP: fp_score ≥ 0.55
-AGG > TRIAGED: fp_score < 0.55
-
-// ============ HUMAN REVIEW ============
+ALERT > SUPPRESS
+ALERT > ASSETS
+ALERT > IOCS
+ALERT > RECALL
+ASSETS > FAST
+FAST > FP: short-circuit
+SUPPRESS > LLM
+ASSETS > LLM
+IOCS > LLM
+RECALL > LLM
+LLM > GATE
+GATE > FP: high confidence
+GATE > AGG: continue
+AGG > FP: score ≥ 0.55
+AGG > TRIAGED
 FP > CONFIRM
 FP > OVERRIDE
-OVERRIDE > NOT_FP
-
-// ============ LEARNING ============
-CONFIRM > IOC_STATS: tp_count or fp_count
-OVERRIDE > IOC_STATS
-TRIAGED > IOC_STATS
-IOC_STATS > SUGGEST
-SUGGEST > ADMIN
-ADMIN > PROMOTE
-PROMOTE > SUPPRESS: feedback into Step 0
+CONFIRM > STATS
+OVERRIDE > STATS
+STATS > SUGGEST
+SUGGEST > PROMOTE
+PROMOTE > SUPPRESS

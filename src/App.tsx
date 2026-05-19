@@ -3,7 +3,7 @@ import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogO
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, testLdapConnection, getIntegration, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from './types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from './types';
 import PageHeader from './components/ui/PageHeader';
@@ -3945,6 +3945,12 @@ const AgentsTab = () => {
   const [localStatus,  setLocalStatus] = useState<'unknown'|'checking'|'connected'|'unreachable'>('unknown');
   const [savingLocal,  setSavingLocal] = useState(false);
   const [selectedPhase, setSelectedPhase] = useState<AgentPhase>('analysis');
+  const [stepUp, setStepUp] = useState<{
+    title: string;
+    message: string;
+    destructive?: boolean;
+    run: (token: string) => Promise<void>;
+  } | null>(null);
 
   const agentDefs: Array<{ phase: AgentPhase; name: string; desc: string; prompt: string }> = [
     {
@@ -4044,35 +4050,49 @@ const AgentsTab = () => {
 
   const handleModelChange = async (phase: AgentPhase, model: string) => {
     if (!isAdmin) return;
-    setSavingPhase(phase);
     setError('');
-    try {
-      const updated = await updateAgentModel(phase, model);
-      setConfig(updated);
-      showToast(`${phase} agent → ${model.startsWith('local::') ? model.replace('local::','') : (updated?.modelLabels?.[model] || model)}`);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to update model.');
-      showToast('Failed to save model', 'error');
-    } finally {
-      setSavingPhase(null);
-    }
+    const friendly = model.startsWith('local::') ? model.replace('local::','') : (config?.modelLabels?.[model] || model);
+    setStepUp({
+      title: 'Confirm AI model change',
+      message: `Re-authenticate to assign the ${phase} agent to ${friendly}. This change is audited.`,
+      run: async (stepUpToken) => {
+        setStepUp(null);
+        setSavingPhase(phase);
+        try {
+          const updated = await updateAgentModel(phase, model, stepUpToken);
+          setConfig(updated);
+          showToast(`${phase} agent → ${friendly}`);
+        } catch (err: any) {
+          setError(err?.message || 'Failed to update model.');
+          showToast(err?.message || 'Failed to save model', 'error');
+        } finally {
+          setSavingPhase(null);
+        }
+      },
+    });
   };
 
   const handleSaveLocalConfig = async () => {
-    setSavingLocal(true);
-    try {
-      await updateLocalLLMConfig({ url: localUrl, enabled: localEnabled });
-      showToast('Local LLM config saved');
-      if (localEnabled) await checkLocalConnection(localUrl);
-      else { setLocalStatus('unknown'); setLocalModels([]); }
-      // Refresh model config to get updated localModels in dropdowns
-      const updated = await getAgentModelConfig();
-      setConfig(updated);
-    } catch (err: any) {
-      showToast('Failed to save local LLM config', 'error');
-    } finally {
-      setSavingLocal(false);
-    }
+    setStepUp({
+      title: 'Confirm Local LLM config',
+      message: 'Re-authenticate to update the Local LLM endpoint. This change is audited.',
+      run: async (stepUpToken) => {
+        setStepUp(null);
+        setSavingLocal(true);
+        try {
+          await updateLocalLLMConfig({ url: localUrl, enabled: localEnabled }, stepUpToken);
+          showToast('Local LLM config saved');
+          if (localEnabled) await checkLocalConnection(localUrl);
+          else { setLocalStatus('unknown'); setLocalModels([]); }
+          const updated = await getAgentModelConfig();
+          setConfig(updated);
+        } catch (err: any) {
+          showToast(err?.message || 'Failed to save local LLM config', 'error');
+        } finally {
+          setSavingLocal(false);
+        }
+      },
+    });
   };
 
   const handleTestLocal = async () => {
@@ -4386,6 +4406,15 @@ const AgentsTab = () => {
           </div>
         </div>
       )}
+      {stepUp && (
+        <StepUpModal
+          title={stepUp.title}
+          message={stepUp.message}
+          destructive={stepUp.destructive}
+          onVerified={stepUp.run}
+          onCancel={() => setStepUp(null)}
+        />
+      )}
     </div>
   );
 };
@@ -4426,6 +4455,219 @@ const SYSTEM_OPS: Record<SystemOpKey, { title: string; description: string; endp
   },
 };
 
+// Step-up re-authentication modal. Prompts for the caller's password, exchanges
+// it for a 5-min token via /api/auth/verify-password, then hands the token to
+// onVerified() so the caller can replay the destructive action with it.
+// Used by Danger Zone, Delete User, AI Model changes, Local LLM config save.
+const StepUpModal: React.FC<{
+  title?: string;
+  message?: string;
+  destructive?: boolean;
+  onVerified: (token: string) => Promise<void> | void;
+  onCancel: () => void;
+}> = ({ title, message, destructive, onVerified, onCancel }) => {
+  const { user } = useAuth();
+  const [password, setPassword] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password) return;
+    setVerifying(true);
+    setError('');
+    try {
+      const r = await verifyPassword(password);
+      await onVerified(r.token);
+    } catch (err: any) {
+      setError(err.message || 'Verification failed');
+      setVerifying(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/55 z-[60] flex items-center justify-center p-4">
+      <div className={`bg-[var(--s0)] border rounded-xl shadow-2xl max-w-sm w-full p-6 ${destructive ? 'border-red-300' : 'border-[var(--b1)]'}`}>
+        <div className="flex items-center gap-2 mb-1">
+          <Lock size={16} className={destructive ? 'text-red-600' : 'text-amber-600'} />
+          <h3 className="text-[0.95rem] font-black text-[var(--t7)]">{title || 'Confirm your password'}</h3>
+        </div>
+        <p className="text-[0.74rem] text-[var(--t4)]">
+          {message || 'This sensitive action requires re-authentication.'}
+        </p>
+        <p className="text-[0.66rem] text-[var(--t3)] mt-1">Signed in as <b>{user?.username}</b>.</p>
+
+        <form onSubmit={submit} className="mt-3 space-y-2">
+          {error && <div className="text-[#d93025] text-[0.72rem] font-semibold bg-red-50 border border-red-200 rounded px-3 py-1.5">{error}</div>}
+          <input
+            type="password"
+            autoFocus
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Your current password"
+            className="w-full bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]"
+          />
+          <div className="flex gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={verifying || !password}
+              className={`flex-1 px-3 py-1.5 rounded-lg text-[0.78rem] font-bold text-white disabled:opacity-50 ${destructive ? 'bg-red-600 hover:bg-red-700' : 'bg-[var(--p1)] hover:bg-[var(--pd)]'}`}
+            >
+              {verifying ? 'Verifying…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="border border-[var(--b2)] text-[var(--t5)] px-3 py-1.5 rounded-lg text-[0.78rem] font-semibold hover:bg-[var(--s1)]"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Admin: edit any user — display_name, email, role, status, force-change toggle, access expiry, reset password.
+const EditUserModal: React.FC<{
+  user: any;
+  isSelf: boolean;
+  onClose: () => void;
+  onSaved: (updated: any) => void;
+  onResetPassword: (tempPassword: string) => void;
+}> = ({ user, isSelf, onClose, onSaved, onResetPassword }) => {
+  const showToast = useToast();
+  const [form, setForm] = useState({
+    display_name: user.display_name || '',
+    email: user.email || '',
+    role: user.role || 'TIER1',
+    status: (user.status as 'active' | 'disabled') || 'active',
+    must_change_password: !!user.must_change_password,
+    access_expires_at: user.access_expires_at ? user.access_expires_at.slice(0, 10) : '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await updateUser(user.id, {
+        display_name: form.display_name,
+        email: form.email || null as any,
+        role: form.role,
+        status: form.status,
+        must_change_password: form.must_change_password,
+        access_expires_at: form.access_expires_at || null,
+      });
+      onSaved(updated);
+    } catch (err: any) {
+      setError(err.message || 'Failed to update user');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (!window.confirm(`Reset password for ${user.username}? A new temporary password will be generated.`)) return;
+    setResetting(true);
+    try {
+      const r = await adminResetPassword(user.id);
+      onResetPassword(r.temp_password);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to reset password', 'error');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="text-[1rem] font-black text-[var(--t7)]">Edit user</h3>
+            <p className="text-[0.72rem] text-[var(--t3)] mt-0.5">@{user.username} · #{user.id}{user.auth_source === 'ldap' && <span className="ml-2 text-purple-600 font-bold">LDAP</span>}</p>
+          </div>
+          <button onClick={onClose} className="text-[var(--t3)] hover:text-[var(--t6)]"><XCircle size={18} /></button>
+        </div>
+
+        {error && <div className="mb-3 text-[#d93025] text-[0.78rem] font-semibold bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Display name</label>
+            <input value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })}
+              className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+          </div>
+          <div>
+            <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Email</label>
+            <input value={form.email} onChange={e => setForm({ ...form, email: e.target.value })}
+              className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Role</label>
+              <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}
+                className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
+                <option value="TIER1">SOC Analyst L1 (TIER1)</option>
+                <option value="TIER2">SOC Analyst L2 (TIER2)</option>
+                <option value="INCIDENT_LEAD">Incident Lead</option>
+                <option value="ADMIN">Administrator</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Status</label>
+              <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value as 'active' | 'disabled' })}
+                disabled={isSelf}
+                className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)] disabled:opacity-50">
+                <option value="active">Active</option>
+                <option value="disabled">Disabled</option>
+              </select>
+              {isSelf && <p className="text-[0.6rem] text-[var(--t3)] mt-1">You cannot disable your own account.</p>}
+            </div>
+          </div>
+          <div>
+            <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Access expires</label>
+            <input type="date" value={form.access_expires_at}
+              onChange={e => setForm({ ...form, access_expires_at: e.target.value })}
+              className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+            <p className="text-[0.6rem] text-[var(--t3)] mt-1">Leave empty for no expiry. Disabled automatically when expired.</p>
+          </div>
+          <label className="flex items-center gap-2 text-[0.78rem] text-[var(--t6)] cursor-pointer">
+            <input type="checkbox" checked={form.must_change_password}
+              onChange={e => setForm({ ...form, must_change_password: e.target.checked })} />
+            <span>Require password change on next login</span>
+          </label>
+
+          {user.auth_source !== 'ldap' && (
+            <div className="border-t border-[var(--b1)] pt-3">
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                className="text-[0.78rem] font-bold text-amber-700 hover:text-amber-800 hover:bg-amber-50 px-3 py-1.5 rounded border border-amber-300 disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Lock size={13} /> {resetting ? 'Resetting…' : 'Reset password (generate temp)'}
+              </button>
+              <p className="text-[0.6rem] text-[var(--t3)] mt-1">Generates a new one-time password. The user will be required to change it on next login.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 mt-5 pt-4 border-t border-[var(--b1)]">
+          <button onClick={handleSave} disabled={saving}
+            className="bg-[var(--p1)] text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-[var(--pd)] disabled:opacity-50">
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+          <button onClick={onClose} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const SettingsTab = () => {
   const showToast = useToast();
   const { user, token } = useAuth();
@@ -4442,15 +4684,36 @@ const SettingsTab = () => {
   const [users, setUsers]              = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers]= useState(false);
   const [showCreateForm, setShowCreate]= useState(false);
-  const [form, setForm]                = useState({ username: '', password: '', email: '', role: 'TIER1' });
+  const [form, setForm]                = useState({
+    username: '',
+    password: '',
+    password_confirm: '',
+    email: '',
+    role: 'TIER1',
+    display_name: '',
+    generate_temp_password: false,
+    must_change_password: true,
+  });
   const [createError, setCreateError]  = useState('');
   const [createSuccess, setCreateOk]   = useState('');
+  const [tempPasswordDisplay, setTempPasswordDisplay] = useState<{ username: string; password: string } | null>(null);
   const [editingRole, setEditingRole]  = useState<Record<number, string>>({});
+  const [editUserModal, setEditUserModal] = useState<any | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
 
   // System ops
   const [confirmOp, setConfirmOp] = useState<SystemOpKey | null>(null);
   const [opRunning, setOpRunning] = useState<SystemOpKey | null>(null);
+
+  // Step-up re-auth: a generic pending action — once the user types the right
+  // password, run() is called with the issued step-up token. Used by Danger
+  // Zone ops, Delete User, and (further below) AI model changes.
+  const [stepUp, setStepUp] = useState<{
+    title: string;
+    message: string;
+    destructive?: boolean;
+    run: (token: string) => Promise<void>;
+  } | null>(null);
 
   const loadUsers = () => {
     if (!isAdmin || !token) return;
@@ -4471,23 +4734,51 @@ const SettingsTab = () => {
 
   useEffect(() => { loadUsers(); loadStats(); }, [isAdmin, token]);
 
+  const resetCreateForm = () => setForm({
+    username: '',
+    password: '',
+    password_confirm: '',
+    email: '',
+    role: 'TIER1',
+    display_name: '',
+    generate_temp_password: false,
+    must_change_password: true,
+  });
+
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError('');
     setCreateOk('');
+    if (!form.username.trim()) { setCreateError('Username is required'); return; }
+    if (!form.generate_temp_password) {
+      if (!form.password) { setCreateError('Password is required'); return; }
+      if (form.password !== form.password_confirm) { setCreateError('Passwords do not match'); return; }
+    }
     try {
-      const res = await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(form),
-      });
-      const data = await res.json();
-      if (data.error) { setCreateError(data.error + (data.details ? ': ' + data.details.join(', ') : '')); return; }
-      setCreateOk(`User "${data.username}" created successfully.`);
+      const payload: any = {
+        username: form.username.trim(),
+        email: form.email.trim() || undefined,
+        role: form.role,
+        display_name: form.display_name.trim() || undefined,
+        must_change_password: form.must_change_password,
+      };
+      if (form.generate_temp_password) {
+        payload.generate_temp_password = true;
+      } else {
+        payload.password = form.password;
+        payload.password_confirm = form.password_confirm;
+      }
+      const data = await createUser(payload);
       setUsers(prev => [...prev, data]);
-      setForm({ username: '', password: '', email: '', role: 'TIER1' });
+      if (data.temp_password) {
+        setTempPasswordDisplay({ username: data.username, password: data.temp_password });
+        setCreateOk('');
+      } else {
+        setCreateOk(`User "${data.username}" created successfully.`);
+        showToast(`User "${data.username}" created`, 'success');
+      }
+      resetCreateForm();
       setShowCreate(false);
-      showToast(`User "${data.username}" created`, 'success');
     } catch (err: any) {
       setCreateError(err.message || 'Failed to create user');
     }
@@ -4509,17 +4800,26 @@ const SettingsTab = () => {
   };
 
   const handleDeleteUser = async (uid: number) => {
-    try {
-      const res = await fetch(`/api/users/${uid}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Failed to delete user', 'error'); return; }
-      setUsers(prev => prev.filter(u => u.id !== uid));
-      setDeleteConfirm(null);
-      showToast('User deleted', 'success');
-    } catch { showToast('Connection error', 'error'); }
+    const target = users.find(u => u.id === uid);
+    setDeleteConfirm(null);
+    setStepUp({
+      title: 'Confirm your password to delete user',
+      message: `Deleting "${target?.username}" is permanent and will be recorded in the audit trail.`,
+      destructive: true,
+      run: async (stepUpToken) => {
+        setStepUp(null);
+        try {
+          const res = await fetch(`/api/users/${uid}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}`, 'X-Step-Up-Token': stepUpToken },
+          });
+          const data = await res.json();
+          if (!res.ok) { showToast(data.error || 'Failed to delete user', 'error'); return; }
+          setUsers(prev => prev.filter(u => u.id !== uid));
+          showToast('User deleted', 'success');
+        } catch { showToast('Connection error', 'error'); }
+      },
+    });
   };
 
   const handleUnlockUser = async (uid: number) => {
@@ -4537,20 +4837,29 @@ const SettingsTab = () => {
 
   const runSystemOp = async (key: SystemOpKey) => {
     const op = SYSTEM_OPS[key];
-    setOpRunning(key);
     setConfirmOp(null);
-    try {
-      const res = await fetch(op.endpoint, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) { showToast(data.error || `${op.title} failed`, 'error'); return; }
-      const count = data.deleted ?? data.reset ?? 0;
-      showToast(`${op.title} — ${count} record${count !== 1 ? 's' : ''} affected`, 'success');
-      loadStats();
-    } catch { showToast('Connection error', 'error'); }
-    finally { setOpRunning(null); }
+    // Gate every Danger Zone action behind a password re-prompt.
+    setStepUp({
+      title: 'Confirm your password to proceed',
+      message: `${op.confirmTitle} — this action is irreversible and will be recorded in the audit trail.`,
+      destructive: true,
+      run: async (stepUpToken) => {
+        setOpRunning(key);
+        setStepUp(null);
+        try {
+          const res = await fetch(op.endpoint, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'X-Step-Up-Token': stepUpToken },
+          });
+          const data = await res.json();
+          if (!res.ok) { showToast(data.error || `${op.title} failed`, 'error'); return; }
+          const count = data.deleted ?? data.reset ?? 0;
+          showToast(`${op.title} — ${count} record${count !== 1 ? 's' : ''} affected`, 'success');
+          loadStats();
+        } catch { showToast('Connection error', 'error'); }
+        finally { setOpRunning(null); }
+      },
+    });
   };
 
   if (!isAdmin) {
@@ -4636,6 +4945,23 @@ const SettingsTab = () => {
           onCancel={() => setDeleteConfirm(null)}
         />
       )}
+      {editUserModal && (
+        <EditUserModal
+          user={editUserModal}
+          isSelf={editUserModal.id === user?.id}
+          onClose={() => setEditUserModal(null)}
+          onSaved={(updated) => {
+            setUsers(prev => prev.map(u => u.id === updated.id ? { ...u, ...updated } : u));
+            setEditUserModal(null);
+            showToast('User updated', 'success');
+          }}
+          onResetPassword={(tempPassword) => {
+            setTempPasswordDisplay({ username: editUserModal.username, password: tempPassword });
+            setEditUserModal(null);
+            loadUsers();
+          }}
+        />
+      )}
       {confirmOp && (
         <ConfirmModal
           title={SYSTEM_OPS[confirmOp].confirmTitle}
@@ -4643,6 +4969,16 @@ const SettingsTab = () => {
           confirmLabel={SYSTEM_OPS[confirmOp].confirmLabel}
           onConfirm={() => runSystemOp(confirmOp)}
           onCancel={() => setConfirmOp(null)}
+        />
+      )}
+
+      {stepUp && (
+        <StepUpModal
+          title={stepUp.title}
+          message={stepUp.message}
+          destructive={stepUp.destructive}
+          onVerified={stepUp.run}
+          onCancel={() => setStepUp(null)}
         />
       )}
 
@@ -4663,34 +4999,107 @@ const SettingsTab = () => {
             </button>
           </div>
 
-          {showCreateForm && (
-            <form onSubmit={handleCreateUser} className="p-5 border-b border-[var(--b1)] bg-[var(--sa)] space-y-3">
-              <p className="text-[0.72rem] text-[var(--t3)]">Password must be at least 8 chars with uppercase, lowercase, digit, and special character.</p>
-              {createError  && <div className="text-[#d93025] text-[0.78rem] font-semibold bg-red-50 border border-red-200 rounded px-3 py-2">{createError}</div>}
-              {createSuccess && <div className="text-[#1e8e3e] text-[0.78rem] font-semibold bg-green-50 border border-green-100 rounded px-3 py-2">{createSuccess}</div>}
-              <div className="grid grid-cols-2 gap-3">
-                <input required placeholder="Username" value={form.username}
-                  onChange={e => setForm({...form, username: e.target.value})}
-                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
-                <input required type="password" placeholder="Password (min 8 chars)" value={form.password}
-                  onChange={e => setForm({...form, password: e.target.value})}
-                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
-                <input placeholder="Email (optional)" value={form.email}
-                  onChange={e => setForm({...form, email: e.target.value})}
-                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
-                <select value={form.role} onChange={e => setForm({...form, role: e.target.value})}
-                  className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
-                  <option value="TIER1">SOC Analyst L1 (TIER1)</option>
-                  <option value="TIER2">SOC Analyst L2 (TIER2)</option>
-                  <option value="INCIDENT_LEAD">Incident Lead</option>
-                  <option value="ADMIN">Administrator</option>
-                </select>
+          {showCreateForm && (() => {
+            const strength = estimatePasswordStrength(form.password);
+            const strengthColors = ['#dc2626', '#f97316', '#eab308', '#22c55e', '#16a34a'];
+            const mismatch = !form.generate_temp_password && form.password_confirm.length > 0 && form.password !== form.password_confirm;
+            return (
+              <form onSubmit={handleCreateUser} className="p-5 border-b border-[var(--b1)] bg-[var(--sa)] space-y-3">
+                <p className="text-[0.72rem] text-[var(--t3)]">Password must be at least 8 chars with uppercase, lowercase, digit, and special character — or generate a one-time temporary password the user must change on first login.</p>
+                {createError  && <div className="text-[#d93025] text-[0.78rem] font-semibold bg-red-50 border border-red-200 rounded px-3 py-2">{createError}</div>}
+                {createSuccess && <div className="text-[#1e8e3e] text-[0.78rem] font-semibold bg-green-50 border border-green-100 rounded px-3 py-2">{createSuccess}</div>}
+                <div className="grid grid-cols-2 gap-3">
+                  <input required placeholder="Username" value={form.username}
+                    onChange={e => setForm({...form, username: e.target.value})}
+                    className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                  <input placeholder="Display name (optional)" value={form.display_name}
+                    onChange={e => setForm({...form, display_name: e.target.value})}
+                    className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                  <input placeholder="Email (optional)" value={form.email}
+                    onChange={e => setForm({...form, email: e.target.value})}
+                    className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                  <select value={form.role} onChange={e => setForm({...form, role: e.target.value})}
+                    className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]">
+                    <option value="TIER1">SOC Analyst L1 (TIER1)</option>
+                    <option value="TIER2">SOC Analyst L2 (TIER2)</option>
+                    <option value="INCIDENT_LEAD">Incident Lead</option>
+                    <option value="ADMIN">Administrator</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-2 text-[0.78rem] text-[var(--t6)] cursor-pointer">
+                  <input type="checkbox" checked={form.generate_temp_password}
+                    onChange={e => setForm({ ...form, generate_temp_password: e.target.checked, password: '', password_confirm: '' })} />
+                  <span><b>Generate a one-time temporary password</b> — the user must change it on first login.</span>
+                </label>
+
+                {!form.generate_temp_password && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <input required type="password" placeholder="Password (min 8 chars)" value={form.password}
+                          onChange={e => setForm({...form, password: e.target.value})}
+                          className="w-full bg-[var(--s0)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+                        {form.password && (
+                          <div className="mt-1.5">
+                            <div className="flex gap-0.5 h-1.5">
+                              {[0,1,2,3,4].map(i => (
+                                <div key={i} className="flex-1 rounded-sm transition-colors"
+                                  style={{ backgroundColor: i < strength.score + 1 ? strengthColors[strength.score] : 'var(--b1)' }} />
+                              ))}
+                            </div>
+                            <p className="text-[0.65rem] text-[var(--t3)] mt-1">Strength: <b style={{ color: strengthColors[strength.score] }}>{strength.label}</b> · {strength.bits} bits</p>
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <input required type="password" placeholder="Repeat password" value={form.password_confirm}
+                          onChange={e => setForm({...form, password_confirm: e.target.value})}
+                          className={`w-full bg-[var(--s0)] border rounded-lg px-3 py-2 text-sm outline-none ${mismatch ? 'border-red-500 focus:border-red-500' : 'border-[var(--b1)] focus:border-[var(--p1)]'}`} />
+                        {mismatch && <p className="text-[0.65rem] text-red-600 mt-1">Passwords do not match</p>}
+                        {!mismatch && form.password_confirm && form.password === form.password_confirm && (
+                          <p className="text-[0.65rem] text-green-600 mt-1">✓ Match</p>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <label className="flex items-center gap-2 text-[0.78rem] text-[var(--t6)] cursor-pointer">
+                  <input type="checkbox" checked={form.must_change_password}
+                    disabled={form.generate_temp_password}
+                    onChange={e => setForm({ ...form, must_change_password: e.target.checked })} />
+                  <span>Require password change on next login {form.generate_temp_password && <span className="text-[var(--t3)]">(always on for temp passwords)</span>}</span>
+                </label>
+
+                <div className="flex gap-2">
+                  <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-[var(--pd)]">Create User</button>
+                  <button type="button" onClick={() => { resetCreateForm(); setShowCreate(false); setCreateError(''); setCreateOk(''); }} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
+                </div>
+              </form>
+            );
+          })()}
+
+          {tempPasswordDisplay && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-[var(--s0)] border border-amber-300 rounded-xl shadow-2xl max-w-md w-full p-6">
+                <h3 className="text-[1rem] font-black text-amber-700 flex items-center gap-2"><Lock size={16} /> One-time password</h3>
+                <p className="text-[0.78rem] text-[var(--t5)] mt-2">A temporary password was generated for <b>{tempPasswordDisplay.username}</b>. Copy it now — it will <b>not</b> be shown again. The user must change it on first login.</p>
+                <div className="mt-3 bg-amber-50 border border-amber-200 rounded p-3 font-mono text-[0.9rem] text-amber-900 select-all break-all">
+                  {tempPasswordDisplay.password}
+                </div>
+                <div className="flex gap-2 mt-4">
+                  <button
+                    onClick={() => { navigator.clipboard?.writeText(tempPasswordDisplay.password); showToast('Password copied', 'success'); }}
+                    className="bg-[var(--p1)] text-white px-3 py-1.5 rounded text-[0.78rem] font-bold hover:bg-[var(--pd)]"
+                  >Copy</button>
+                  <button
+                    onClick={() => setTempPasswordDisplay(null)}
+                    className="border border-[var(--b2)] text-[var(--t5)] px-3 py-1.5 rounded text-[0.78rem] font-semibold hover:bg-[var(--s1)]"
+                  >Done</button>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <button type="submit" className="bg-[var(--p1)] text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-[var(--pd)]">Create User</button>
-                <button type="button" onClick={() => { setShowCreate(false); setCreateError(''); setCreateOk(''); }} className="border border-[var(--b2)] text-[var(--t5)] px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-[var(--s1)]">Cancel</button>
-              </div>
-            </form>
+            </div>
           )}
 
           <table className="w-full text-left text-sm">
@@ -4769,11 +5178,16 @@ const SettingsTab = () => {
                       )}
                     </td>
                     <td className="p-3 pr-4 text-right">
-                      {!isCurrentUser && (
-                        <button onClick={() => setDeleteConfirm(u.id)} className="text-[var(--t3)] hover:text-red-500 transition-colors p-1 rounded hover:bg-red-50" title="Delete user">
-                          <Trash2 size={14} />
+                      <div className="inline-flex items-center gap-1">
+                        <button onClick={() => setEditUserModal(u)} className="text-[var(--t3)] hover:text-[var(--p1)] transition-colors p-1 rounded hover:bg-[var(--s1)]" title="Edit user">
+                          <Edit3 size={14} />
                         </button>
-                      )}
+                        {!isCurrentUser && (
+                          <button onClick={() => setDeleteConfirm(u.id)} className="text-[var(--t3)] hover:text-red-500 transition-colors p-1 rounded hover:bg-red-50" title="Delete user">
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -7205,11 +7619,196 @@ function normalizeEmailConfig(raw: Record<string, string> = {}): Record<string, 
   };
 }
 
+// Admin: filtered, paginated viewer of the audit_logs table with CSV export.
+// Replaces the placeholder "Recent Actions" panel (which only shows integration dispatch logs).
+const AuditLogViewer: React.FC = () => {
+  const { token } = useAuth();
+  const showToast = useToast();
+  const [rows, setRows] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const [actions, setActions] = useState<string[]>([]);
+  const [filterAction, setFilterAction] = useState('');
+  const [filterUserId, setFilterUserId] = useState('');
+  const [filterFrom, setFilterFrom] = useState('');
+  const [filterTo, setFilterTo] = useState('');
+  const [searchQ, setSearchQ] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [stats, setStats] = useState<{ total: number; byUser: Array<{ username: string; count: number }>; sparkline: Array<{ count: number }> } | null>(null);
+
+  useEffect(() => {
+    getAuditLogActions().then(setActions).catch(() => {});
+    fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(d => { if (Array.isArray(d)) setUsers(d); })
+      .catch(() => {});
+    getFailedLogins('24h').then(setStats).catch(() => {});
+  }, [token]);
+
+  const fetchRows = useCallback(() => {
+    setLoading(true);
+    getAuditLogs({
+      page,
+      pageSize,
+      action: filterAction || undefined,
+      user_id: filterUserId || undefined,
+      from: filterFrom || undefined,
+      to: filterTo || undefined,
+      q: searchQ || undefined,
+    })
+      .then(res => { setRows(res.rows || []); setTotal(res.total || 0); })
+      .catch(() => showToast('Failed to load audit logs', 'error'))
+      .finally(() => setLoading(false));
+  }, [page, filterAction, filterUserId, filterFrom, filterTo, searchQ, showToast]);
+
+  useEffect(() => { fetchRows(); }, [fetchRows]);
+
+  const handleSearch = (e: React.FormEvent) => { e.preventDefault(); setPage(1); setSearchQ(searchInput); };
+  const clearFilters = () => { setFilterAction(''); setFilterUserId(''); setFilterFrom(''); setFilterTo(''); setSearchQ(''); setSearchInput(''); setPage(1); };
+
+  const exportCsv = () => {
+    const url = auditLogsExportUrl({
+      action: filterAction || undefined,
+      user_id: filterUserId || undefined,
+      from: filterFrom || undefined,
+      to: filterTo || undefined,
+      q: searchQ || undefined,
+    });
+    // Use fetch+blob so we can pass the bearer token (browser navigation can't)
+    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.blob())
+      .then(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => showToast('Export failed', 'error'));
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const actionColor = (a: string) => {
+    if (a === 'LOGIN_FAILED' || a === 'ACCOUNT_LOCKED') return 'bg-red-100 text-red-700';
+    if (a === 'LOGIN' || a === 'PASSWORD_CHANGED') return 'bg-green-100 text-green-700';
+    if (a.startsWith('USER_') || a === 'PASSWORD_RESET') return 'bg-blue-100 text-blue-700';
+    return 'bg-slate-100 text-slate-700';
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Failed-login mini-dashboard */}
+      {stats && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-[0.82rem] font-black text-[var(--t7)]">Failed logins · last 24h</h3>
+              <p className="text-[0.65rem] text-[var(--t3)] mt-0.5">{stats.total} failed login attempt{stats.total !== 1 ? 's' : ''}</p>
+            </div>
+            <span className={`text-[1.2rem] font-black ${stats.total > 10 ? 'text-red-600' : stats.total > 0 ? 'text-amber-600' : 'text-green-600'}`}>{stats.total}</span>
+          </div>
+          {stats.sparkline.length > 0 && (
+            <div className="flex items-end gap-0.5 h-10">
+              {stats.sparkline.map((b, i) => {
+                const max = Math.max(1, ...stats.sparkline.map(x => x.count));
+                const h = Math.max(2, Math.round((b.count / max) * 38));
+                return <div key={i} className={`flex-1 rounded-t-sm ${b.count > 0 ? 'bg-red-400' : 'bg-[var(--b1)]'}`} style={{ height: h }} title={`${b.count} fails`} />;
+              })}
+            </div>
+          )}
+          {stats.byUser.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {stats.byUser.slice(0, 8).map(u => (
+                <span key={u.username} className="text-[0.65rem] bg-red-50 border border-red-200 rounded px-2 py-0.5 text-red-700 font-semibold">
+                  {u.username} <b>×{u.count}</b>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl">
+        <div className="px-4 py-3 border-b border-[var(--b1)] bg-[var(--s1)] flex items-center justify-between gap-2 flex-wrap">
+          <h3 className="text-[0.82rem] font-black text-[var(--t7)]">Audit trail <span className="text-[0.65rem] text-[var(--t3)] font-semibold">({total} matching)</span></h3>
+          <div className="flex gap-2">
+            <button onClick={clearFilters} className="text-[0.7rem] font-semibold text-[var(--t4)] hover:text-[var(--t6)] px-2 py-1 rounded hover:bg-[var(--s2)]">Clear filters</button>
+            <button onClick={exportCsv} className="text-[0.7rem] font-bold text-[var(--p1)] border border-[var(--p1)] px-2.5 py-1 rounded hover:bg-[var(--p1)] hover:text-white transition-colors">Export CSV</button>
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-b border-[var(--b1)] flex flex-wrap gap-2 items-center">
+          <select value={filterAction} onChange={e => { setFilterAction(e.target.value); setPage(1); }}
+            className="bg-[var(--s1)] border border-[var(--b1)] rounded px-2 py-1 text-[0.72rem]">
+            <option value="">All actions</option>
+            {actions.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <select value={filterUserId} onChange={e => { setFilterUserId(e.target.value); setPage(1); }}
+            className="bg-[var(--s1)] border border-[var(--b1)] rounded px-2 py-1 text-[0.72rem]">
+            <option value="">All users</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+          </select>
+          <input type="date" value={filterFrom} onChange={e => { setFilterFrom(e.target.value); setPage(1); }}
+            className="bg-[var(--s1)] border border-[var(--b1)] rounded px-2 py-1 text-[0.72rem]" />
+          <span className="text-[0.7rem] text-[var(--t3)]">to</span>
+          <input type="date" value={filterTo} onChange={e => { setFilterTo(e.target.value); setPage(1); }}
+            className="bg-[var(--s1)] border border-[var(--b1)] rounded px-2 py-1 text-[0.72rem]" />
+          <form onSubmit={handleSearch} className="flex gap-1 flex-1 min-w-[160px]">
+            <input value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search details / action / user"
+              className="flex-1 bg-[var(--s1)] border border-[var(--b1)] rounded px-2 py-1 text-[0.72rem]" />
+            <button type="submit" className="bg-[var(--p1)] text-white text-[0.7rem] font-bold px-3 py-1 rounded hover:bg-[var(--pd)]">Search</button>
+          </form>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-[0.75rem]">
+            <thead className="bg-[var(--s1)] border-b border-[var(--b1)] text-[0.62rem] uppercase tracking-wider text-[var(--t3)]">
+              <tr>
+                <th className="px-4 py-2">Timestamp</th>
+                <th className="px-4 py-2">User</th>
+                <th className="px-4 py-2">Action</th>
+                <th className="px-4 py-2">Details</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--b1)]">
+              {loading ? (
+                <tr><td colSpan={4} className="p-6 text-center text-[var(--t3)]">Loading…</td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={4} className="p-6 text-center text-[var(--t3)]">No audit events match the current filters.</td></tr>
+              ) : rows.map(r => (
+                <tr key={r.id} className="hover:bg-[var(--s1)]">
+                  <td className="px-4 py-2 font-mono text-[0.65rem] text-[var(--t3)] whitespace-nowrap">{(r.timestamp || '').replace('T', ' ').slice(0, 19)}</td>
+                  <td className="px-4 py-2 text-[var(--t6)]">{r.username || <span className="text-[var(--t3)] italic">—</span>}</td>
+                  <td className="px-4 py-2"><span className={`text-[0.62rem] font-bold uppercase px-1.5 py-0.5 rounded ${actionColor(r.action)}`}>{r.action}</span></td>
+                  <td className="px-4 py-2 text-[var(--t5)] break-words max-w-[400px]">{r.details}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="px-4 py-3 border-t border-[var(--b1)] flex items-center justify-between text-[0.72rem] text-[var(--t4)]">
+          <span>Page {page} of {totalPages}</span>
+          <div className="flex gap-1">
+            <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}
+              className="px-3 py-1 rounded border border-[var(--b2)] disabled:opacity-30 hover:bg-[var(--s1)]">Prev</button>
+            <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              className="px-3 py-1 rounded border border-[var(--b2)] disabled:opacity-30 hover:bg-[var(--s1)]">Next</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const IntegrationsTab = () => {
   const toast = useToast();
   const { user, token } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
-  const [activeSection, setActiveSection] = useState<'notifications' | 'ldap' | 'logs' | 'ingest'>('notifications');
+  const [activeSection, setActiveSection] = useState<'notifications' | 'ldap' | 'logs' | 'audit' | 'ingest'>('notifications');
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
@@ -7332,6 +7931,7 @@ const IntegrationsTab = () => {
           { id: 'notifications' as const, label: 'Notifications' },
           { id: 'ldap' as const, label: 'LDAP / AD' },
           { id: 'logs' as const, label: 'Activity Log' },
+          ...(isAdmin ? [{ id: 'audit' as const, label: 'Audit Trail' }] : []),
           ...(isAdmin ? [{ id: 'ingest' as const, label: 'Alert Ingest' }] : []),
         ].map(s => (
           <button key={s.id} onClick={() => setActiveSection(s.id as any)}
@@ -7466,6 +8066,9 @@ const IntegrationsTab = () => {
           </div>
         </div>
       )}
+
+      {/* Audit Trail (admin only) */}
+      {activeSection === 'audit' && isAdmin && <AuditLogViewer />}
 
       {/* ── Alert Ingest ────────────────────────────────────────────────────── */}
       {activeSection === 'ingest' && isAdmin && (
@@ -10218,10 +10821,101 @@ const ReportsTab = ({
   );
 };
 
+// Blocks the entire app until the user changes a temporary/admin-reset password.
+// Mounted between LoginPage and the main app shell when user.must_change_password is true.
+const ForcedPasswordChangeGate: React.FC = () => {
+  const { user, token, refreshProfile, logout } = useAuth();
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const strength = estimatePasswordStrength(next);
+  const strengthColors = ['#dc2626', '#f97316', '#eab308', '#22c55e', '#16a34a'];
+  const mismatch = confirm.length > 0 && next !== confirm;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (next !== confirm) { setError('Passwords do not match'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/users/me/password', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword: current, newPassword: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.message || data.error || 'Failed to update password'); setSaving(false); return; }
+      refreshProfile();
+    } catch (err: any) {
+      setError(err.message || 'Connection error');
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[var(--s2)] flex items-center justify-center p-4">
+      <div className="bg-[var(--s0)] border border-amber-300 rounded-xl shadow-xl max-w-md w-full p-6">
+        <div className="flex items-center gap-2 mb-1">
+          <Lock size={18} className="text-amber-600" />
+          <h2 className="text-[1rem] font-black text-[var(--t7)]">Set a new password</h2>
+        </div>
+        <p className="text-[0.78rem] text-[var(--t4)]">
+          Your account requires a password change before continuing. Welcome, <b>{user?.username}</b>.
+        </p>
+
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+          {error && <div className="text-[#d93025] text-[0.78rem] font-semibold bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+          <div>
+            <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Current password</label>
+            <input type="password" required autoFocus value={current} onChange={e => setCurrent(e.target.value)}
+              className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+          </div>
+          <div>
+            <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">New password</label>
+            <input type="password" required value={next} onChange={e => setNext(e.target.value)}
+              className="w-full mt-1 bg-[var(--s1)] border border-[var(--b1)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--p1)]" />
+            {next && (
+              <div className="mt-1.5">
+                <div className="flex gap-0.5 h-1.5">
+                  {[0,1,2,3,4].map(i => (
+                    <div key={i} className="flex-1 rounded-sm transition-colors"
+                      style={{ backgroundColor: i < strength.score + 1 ? strengthColors[strength.score] : 'var(--b1)' }} />
+                  ))}
+                </div>
+                <p className="text-[0.65rem] text-[var(--t3)] mt-1">Strength: <b style={{ color: strengthColors[strength.score] }}>{strength.label}</b> · {strength.bits} bits</p>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="text-[0.7rem] font-bold text-[var(--t3)] uppercase">Confirm new password</label>
+            <input type="password" required value={confirm} onChange={e => setConfirm(e.target.value)}
+              className={`w-full mt-1 bg-[var(--s1)] border rounded-lg px-3 py-2 text-sm outline-none ${mismatch ? 'border-red-500 focus:border-red-500' : 'border-[var(--b1)] focus:border-[var(--p1)]'}`} />
+            {mismatch && <p className="text-[0.65rem] text-red-600 mt-1">Passwords do not match</p>}
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="submit" disabled={saving}
+              className="flex-1 bg-[var(--p1)] text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-[var(--pd)] disabled:opacity-50">
+              {saving ? 'Saving…' : 'Change password'}
+            </button>
+            <button type="button" onClick={logout}
+              className="border border-[var(--b2)] text-[var(--t5)] px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[var(--s1)]">
+              Sign out
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 const AuthConsumer = ({ activeTab, setActiveTab, alerts, selectedAlert, setSelectedAlert, onAlertAction, autoFilter, setAutoFilter, refreshAlerts, selectedIncidentId, setSelectedIncidentId }: any) => {
   const { user } = useAuth();
 
   if (!user) return <LoginPage />;
+  if (user.must_change_password) return <ForcedPasswordChangeGate />;
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">

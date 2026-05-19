@@ -396,6 +396,9 @@ try {
   safeAlter('ALTER TABLE users ADD COLUMN failed_logins INTEGER DEFAULT 0');
   safeAlter('ALTER TABLE users ADD COLUMN locked_until TEXT');
   safeAlter('ALTER TABLE users ADD COLUMN created_at TEXT');
+  safeAlter('ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0');
+  safeAlter("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'");
+  safeAlter('ALTER TABLE users ADD COLUMN access_expires_at TEXT');
   try {
     db.prepare("UPDATE users SET created_at = COALESCE(created_at, datetime('now'))").run();
   } catch (err: any) {
@@ -1581,8 +1584,30 @@ async function startServer() {
     next();
   };
 
+  // Step-up auth: destructive / sensitive ops require a fresh password re-auth.
+  // The frontend POSTs to /api/auth/verify-password to get a short-lived JWT
+  // (scope='step_up', 5 min, bound to the user.id), then includes it in
+  // X-Step-Up-Token on the protected call. Aligns with NIST 800-53 IA-11
+  // (Re-authentication) and ISO 27001 A.5.15 / A.8.2 privileged access controls.
+  const STEP_UP_TTL_SECONDS = 5 * 60;
+  const requireStepUp = (req: any, res: any, next: any) => {
+    const raw = req.headers['x-step-up-token'];
+    if (!raw || typeof raw !== 'string') {
+      return res.status(401).json({ error: 'Re-authentication required', step_up_required: true });
+    }
+    try {
+      const decoded: any = jwt.verify(raw, JWT_SECRET);
+      if (decoded.scope !== 'step_up' || decoded.sub !== req.user?.id) {
+        return res.status(401).json({ error: 'Invalid step-up token', step_up_required: true });
+      }
+      next();
+    } catch {
+      return res.status(401).json({ error: 'Step-up token expired — please confirm your password again', step_up_required: true });
+    }
+  };
+
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const userProfileFields = 'id, username, email, role, display_name, avatar_color, timezone, notify_email, notify_critical, notify_assignments, bio, last_login, password_changed_at, created_at';
+  const userProfileFields = 'id, username, email, role, display_name, avatar_color, timezone, notify_email, notify_critical, notify_assignments, bio, last_login, password_changed_at, created_at, must_change_password, status, access_expires_at';
 
   app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
@@ -1614,6 +1639,10 @@ async function startServer() {
           local = db.prepare('SELECT * FROM users WHERE username = ?').get(r.user.username);
           writeAudit(local.id, 'USER_CREATED', `Auto-provisioned from LDAP (${r.user.dn})`);
         }
+        if (local.status === 'disabled') {
+          writeAudit(local.id, 'LOGIN_FAILED', `Disabled account login attempt (LDAP): ${username}`);
+          return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
+        }
         db.prepare("UPDATE users SET failed_logins = 0, locked_until = NULL, last_login = datetime('now') WHERE id = ?").run(local.id);
         writeAudit(local.id, 'LOGIN', `LDAP login (${r.user.dn})`);
         return res.json(issueToken(local));
@@ -1627,20 +1656,31 @@ async function startServer() {
 
     // ── Local password path ──────────────────────────────────────────────────
     const user: any = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!user) {
+      writeAudit(null, 'LOGIN_FAILED', `Unknown username: ${username} from ${req.ip || 'unknown'}`);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     // LDAP-sourced users cannot use local password unless an admin set one explicitly.
     if (user.auth_source === 'ldap' && !ldapCfg) {
+      writeAudit(user.id, 'LOGIN_FAILED', `LDAP user attempted local login while LDAP disabled: ${username}`);
       return res.status(401).json({ error: 'LDAP is disabled — this account cannot log in locally.' });
+    }
+
+    if (user.status === 'disabled') {
+      writeAudit(user.id, 'LOGIN_FAILED', `Disabled account login attempt: ${username}`);
+      return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
     }
 
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
       const remaining = Math.ceil((new Date(user.locked_until).getTime() - Date.now()) / 60000);
+      writeAudit(user.id, 'LOGIN_FAILED', `Locked account login attempt: ${username} (${remaining} min remaining)`);
       return res.status(423).json({ error: `Account locked. Try again in ${remaining} min.`, locked: true });
     }
 
     if (!bcrypt.compareSync(password, user.password)) {
       const attempts = (user.failed_logins || 0) + 1;
+      writeAudit(user.id, 'LOGIN_FAILED', `Bad password for ${username} from ${req.ip || 'unknown'} (attempt ${attempts}/${MAX_FAILED_LOGINS})`);
       if (attempts >= MAX_FAILED_LOGINS) {
         const lockUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60000).toISOString();
         db.prepare('UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?').run(attempts, lockUntil, user.id);
@@ -1660,6 +1700,41 @@ async function startServer() {
     const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(req.user.id);
     if (!profile) return res.status(404).json({ error: 'User not found' });
     res.json(profile);
+  });
+
+  // Step-up re-authentication. Confirms the caller's password and returns a
+  // short-lived (5 min) token to be sent as X-Step-Up-Token on destructive ops.
+  app.post('/api/auth/verify-password', authenticate, (req: any, res) => {
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ error: 'Password required' });
+    const user: any = db.prepare('SELECT id, username, password, auth_source FROM users WHERE id = ?').get(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.auth_source === 'ldap') {
+      // LDAP-sourced accounts don't have a usable local password — fall back to LDAP.
+      const ldapCfg = readLdapConfig();
+      if (!ldapCfg) {
+        writeAudit(user.id, 'STEP_UP_FAILED', `LDAP user verify-password attempt but LDAP disabled`);
+        return res.status(400).json({ error: 'Re-auth requires LDAP, which is disabled' });
+      }
+      // Run an LDAP bind to confirm the password
+      // (the caller will await; if you wanted to keep this sync, swap for a Promise wrapper)
+      return ldapAuthenticate(ldapCfg, user.username, password).then((r) => {
+        if (!r.ok) {
+          writeAudit(user.id, 'STEP_UP_FAILED', `Bad LDAP password during step-up`);
+          return res.status(401).json({ error: 'Invalid password' });
+        }
+        const token = jwt.sign({ sub: user.id, scope: 'step_up' }, JWT_SECRET, { expiresIn: STEP_UP_TTL_SECONDS });
+        writeAudit(user.id, 'STEP_UP_VERIFIED', `Re-authenticated for sensitive operation (LDAP)`);
+        res.json({ token, expires_in: STEP_UP_TTL_SECONDS });
+      });
+    }
+    if (!bcrypt.compareSync(password, user.password)) {
+      writeAudit(user.id, 'STEP_UP_FAILED', `Bad password during step-up`);
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+    const token = jwt.sign({ sub: user.id, scope: 'step_up' }, JWT_SECRET, { expiresIn: STEP_UP_TTL_SECONDS });
+    writeAudit(user.id, 'STEP_UP_VERIFIED', `Re-authenticated for sensitive operation`);
+    res.json({ token, expires_in: STEP_UP_TTL_SECONDS });
   });
 
   // ── Alerts ────────────────────────────────────────────────────────────────
@@ -1837,18 +1912,88 @@ async function startServer() {
   app.patch('/api/users/:id', authenticate, requireAdmin, (req: any, res) => {
     const targetId = parseInt(req.params.id);
     if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
-    const { role } = req.body;
-    const allowedRoles = ['TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN', 'ANALYST'];
-    if (!role || !allowedRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
-    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    const target: any = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
-    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
-    writeAudit(req.user.id, 'USER_ROLE_CHANGED', `Changed ${target.username} role → ${role}`);
+
+    const allowedRoles = ['TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN', 'ANALYST'];
+    const allowedStatus = ['active', 'disabled'];
+    const updates: string[] = [];
+    const values: any[] = [];
+    const auditMessages: Array<{ action: string; details: string }> = [];
+
+    if (req.body.role !== undefined) {
+      if (!allowedRoles.includes(req.body.role)) return res.status(400).json({ error: 'Invalid role' });
+      if (req.body.role !== target.role) {
+        updates.push('role = ?');
+        values.push(req.body.role);
+        auditMessages.push({ action: 'USER_ROLE_CHANGED', details: `Changed ${target.username} role: ${target.role} → ${req.body.role}` });
+      }
+    }
+    if (req.body.display_name !== undefined && req.body.display_name !== target.display_name) {
+      updates.push('display_name = ?');
+      values.push(req.body.display_name || null);
+      auditMessages.push({ action: 'USER_PROFILE_UPDATED', details: `Changed ${target.username} display_name` });
+    }
+    if (req.body.email !== undefined && req.body.email !== target.email) {
+      updates.push('email = ?');
+      values.push(req.body.email || null);
+      auditMessages.push({ action: 'USER_PROFILE_UPDATED', details: `Changed ${target.username} email → ${req.body.email || '(empty)'}` });
+    }
+    if (req.body.status !== undefined) {
+      if (!allowedStatus.includes(req.body.status)) return res.status(400).json({ error: 'Invalid status' });
+      if (req.body.status !== (target.status || 'active')) {
+        if (targetId === req.user.id && req.body.status === 'disabled') {
+          return res.status(400).json({ error: 'Cannot disable your own account' });
+        }
+        updates.push('status = ?');
+        values.push(req.body.status);
+        auditMessages.push({ action: 'USER_STATUS_CHANGED', details: `Set ${target.username} status → ${req.body.status}` });
+      }
+    }
+    if (req.body.must_change_password !== undefined) {
+      const v = req.body.must_change_password ? 1 : 0;
+      if (v !== (target.must_change_password || 0)) {
+        updates.push('must_change_password = ?');
+        values.push(v);
+        auditMessages.push({ action: 'USER_PROFILE_UPDATED', details: `Set ${target.username} must_change_password = ${v}` });
+      }
+    }
+    if (req.body.access_expires_at !== undefined) {
+      // Accept ISO-ish strings or null/empty to clear
+      const v = req.body.access_expires_at ? String(req.body.access_expires_at) : null;
+      if (v !== target.access_expires_at) {
+        updates.push('access_expires_at = ?');
+        values.push(v);
+        auditMessages.push({ action: 'USER_PROFILE_UPDATED', details: `Set ${target.username} access_expires_at = ${v ?? '(cleared)'}` });
+      }
+    }
+
+    if (updates.length === 0) {
+      const unchanged = db.prepare(`SELECT ${userProfileFields}, failed_logins, locked_until FROM users WHERE id = ?`).get(targetId);
+      return res.json(unchanged);
+    }
+
+    values.push(targetId);
+    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    for (const a of auditMessages) writeAudit(req.user.id, a.action, a.details);
     const updated = db.prepare(`SELECT ${userProfileFields}, failed_logins, locked_until FROM users WHERE id = ?`).get(targetId);
     res.json(updated);
   });
 
-  app.delete('/api/users/:id', authenticate, requireAdmin, (req: any, res) => {
+  // Admin reset password: generates a new temp password, sets must_change_password=1.
+  app.post('/api/users/:id/reset-password', authenticate, requireAdmin, (req: any, res) => {
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    const tempPassword = crypto.randomBytes(12).toString('base64url');
+    const hashed = bcrypt.hashSync(tempPassword, 10);
+    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now'), must_change_password = 1, failed_logins = 0, locked_until = NULL WHERE id = ?").run(hashed, targetId);
+    writeAudit(req.user.id, 'PASSWORD_RESET', `Reset password for ${target.username} (must change on next login)`);
+    res.json({ temp_password: tempPassword });
+  });
+
+  app.delete('/api/users/:id', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const targetId = parseInt(req.params.id);
     if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
     if (targetId === req.user.id) return res.status(400).json({ error: 'Cannot delete your own account' });
@@ -1869,18 +2014,52 @@ async function startServer() {
   });
 
   app.post('/api/users', authenticate, requireAdmin, (req: any, res) => {
-    const { username, password, email, role, display_name } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-    const pwCheck = validatePassword(password);
-    if (!pwCheck.ok) return res.status(400).json({ error: 'Password too weak', details: pwCheck.errors });
+    const {
+      username,
+      password,
+      password_confirm,
+      email,
+      role,
+      display_name,
+      generate_temp_password,
+      must_change_password,
+    } = req.body;
+    if (!username) return res.status(400).json({ error: 'username required' });
+
+    let effectivePassword: string | null = null;
+    let tempPasswordToReturn: string | null = null;
+
+    if (generate_temp_password) {
+      // 16-char URL-safe random — strong enough that complexity rules don't apply
+      tempPasswordToReturn = crypto.randomBytes(12).toString('base64url');
+      effectivePassword = tempPasswordToReturn;
+    } else {
+      if (!password) return res.status(400).json({ error: 'password required' });
+      if (password_confirm !== undefined && password !== password_confirm) {
+        return res.status(400).json({ error: 'Passwords do not match' });
+      }
+      const pwCheck = validatePassword(password);
+      if (!pwCheck.ok) return res.status(400).json({ error: 'Password too weak', details: pwCheck.errors });
+      effectivePassword = password;
+    }
+
+    // Default behaviour: when admin sets the password manually, still require change on first login
+    // unless the admin explicitly opts out. When generating a temp password, always require change.
+    const mustChange = generate_temp_password
+      ? 1
+      : (must_change_password === false ? 0 : 1);
+
     try {
-      const hashed = bcrypt.hashSync(password, 10);
+      const hashed = bcrypt.hashSync(effectivePassword!, 10);
       const result: any = db.prepare(
-        `INSERT INTO users (username, password, email, role, display_name, password_changed_at, created_at)
-         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
-      ).run(username, hashed, email || null, role || 'TIER1', display_name || null);
-      writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${role || 'TIER1'})`);
-      const created = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(result.lastInsertRowid);
+        `INSERT INTO users (username, password, email, role, display_name, password_changed_at, created_at, must_change_password, status)
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'active')`
+      ).run(username, hashed, email || null, role || 'TIER1', display_name || null, mustChange);
+      writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${role || 'TIER1'})${mustChange ? ' [must change pw]' : ''}`);
+      const created: any = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(result.lastInsertRowid);
+      // Return the temp password ONCE in the response (it's never stored in plaintext anywhere else)
+      if (tempPasswordToReturn) (created as any).temp_password = tempPasswordToReturn;
+      (created as any).must_change_password = !!mustChange;
       res.json(created);
     } catch (err: any) {
       if (err.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Username already exists' });
@@ -1937,7 +2116,7 @@ async function startServer() {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
     if (!bcrypt.compareSync(currentPassword, user.password))
       return res.status(401).json({ message: 'Current password is incorrect.' });
-    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now') WHERE id = ?").run(bcrypt.hashSync(newPassword, 10), req.user.id);
+    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now'), must_change_password = 0 WHERE id = ?").run(bcrypt.hashSync(newPassword, 10), req.user.id);
     writeAudit(req.user.id, 'PASSWORD_CHANGED', `User ${user.username} changed password`);
     res.json({ message: 'Password updated.' });
   });
@@ -1961,9 +2140,9 @@ async function startServer() {
   });
 
   // ── Admin ─────────────────────────────────────────────────────────────────
-  app.post('/api/admin/reset-alerts', authenticate, requireAdmin, (req: any, res) => {
+  app.post('/api/admin/reset-alerts', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const result = db.prepare(`UPDATE alerts SET status='NEW', ai_analysis=NULL, mitre_attack=NULL, remediation_steps=NULL, email_sent=0`).run();
-    writeAudit(req.user?.id, 'ALERTS_RESET', `Reset ${result.changes} alerts to NEW`);
+    writeAudit(req.user?.id, 'ALERTS_RESET', `Reset ${result.changes} alerts to NEW [step-up verified]`);
     res.json({ reset: result.changes });
   });
 
@@ -1987,7 +2166,7 @@ async function startServer() {
 
   // Wipe everything currently visible in the Incidents tab (TRIAGED / ESCALATED / CLOSED / ANALYZING).
   // FP archive entries (FALSE_POSITIVE / FP_CONFIRMED) are preserved.
-  app.post('/api/admin/clear-investigation', authenticate, requireAdmin, (req: any, res) => {
+  app.post('/api/admin/clear-investigation', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const STATUSES = ['TRIAGED', 'ESCALATED', 'CLOSED', 'ANALYZING'];
     const placeholders = STATUSES.map(() => '?').join(',');
     const ids = db.prepare(`SELECT id FROM alerts WHERE status IN (${placeholders})`).all(...STATUSES) as any[];
@@ -1995,7 +2174,7 @@ async function startServer() {
 
     try {
       const deleted = deleteAlertsAndChildren(idList);
-      writeAudit(req.user?.id, 'INVESTIGATION_CLEARED', `Deleted ${deleted} alerts from Incidents queue`);
+      writeAudit(req.user?.id, 'INVESTIGATION_CLEARED', `Deleted ${deleted} alerts from Incidents queue [step-up verified]`);
       io.emit('alerts_cleared', { ids: idList });
       res.json({ ok: true, deleted });
     } catch (err: any) {
@@ -2005,7 +2184,7 @@ async function startServer() {
   });
 
   // Wipe the FP Archive (FALSE_POSITIVE + FP_CONFIRMED). Incidents queue is preserved.
-  app.post('/api/admin/clear-fp-archive', authenticate, requireAdmin, (req: any, res) => {
+  app.post('/api/admin/clear-fp-archive', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const STATUSES = ['FALSE_POSITIVE', 'FP_CONFIRMED'];
     const placeholders = STATUSES.map(() => '?').join(',');
     const ids = db.prepare(`SELECT id FROM alerts WHERE status IN (${placeholders})`).all(...STATUSES) as any[];
@@ -2013,7 +2192,7 @@ async function startServer() {
 
     try {
       const deleted = deleteAlertsAndChildren(idList);
-      writeAudit(req.user?.id, 'FP_ARCHIVE_CLEARED', `Deleted ${deleted} alerts from FP archive`);
+      writeAudit(req.user?.id, 'FP_ARCHIVE_CLEARED', `Deleted ${deleted} alerts from FP archive [step-up verified]`);
       io.emit('alerts_cleared', { ids: idList });
       res.json({ ok: true, deleted });
     } catch (err: any) {
@@ -2022,8 +2201,121 @@ async function startServer() {
     }
   });
 
-  app.get('/api/audit-logs', authenticate, requireAdmin, (_req, res) => {
-    res.json(db.prepare('SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 100').all());
+  // Helper: build a filtered audit_logs query from the same query-string shape used by
+  // the JSON and CSV endpoints. Returns { sql, params, countSql, countParams }.
+  function buildAuditFilter(q: any) {
+    const conditions: string[] = [];
+    const params: any[] = [];
+    if (q.user_id) {
+      conditions.push('a.user_id = ?');
+      params.push(parseInt(String(q.user_id)));
+    }
+    if (q.action) {
+      conditions.push('a.action = ?');
+      params.push(String(q.action));
+    }
+    if (q.from) {
+      conditions.push('a.timestamp >= ?');
+      params.push(String(q.from));
+    }
+    if (q.to) {
+      conditions.push('a.timestamp <= ?');
+      params.push(String(q.to));
+    }
+    if (q.q) {
+      conditions.push('(a.details LIKE ? OR a.action LIKE ? OR u.username LIKE ?)');
+      const like = `%${String(q.q)}%`;
+      params.push(like, like, like);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    return { where, params };
+  }
+
+  app.get('/api/audit-logs', authenticate, requireAdmin, (req: any, res) => {
+    const page = Math.max(1, parseInt(String(req.query.page || '1')));
+    const pageSize = Math.min(200, Math.max(1, parseInt(String(req.query.pageSize || '50'))));
+    const offset = (page - 1) * pageSize;
+    const { where, params } = buildAuditFilter(req.query);
+    const baseSql = `FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ${where}`;
+    const total = (db.prepare(`SELECT COUNT(*) AS c ${baseSql}`).get(...params) as any).c;
+    const rows = db
+      .prepare(
+        `SELECT a.id, a.timestamp, a.user_id, a.action, a.details, u.username
+         ${baseSql}
+         ORDER BY a.timestamp DESC
+         LIMIT ? OFFSET ?`
+      )
+      .all(...params, pageSize, offset);
+    res.json({ rows, total, page, pageSize });
+  });
+
+  // Aggregated list of distinct audit actions — drives the "Action" filter dropdown.
+  app.get('/api/audit-logs/actions', authenticate, requireAdmin, (_req, res) => {
+    const rows = db
+      .prepare('SELECT DISTINCT action FROM audit_logs WHERE action IS NOT NULL ORDER BY action ASC')
+      .all() as Array<{ action: string }>;
+    res.json(rows.map((r) => r.action));
+  });
+
+  app.get('/api/audit-logs/export.csv', authenticate, requireAdmin, (req: any, res) => {
+    const { where, params } = buildAuditFilter(req.query);
+    const baseSql = `FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ${where}`;
+    const rows: any[] = db
+      .prepare(
+        `SELECT a.timestamp, u.username, a.action, a.details
+         ${baseSql}
+         ORDER BY a.timestamp DESC
+         LIMIT 50000`
+      )
+      .all(...params);
+    const csvEscape = (v: any) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const header = 'timestamp,username,action,details\n';
+    const body = rows
+      .map((r) => [r.timestamp, r.username || '', r.action, r.details].map(csvEscape).join(','))
+      .join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(header + body);
+  });
+
+  // Aggregated failed-login dashboard data.
+  app.get('/api/admin/failed-logins', authenticate, requireAdmin, (req: any, res) => {
+    const windowParam = String(req.query.window || '24h');
+    const hours = windowParam === '7d' ? 168 : 24;
+    const since = new Date(Date.now() - hours * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    const total = (db
+      .prepare("SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'LOGIN_FAILED' AND timestamp >= ?")
+      .get(since) as any).c;
+    const byUser = db
+      .prepare(
+        `SELECT COALESCE(u.username, 'unknown') AS username, COUNT(*) AS count
+         FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+         WHERE a.action = 'LOGIN_FAILED' AND a.timestamp >= ?
+         GROUP BY username ORDER BY count DESC LIMIT 10`
+      )
+      .all(since);
+    // Bucket per hour for sparkline
+    const buckets: Array<{ hour: string; count: number }> = [];
+    const now = new Date();
+    for (let i = hours - 1; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 3600 * 1000);
+      buckets.push({ hour: d.toISOString().slice(0, 13), count: 0 });
+    }
+    const rows: any[] = db
+      .prepare(
+        `SELECT substr(timestamp, 1, 13) AS hour, COUNT(*) AS count
+         FROM audit_logs WHERE action = 'LOGIN_FAILED' AND timestamp >= ?
+         GROUP BY hour`
+      )
+      .all(since);
+    const map = new Map(rows.map((r) => [String(r.hour).replace(' ', 'T'), Number(r.count)]));
+    for (const b of buckets) if (map.has(b.hour)) b.count = map.get(b.hour)!;
+    res.json({ window: windowParam, since, total, byUser, sparkline: buckets });
   });
 
   // ── Ingest ────────────────────────────────────────────────────────────────
@@ -2233,7 +2525,7 @@ async function startServer() {
     });
   });
 
-  app.patch('/api/ai/models/:phase', authenticate, requireAdmin, (req, res) => {
+  app.patch('/api/ai/models/:phase', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const { phase } = req.params;
     const { model } = req.body || {};
     if (!isAgentPhase(phase)) return res.status(400).json({ error: 'Invalid phase' });
@@ -2241,7 +2533,9 @@ async function startServer() {
     const isLocal      = typeof model === 'string' && model.startsWith('local::');
     if (!isOpenRouter && !isLocal)
       return res.status(400).json({ error: 'Invalid model selection' });
+    const previous: any = db.prepare('SELECT model FROM agent_settings WHERE phase = ?').get(phase);
     db.prepare(`INSERT INTO agent_settings (phase, model) VALUES (?, ?) ON CONFLICT(phase) DO UPDATE SET model=excluded.model`).run(phase, model);
+    writeAudit(req.user?.id, 'AI_MODEL_CHANGED', `Phase '${phase}': ${previous?.model || '(default)'} → ${model} [step-up verified]`);
     res.json({ phase, model, assignments: getAgentModelAssignments() });
   });
 
@@ -2252,12 +2546,13 @@ async function startServer() {
     res.json({ url, enabled });
   });
 
-  app.patch('/api/local-llm/config', authenticate, requireAdmin, (req: any, res) => {
+  app.patch('/api/local-llm/config', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const { url, enabled } = req.body;
     const upd = db.prepare('INSERT INTO local_llm_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
-    if (url     !== undefined) { upd.run('url',     String(url)); setLocalLLMBaseUrl(String(url)); }
-    if (enabled !== undefined) { upd.run('enabled', enabled ? '1' : '0'); }
-    writeAudit(req.user?.id, 'LOCAL_LLM_CONFIG', `Local LLM config updated`);
+    const changes: string[] = [];
+    if (url     !== undefined) { upd.run('url',     String(url));        setLocalLLMBaseUrl(String(url)); changes.push(`url=${url}`); }
+    if (enabled !== undefined) { upd.run('enabled', enabled ? '1' : '0'); changes.push(`enabled=${enabled}`); }
+    writeAudit(req.user?.id, 'LOCAL_LLM_CONFIG', `Local LLM config updated: ${changes.join(', ')} [step-up verified]`);
     res.json({ ok: true });
   });
 
