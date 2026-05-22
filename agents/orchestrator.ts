@@ -18,6 +18,7 @@ import { commitAsync         } from "./memory/insights.js";
 import { writeWorkingMemory  } from "./memory/working.js";
 import { lookupAssetContext, extractAssetValuesFromAlert } from "./memory/assets.js";
 import { checkSuppressionRules } from "./memory/suppression.js";
+import { recordReasoning, fetchPriorReasoning } from "./memory/reasoning.js";
 
 export interface OrchestrationOutput {
   ai_analysis:      string;
@@ -143,16 +144,18 @@ export async function runHubAndSwarm(
   // ── 1. Pre-flight intelligence (all run in parallel, always) ─────────────
   const queryText   = `${alert.description ?? ""}`.slice(0, 1500);
   const assetValues = extractAssetValuesFromAlert(alert);
-  const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
+  const [recallHits, iocPreflightValues, assetCtx, priorReasoning] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
     Promise.resolve(lookupAssetContext(assetValues)),
+    fetchPriorReasoning(queryText, 3, 0.7).catch(() => []),
   ]);
   const iocPreflight = lookupIocs(iocPreflightValues);
 
-  if (recallHits.length > 0)   log(`Recall: ${recallHits.length} similar past incident(s)`);
-  if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
-  if (assetCtx.length > 0)     log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+  if (recallHits.length > 0)     log(`Recall: ${recallHits.length} similar past incident(s)`);
+  if (iocPreflight.length > 0)   log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
+  if (assetCtx.length > 0)       log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+  if (priorReasoning.length > 0) log(`Prior reasoning: ${priorReasoning.length} similar incident(s) with captured reasoning`);
 
   // ── 1.5 Asset fast-FP (deterministic, pre-LLM) ────────────────────────────
   // If every asset value is known fp_default AND no high-risk keywords, archive without LLM cost.
@@ -201,9 +204,11 @@ export async function runHubAndSwarm(
     iocMemoryHits:   iocPreflight,
     memoryFpHint,
     suppressionHit,   // rule-based signal
+    priorReasoning,   // cross-agent memory read — what prior agents concluded
   }, modelFor("analysis"), ctx);
   ctx.agentLogs.push(...(triageRes.agentLogs ?? []));
   const triage = triageRes.analysis;
+  recordReasoning({ alertId: alert.id, traceId, agent: "analysis", step: 2, reasoning: triage?.reasoning });
 
   // ── 3. FP short-circuit (triage has now seen all evidence) ────────────────
   if (triage?.is_false_positive && (triage?.false_positive_confidence ?? 0) > 0.85) {
@@ -267,6 +272,11 @@ export async function runHubAndSwarm(
     }
   }
 
+  // Capture investigator reasoning before composers run.
+  for (const [agent, data] of Object.entries(workerResults)) {
+    recordReasoning({ alertId: alert.id, traceId, agent, step: 5, reasoning: (data as any)?.reasoning });
+  }
+
   // ── 6. Composers (sequential, each reads prior outputs) ──────────────────
   const composerState = { alert, recentAlerts, analysis: triage, ...workerResults };
   let ticket: any = null, responsePlan: any = null, validation: any = null;
@@ -275,16 +285,19 @@ export async function runHubAndSwarm(
     const r = await ticketingNode(composerState, modelFor("ticketing"), ctx);
     ctx.agentLogs.push(...(r.agentLogs ?? []));
     ticket = r.ticket;
+    recordReasoning({ alertId: alert.id, traceId, agent: "ticketing", step: 6, reasoning: ticket?.reasoning });
   }
   if (!plan.composers_skip.includes("response")) {
     const r = await responseNode({ ...composerState, ticket }, modelFor("response"), ctx);
     ctx.agentLogs.push(...(r.agentLogs ?? []));
     responsePlan = r.responsePlan;
+    recordReasoning({ alertId: alert.id, traceId, agent: "response", step: 7, reasoning: responsePlan?.reasoning });
   }
   if (!plan.composers_skip.includes("validation")) {
     const r = await validationNode({ ...composerState, ticket, responsePlan }, modelFor("validation"), ctx);
     ctx.agentLogs.push(...(r.agentLogs ?? []));
     validation = r.validation;
+    recordReasoning({ alertId: alert.id, traceId, agent: "validation", step: 8, reasoning: validation?.reasoning });
   }
 
   // ── 6.5 FP confidence aggregator — combine signals into one score ────────
@@ -361,19 +374,24 @@ export async function runFpScan(
   // All run in parallel so FP scan has the same evidence quality as full orchestration
   const queryText   = `${alert.description ?? ""}`.slice(0, 1500);
   const assetValues = extractAssetValuesFromAlert(alert);
-  const [recallHits, iocPreflightValues, assetCtx, corrRes] = await Promise.all([
+  const [recallHits, iocPreflightValues, assetCtx, corrRes, priorReasoning] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
     Promise.resolve(lookupAssetContext(assetValues)),
     correlationNode({ alert, recentAlerts }, modelFor("correlation"), ctx).catch(() => null),
+    fetchPriorReasoning(queryText, 3, 0.7).catch(() => []),
   ]);
   const iocPreflight = lookupIocs(iocPreflightValues);
   ctx.agentLogs.push(...(corrRes?.agentLogs ?? []));
+  if (corrRes?.correlation) {
+    recordReasoning({ alertId: alert.id, traceId, agent: "correlation", step: 1, reasoning: corrRes.correlation.reasoning });
+  }
 
-  if (recallHits.length > 0)   log(`Recall: ${recallHits.length} similar past incident(s)`);
-  if (iocPreflight.length > 0) log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
-  if (assetCtx.length > 0)     log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
-  if (corrRes?.correlation)     log(`Correlation: campaign_detected=${corrRes.correlation.campaign_detected}, escalation_needed=${corrRes.correlation.escalation_needed}`);
+  if (recallHits.length > 0)     log(`Recall: ${recallHits.length} similar past incident(s)`);
+  if (iocPreflight.length > 0)   log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
+  if (assetCtx.length > 0)       log(`Asset context: ${assetCtx.map(a => `${a.value}=${a.role}${a.fp_default ? ' (FP-by-default)' : ''}`).join(', ')}`);
+  if (corrRes?.correlation)      log(`Correlation: campaign_detected=${corrRes.correlation.campaign_detected}, escalation_needed=${corrRes.correlation.escalation_needed}`);
+  if (priorReasoning.length > 0) log(`Prior reasoning: ${priorReasoning.length} similar incident(s) with captured reasoning`);
 
   const fpSimilar    = recallHits.find((h: any) => h.outcome === 'FALSE_POSITIVE' && h.similarity > 0.85);
   const fpAsset      = assetCtx.find(a => a.fp_default === 1);
@@ -397,9 +415,11 @@ export async function runFpScan(
     memoryFpHint,
     suppressionHit,         // rule-based signal
     correlationResult:      corrRes?.correlation ?? null,   // campaign/escalation signal
+    priorReasoning,         // cross-agent memory read
   }, modelFor("analysis"), ctx);
   ctx.agentLogs.push(...(triageRes.agentLogs ?? []));
   const triage = triageRes.analysis;
+  recordReasoning({ alertId: alert.id, traceId, agent: "analysis", step: 2, reasoning: triage?.reasoning });
 
   // ── 3. FP decision — threshold 0.72 (scan is purpose-built for FP detection)
   // Correlation can VETO: if campaign_detected=true or escalation_needed=true,
@@ -532,6 +552,11 @@ export async function runInvestigation(
     }
   }
 
+  // Capture investigator reasoning before composers run.
+  for (const [agent, data] of Object.entries(workerResults)) {
+    recordReasoning({ alertId: alert.id, traceId, agent, step: 5, reasoning: (data as any)?.reasoning });
+  }
+
   // ── 6. Composers ──────────────────────────────────────────────────────
   const composerState = { alert, recentAlerts, analysis: triage, ...workerResults };
   let ticket: any = null, responsePlan: any = null, validation: any = null;
@@ -540,16 +565,19 @@ export async function runInvestigation(
     const r = await ticketingNode(composerState, modelFor("ticketing"), ctx);
     ctx.agentLogs.push(...(r.agentLogs ?? []));
     ticket = r.ticket;
+    recordReasoning({ alertId: alert.id, traceId, agent: "ticketing", step: 6, reasoning: ticket?.reasoning });
   }
   if (!plan.composers_skip.includes("response")) {
     const r = await responseNode({ ...composerState, ticket }, modelFor("response"), ctx);
     ctx.agentLogs.push(...(r.agentLogs ?? []));
     responsePlan = r.responsePlan;
+    recordReasoning({ alertId: alert.id, traceId, agent: "response", step: 7, reasoning: responsePlan?.reasoning });
   }
   if (!plan.composers_skip.includes("validation")) {
     const r = await validationNode({ ...composerState, ticket, responsePlan }, modelFor("validation"), ctx);
     ctx.agentLogs.push(...(r.agentLogs ?? []));
     validation = r.validation;
+    recordReasoning({ alertId: alert.id, traceId, agent: "validation", step: 8, reasoning: validation?.reasoning });
   }
 
   // ── 6.5 FP confidence aggregator ─────────────────────────────────────────

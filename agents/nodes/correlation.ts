@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
+import { ReasoningSchema, REASONING_PROMPT_INSTRUCTION, REASONING_JSON_EXAMPLE } from "../memory/reasoning.js";
 
 // related_alerts is intentionally NOT in this schema — the LLM reliably drops
 // array fields. Instead, findRelatedAlerts() populates them deterministically.
@@ -11,6 +12,7 @@ const CorrelationSchema = z.object({
   escalation_needed:    z.boolean().default(false),
   kill_chain_stage:     z.string().default("UNKNOWN"),
   confidence:           z.number().min(0).max(1).default(0),
+  reasoning:            ReasoningSchema.optional(),
 });
 
 interface AlertSummary {
@@ -79,7 +81,8 @@ export async function correlationNode(state: any, model: string = DEFAULT_AGENT_
   "campaign_description": "<what the campaign appears to be>",
   "escalation_needed": false,
   "kill_chain_stage": "<Reconnaissance|Weaponization|Delivery|Exploitation|Installation|C2|Actions on Objectives>",
-  "confidence": 0.8
+  "confidence": 0.8,
+  ${REASONING_JSON_EXAMPLE}
 }
 
 CAMPAIGN DETECTION RULES — set campaign_detected=true when ANY of these patterns hold:
@@ -88,7 +91,10 @@ CAMPAIGN DETECTION RULES — set campaign_detected=true when ANY of these patter
 3. SHARED INFRASTRUCTURE: The same agent_name/hostname is victim in multiple alerts.
 4. PIVOT CHAIN: The attacker's source IP changes as they move laterally — do NOT require the same source_ip across all alerts.
 
-Only consider alerts within the 72-hour window provided.`,
+Only consider alerts within the 72-hour window provided.
+
+${REASONING_PROMPT_INSTRUCTION}
+For correlation specifically: evidence_for/against must cite specific alert IDs from the recent set that link or fail to link. rejected_hypotheses should list narratives you considered and discarded (e.g. "coordinated DDoS — rejected, only 2 alerts and no traffic-volume signal").`,
     userPrompt: `Current alert (id: ${state.alert.id}):
 ${JSON.stringify(state.alert, null, 2)}
 
@@ -101,6 +107,13 @@ ${recentSummary.map((a, i) => `[${i + 1}] src=${a.source_ip || '—'} dst=${a.de
       escalation_needed:    false,
       kill_chain_stage:     "Exploitation",
       confidence:           0,
+      reasoning: {
+        decision:            "Correlation agent did not respond — assuming isolated event.",
+        evidence_for:        [],
+        evidence_against:    [],
+        rejected_hypotheses: [],
+        confidence:          0,
+      },
     },
     ctx,
   });

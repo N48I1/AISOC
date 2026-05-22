@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
+import { ReasoningSchema, REASONING_PROMPT_INSTRUCTION, REASONING_JSON_EXAMPLE } from "../memory/reasoning.js";
 
 const ValidationSchema = z.object({
   is_valid:           z.boolean().default(false),
@@ -9,6 +10,7 @@ const ValidationSchema = z.object({
   missing_elements:   z.array(z.string()).default([]),
   recommendation:     z.enum(["CLOSE", "ESCALATE", "MONITOR", "INVESTIGATE_FURTHER"]).default("INVESTIGATE_FURTHER"),
   confidence:         z.number().min(0).max(1).default(0),
+  reasoning:          ReasoningSchema.optional(),
 });
 
 const SLA_WINDOWS: Record<string, number> = {
@@ -59,7 +61,8 @@ export async function validationNode(state: any, model: string = DEFAULT_AGENT_M
   "completeness_score": 90,
   "missing_elements": [],
   "recommendation": "<CLOSE|ESCALATE|MONITOR|INVESTIGATE_FURTHER>",
-  "confidence": 0.85
+  "confidence": 0.85,
+  ${REASONING_JSON_EXAMPLE}
 }
 
 SLA POLICY (use alert_age_minutes and sla_window_minutes from the context to compute):
@@ -67,7 +70,10 @@ SLA POLICY (use alert_age_minutes and sla_window_minutes from the context to com
 - SLA_AT_RISK = alert_age_minutes between 75% and 100% of sla_window_minutes
 - SLA_BREACHED= alert_age_minutes > sla_window_minutes
 
-Severity windows: CRITICAL=15 min, HIGH=60 min, MEDIUM=240 min, LOW=1440 min.`,
+Severity windows: CRITICAL=15 min, HIGH=60 min, MEDIUM=240 min, LOW=1440 min.
+
+${REASONING_PROMPT_INSTRUCTION}
+For validation: evidence_for/against should reference what was/wasn't completed by upstream agents and the SLA timing. rejected_hypotheses should list other recommendations you considered (e.g. "CLOSE — rejected, response actions still pending approval").`,
     userPrompt: `Incident context:\n${JSON.stringify(promptCtx, null, 2)}`,
     fallback: {
       is_valid:           false,
@@ -76,6 +82,13 @@ Severity windows: CRITICAL=15 min, HIGH=60 min, MEDIUM=240 min, LOW=1440 min.`,
       missing_elements:   ["Validation unavailable — LLM did not respond"],
       recommendation:     "INVESTIGATE_FURTHER",
       confidence:         0,
+      reasoning: {
+        decision:            "Validation agent did not respond — recommending further investigation by default.",
+        evidence_for:        [],
+        evidence_against:    [],
+        rejected_hypotheses: [],
+        confidence:          0,
+      },
     },
     ctx,
   });

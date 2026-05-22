@@ -2,6 +2,7 @@ import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 import { mispSearchIocs } from "../shared/misp.js";
+import { ReasoningSchema, REASONING_PROMPT_INSTRUCTION, REASONING_JSON_EXAMPLE } from "../memory/reasoning.js";
 
 const IntelSchema = z.object({
   mitre_attack:      z.array(z.string()).default([]),
@@ -10,6 +11,7 @@ const IntelSchema = z.object({
   threat_actor_type: z.enum(["nation-state", "cybercriminal", "insider", "hacktivist", "unknown"]).default("unknown"),
   campaign_family:   z.string().nullable().default(null),
   confidence:        z.number().min(0).max(1).default(0),
+  reasoning:         ReasoningSchema.optional(),
 });
 
 export async function threatIntelNode(state: any, model: string = DEFAULT_AGENT_MODELS.intel, ctx?: RunContext) {
@@ -69,8 +71,12 @@ Respond ONLY with valid JSON — no markdown, no commentary:
   "intel_summary": "<2-3 sentence assessment citing MISP event IDs if any>",
   "threat_actor_type": "<nation-state|cybercriminal|insider|hacktivist|unknown>",
   "campaign_family": "<known malware/campaign name if MISP provides one, else your best inference or null>",
-  "confidence": 0.85
-}`,
+  "confidence": 0.85,
+  ${REASONING_JSON_EXAMPLE}
+}
+
+${REASONING_PROMPT_INSTRUCTION}
+For threat intel specifically: evidence_for/against should cite the MISP hits (or lack thereof), specific IOC types observed, and known TTP patterns. rejected_hypotheses should list alternative actor classifications you considered (e.g. "nation-state — rejected, no zero-day indicators").`,
     userPrompt: `IOCs: ${JSON.stringify(iocs)}
 Alert: ${alert?.description || ""} | Rule: ${alert?.rule_id || ""}
 
@@ -82,6 +88,13 @@ ${mispBlock}`,
       threat_actor_type: "unknown",
       campaign_family:   null,
       confidence:        0,
+      reasoning: {
+        decision:            "Threat intel agent did not respond — no actor or campaign assessment available.",
+        evidence_for:        [],
+        evidence_against:    [],
+        rejected_hypotheses: [],
+        confidence:          0,
+      },
     },
     ctx,
   });

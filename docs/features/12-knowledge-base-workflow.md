@@ -189,35 +189,56 @@ This asymmetry is intentional for v1. Wiring the UI search through the embedding
 
 ## 5. Workflow D — **Feedback Loop** (analyst teaches the system)
 
-> Trigger: Analyst marks an alert as FP, escalates, or accepts an FP suggestion.
+> Trigger: Analyst marks an alert as FP, escalates, overrides an FP, reclassifies an incident as FP, or accepts an FP suggestion.
 
 ### Sequence
 
 ```
-1. analyst    → ui          : click "Confirm FP" / "Override FP"
-2. ui         → server      : POST /api/alerts/:id/confirm-fp
-3. server     → learning    : reinforceFeedback(alertId, outcome='FALSE_POSITIVE')
-4. learning   → db          : for each IOC in alert: UPDATE ioc_memory SET fp_count++
+1. analyst   → ui            : click "Confirm FP" / "Override FP" / "Escalate" / "Reclassify FP"
+2. ui        → server        : POST /api/alerts/:id/confirm-fp        (FALSE_POSITIVE)
+                               POST /api/alerts/:id/override-fp       (TRUE_POSITIVE)
+                               POST /api/alerts/:id/escalate          (TRUE_POSITIVE)
+                               POST /api/incidents/:id/reclassify-fp  (FALSE_POSITIVE — every linked alert)
+3. server    → applyFeedbackToMemory(alertId, verdict, ctx)
+                               ├── extractIocsForFeedback(alertId)
+                               │     ├── triage_data JSON  (LLM-extracted IOCs — best)
+                               │     ├── alert raw fields (source_ip, dest_ip, agent_name, hostname, user)
+                               │     └── extractAssetValuesFromAlert (fallback)
+                               └── reinforceFeedback(iocs, verdict)
+                                     └── per-IOC UPDATE ioc_memory SET fp_count++ or tp_count++
+                                         (TP override on auto-learned asset → revoke fp_default)
+4. server    → processAutoLearning()    (ran inline, not just on the cron)
+                               └── promote any IOC that just crossed
+                                   fp_ratio ≥ 0.95 AND total ≥ 10
+                                   into asset_context (source='auto-learned', fp_default=1)
+5. server    → writeAudit       FP_CONFIRMED / FP_OVERRIDDEN / ALERT_ESCALATED / INCIDENT_RECLASSIFIED_FP
+                               (logs IOC count and how many were auto-registered)
 
-[Periodic background sweep — e.g. nightly or on-demand]
-5. learning   → db          : SELECT FROM ioc_memory WHERE
+[Cron tick — every 5 minutes, in addition to the per-feedback inline call]
+6. server    → processAutoLearning()    (safety net for non-analyst commits)
+
+[FP suggestions UI — analyst can accept partially-confident promotions]
+7. learning  → db          : SELECT FROM ioc_memory WHERE
                                   (fp_count + tp_count) >= 5
                               AND fp_count / (fp_count + tp_count) >= 0.85
-6. learning   → db          : INSERT INTO fp_suggestions (one row per high-FP IOC)
-7. ui (NoiseFilter) → server: GET /api/analytics/fp-suggestions
-8. analyst    → ui          : click "Accept" on a suggestion
-9. ui         → server      : POST /api/analytics/accept-suggestion
-10. server    → db          : INSERT INTO asset_context (fp_default=1, source='manual')
+8. ui (NoiseFilter) → server: GET /api/analytics/fp-suggestions
+9. analyst    → ui         : click "Accept" on a suggestion
+10. ui        → server     : POST /api/analytics/accept-suggestion
+11. server    → db         : INSERT INTO asset_context (fp_default=1, source='manual')
 
-[Next investigation that touches this IOC]
-11. recall    → db          : lookupAssetContext returns fp_default=1
-12. triage    → LLM         : prompt now contains "[fp_default=TRUE]" hint
+[Next investigation that touches the same IOC]
+12. recall   → db          : lookupAssetContext returns fp_default=1
+13. triage   → LLM         : prompt now contains "[fp_default=TRUE]" hint
                               ──→ much higher likelihood of FP verdict
 ```
 
 ### Auto-promotion (no analyst click)
 
-When `fp_ratio ≥ 0.95` and `(fp_count + tp_count) ≥ 10`, the learning system **auto-inserts** an `asset_context` row with `source='system_seed'` instead of waiting for analyst approval.
+When `fp_ratio ≥ 0.95` and `(fp_count + tp_count) ≥ 10`, the learning system auto-inserts an `asset_context` row with `source='auto-learned'` (and `fp_default=1`) without waiting for analyst approval. If a later analyst override (TRUE_POSITIVE) lands on an auto-learned asset, `reinforceFeedback` revokes the `fp_default=1` and annotates the description with `[REVOKED by TP feedback]` so the agent stops short-circuiting on it.
+
+### What "Reclassify FP" does to the counters
+
+When an analyst reclassifies an incident as FP, every linked alert had previously contributed `tp_count++` (at escalate time). Reclassification appends an `fp_count++` for the same IOCs but does **not** decrement the prior `tp_count`: the analyst genuinely thought it was real at the time, and erasing that signal would distort calibration tracking. The empirical `fp_ratio` rebalances on its own as both counters coexist.
 
 ---
 
@@ -267,6 +288,47 @@ When `fp_ratio ≥ 0.95` and `(fp_count + tp_count) ≥ 10`, the learning system
 
 ---
 
+## 6.5 Workflow E — **Reasoning Capture + Cross-Agent Memory Read**
+
+> Trigger: Every LLM-backed agent run. Captures structured reasoning per agent and reuses past reasoning to maintain continuity across investigations.
+
+Every node (`analysis`, `intel`, `knowledge`, `correlation`, `ticketing`, `response`, `validation`) emits a `reasoning` block in its structured output:
+
+```
+reasoning: {
+  decision:             string,    // one-sentence conclusion
+  evidence_for:         string[],  // 1-4 concrete signals supporting it
+  evidence_against:     string[],  // 0-3 counter-signals
+  rejected_hypotheses:  string[],  // alternatives considered and why dropped
+  confidence:           number     // 0..1, calibrated
+}
+```
+
+### Sequence
+
+```
+1. orchestrator → fetchPriorReasoning(description, k=3, threshold=0.7)
+                  ├── semanticStore.search(...)         → similar alert IDs
+                  └── listReasoningForAlerts(ids, 2)    → 2 most-recent reasoning rows each
+2. orchestrator → triage node                state includes priorReasoning[]
+                  └── triage prompt block "PRIOR AGENT REASONING ON SIMILAR INCIDENTS"
+                      shows decision / evidence_for / evidence_against / rejected
+3. each LLM node → emits structured reasoning per its job
+4. orchestrator → recordReasoning({alertId, traceId, agent, step, reasoning})
+                  └── INSERT INTO incident_reasoning
+5. ui (incident panel) → GET /api/alerts/:id/reasoning
+                       → GET /api/incidents/:id/reasoning  (aggregates all linked alerts)
+```
+
+### Why this matters
+
+Without prior reasoning injection, every triage starts from a blank slate. With it:
+- A repeat scenario the system already saw is recognised: "the previous triage on this asset rejected lateral-movement because no SMB traffic — same pattern here."
+- Rejected hypotheses propagate forward: if a past run considered and discarded "insider data theft", a new run sees that and either confirms the same rejection or explicitly counters it.
+- The UI's "Reasoning timeline" can render cards per agent showing decision / evidence / rejected hypotheses — the visible chain of thought.
+
+---
+
 ## 7. Key Files (for traceability when building the diagram)
 
 ```
@@ -278,10 +340,11 @@ agents/memory/
   ├── assets.ts                  ← lookupAssetContext(), extractAssetValues()
   ├── store.ts                   ← SemanticStore (cosine search over BLOB embeddings)
   ├── working.ts                 ← writeWorkingMemory()
-  └── learning.ts                ← reinforceFeedback(), scanForFpSuggestions()
+  ├── reasoning.ts               ← ReasoningSchema, recordReasoning, fetchPriorReasoning
+  └── learning.ts                ← reinforceFeedback(), processAutoLearning(), scanForFpSuggestions()
 
 agents/nodes/
-  ├── analysis.ts                ← triage agent (consumes memory hints)
+  ├── analysis.ts                ← triage agent (consumes memory hints + priorReasoning)
   ├── intel.ts                   ← MITRE mapping
   ├── knowledge.ts               ← ragKnowledgeNode (consumes playbooks)
   ├── correlate.ts               ← cross-alert correlation
@@ -296,8 +359,17 @@ server.ts
   ├── /api/memory/insights              ← KB browse: incidents
   ├── /api/memory/iocs/all              ← KB browse: IOCs
   ├── /api/playbooks  (GET/POST/PATCH/DELETE)
-  ├── /api/alerts/:id/confirm-fp        ← feedback loop entry
-  └── /api/analytics/fp-suggestions     ← learning output
+  ├── /api/alerts/:id/confirm-fp        ← feedback loop: FALSE_POSITIVE
+  ├── /api/alerts/:id/override-fp       ← feedback loop: TRUE_POSITIVE
+  ├── /api/alerts/:id/escalate          ← feedback loop: TRUE_POSITIVE (via escalation)
+  ├── /api/incidents/:id/reclassify-fp  ← feedback loop: FALSE_POSITIVE (every linked alert)
+  ├── /api/alerts/:id/reasoning         ← reasoning timeline for one alert
+  ├── /api/incidents/:id/reasoning      ← reasoning timeline aggregated across linked alerts
+  └── /api/analytics/fp-suggestions     ← learning output (suggestions to accept)
+
+server.ts (background)
+  ├── 5-min cron: processAutoLearning()       ← safety net for non-analyst commits
+  └── inline:     processAutoLearning()       ← runs after every analyst feedback
 
 src/App.tsx
   └── KnowledgeBaseTab                  ← UI surface (Workflow C)

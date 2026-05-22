@@ -3,7 +3,7 @@ import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogO
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, getIncidentReasoning, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, type ReasoningRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, getLlmProviders, createLlmProvider, updateLlmProvider, deleteLlmProvider, testLlmProvider, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook, type LlmProvidersResponse, type LlmProviderRow } from './services/aiService';
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from './types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from './types';
 import PageHeader from './components/ui/PageHeader';
@@ -55,6 +55,124 @@ const ToastContainer = ({ toasts }: { toasts: ToastItem[] }) => (
     </AnimatePresence>
   </div>
 );
+
+// --- Notification Center (persistent history of toasts) ---
+interface NotificationItem { id: string; message: string; type: ToastItem['type']; timestamp: number; read: boolean; }
+interface NotificationContextValue {
+  notifications: NotificationItem[];
+  unreadCount: number;
+  markAllRead: () => void;
+  clearAll: () => void;
+  remove: (id: string) => void;
+}
+const NotificationContext = createContext<NotificationContextValue>({
+  notifications: [], unreadCount: 0, markAllRead: () => {}, clearAll: () => {}, remove: () => {},
+});
+const useNotifications = () => useContext(NotificationContext);
+
+const NotificationBell: React.FC = () => {
+  const { notifications, unreadCount, markAllRead, clearAll, remove } = useNotifications();
+  const [open, setOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  const formatRelative = (ts: number) => {
+    const sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 60) return 'just now';
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  };
+
+  const iconFor = (type: ToastItem['type']) =>
+    type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ';
+
+  const colorFor = (type: ToastItem['type']) =>
+    type === 'success' ? 'text-green-600 bg-green-50 border-green-200'
+    : type === 'error' ? 'text-red-600 bg-red-50 border-red-200'
+    : 'text-blue-600 bg-blue-50 border-blue-200';
+
+  return (
+    <div className="relative" ref={panelRef}>
+      <button
+        onClick={() => { setOpen(o => !o); if (!open) markAllRead(); }}
+        className="relative w-9 h-9 rounded-xl flex items-center justify-center hover:bg-[var(--s1)] border border-[var(--b2)] transition-colors"
+        aria-label="Notifications"
+      >
+        <Bell size={16} className="text-[var(--t3)]" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[0.6rem] font-black flex items-center justify-center shadow-sm">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.15 }}
+          className="absolute right-0 top-[calc(100%+8px)] w-[360px] max-h-[480px] bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-2xl flex flex-col z-[150]"
+        >
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--b1)]">
+            <div>
+              <p className="text-[0.85rem] font-black text-[var(--t7)]">Notifications</p>
+              <p className="text-[0.65rem] text-[var(--t3)]">
+                {notifications.length === 0 ? 'No notifications yet' : `${notifications.length} total`}
+              </p>
+            </div>
+            {notifications.length > 0 && (
+              <button onClick={clearAll} className="text-[0.7rem] font-bold text-[var(--t3)] hover:text-red-600 transition-colors">
+                Clear all
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {notifications.length === 0 ? (
+              <div className="p-8 text-center">
+                <Bell size={28} className="text-[var(--t3)] mx-auto mb-2 opacity-40" />
+                <p className="text-[0.75rem] text-[var(--t3)]">Toasts you see in the app appear here.</p>
+              </div>
+            ) : (
+              notifications.map(n => (
+                <div
+                  key={n.id}
+                  className={`group px-4 py-3 border-b border-[var(--b1)] last:border-b-0 hover:bg-[var(--s1)] transition-colors ${!n.read ? 'bg-[var(--s1)]/50' : ''}`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 w-6 h-6 rounded-full border flex items-center justify-center text-[0.7rem] font-black shrink-0 ${colorFor(n.type)}`}>
+                      {iconFor(n.type)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[0.78rem] text-[var(--t1)] leading-snug break-words">{n.message}</p>
+                      <p className="text-[0.6rem] text-[var(--t3)] mt-1">{formatRelative(n.timestamp)}</p>
+                    </div>
+                    <button
+                      onClick={() => remove(n.id)}
+                      className="opacity-0 group-hover:opacity-100 text-[var(--t3)] hover:text-red-600 transition-opacity"
+                      aria-label="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </motion.div>
+      )}
+    </div>
+  );
+};
 
 // --- Confirm Modal ---
 interface ConfirmModalProps {
@@ -387,9 +505,9 @@ const Header = () => {
           <div className={`w-2 h-2 rounded-full ${wazuhStatus === 'healthy' ? 'animate-pulse' : ''} ${statusColors[wazuhStatus]}`} />
           <span className={`text-[0.7rem] font-black uppercase tracking-wider ${statusTextColors[wazuhStatus]}`}>{statusLabels[wazuhStatus]}</span>
         </div>
-        
+
         <div className="h-6 w-px bg-[var(--b2)]" />
-        
+
         <div className="flex items-center gap-3 pl-2">
           <div className="flex flex-col items-end hidden sm:block">
             <p className="text-[0.8rem] font-bold text-[var(--t1)]">{user?.display_name || user?.username}</p>
@@ -399,6 +517,8 @@ const Header = () => {
             {(user?.display_name || user?.username || '??').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}
           </div>
         </div>
+
+        <NotificationBell />
       </div>
     </header>
   );
@@ -496,7 +616,7 @@ const AlertRow = ({ alert, onClick, isSelected }: { alert: Alert, onClick: () =>
 const DetailedReport = ({ alert, aiData, mitreTags, onClose }: { alert: Alert, aiData: any, mitreTags: string[], onClose: () => void }) => {
   const [exportFormat, setExportFormat] = useState<'txt' | 'xml' | 'pdf' | 'md'>('pdf');
   const severity = alert.severity >= 13 ? 'CRITICAL' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MEDIUM' : 'LOW';
-  const sevColor: Record<string, string> = { CRITICAL: '#d93025', HIGH: '#f29900', MEDIUM: '#1a73e8', LOW: '#1e8e3e' };
+  const sevColor: Record<string, string> = { CRITICAL: '#d93025', HIGH: '#f29900', MEDIUM: '#d97706', LOW: '#1e8e3e' };
 
   const pd = aiData?.phaseData || {};
   const analysis = pd.analysis || {};
@@ -882,7 +1002,7 @@ ${responseActions.map((a: any, i: number) => `    <action order="${i + 1}">
               const fpReason = pd.false_positive_reason as string | undefined;
               if (!ac && !kc && rs == null && !ra) return null;
               const rsColor = rs == null ? 'bg-slate-300' : rs >= 80 ? 'bg-red-500' : rs >= 60 ? 'bg-orange-500' : rs >= 40 ? 'bg-amber-400' : 'bg-emerald-500';
-              const svColor: Record<string, string> = { CRITICAL: 'bg-red-100 text-red-800 border-red-300', HIGH: 'bg-orange-100 text-orange-800 border-orange-300', MEDIUM: 'bg-blue-100 text-blue-800 border-blue-300', LOW: 'bg-green-100 text-green-800 border-green-300' };
+              const svColor: Record<string, string> = { CRITICAL: 'bg-red-100 text-red-800 border-red-300', HIGH: 'bg-orange-100 text-orange-800 border-orange-300', MEDIUM: 'bg-amber-100 text-amber-800 border-amber-300', LOW: 'bg-green-100 text-green-800 border-green-300' };
               const raColor: Record<string, string> = { IGNORE: 'bg-[var(--s1)] text-[var(--t5)] border-[var(--b1)]', MONITOR: 'bg-blue-100 text-blue-700 border-blue-300', INVESTIGATE: 'bg-cyan-100 text-cyan-700 border-cyan-300', ESCALATE: 'bg-amber-100 text-amber-700 border-amber-300', CONTAIN: 'bg-orange-100 text-orange-700 border-orange-300', BLOCK: 'bg-red-100 text-red-700 border-red-300' };
               return (
                 <div className="mt-3 space-y-2.5">
@@ -2080,7 +2200,7 @@ const AlertDetail = ({
   const sevStyle: Record<string, string> = {
     CRITICAL: 'bg-red-50 text-red-700 border-red-200',
     HIGH: 'bg-orange-50 text-orange-700 border-orange-200',
-    MEDIUM: 'bg-blue-50 text-blue-700 border-blue-200',
+    MEDIUM: 'bg-amber-50 text-amber-700 border-amber-200',
     LOW: 'bg-green-50 text-green-700 border-green-200',
   };
 
@@ -2983,10 +3103,26 @@ const AlertDetail = ({
           message={confirmAction.message}
           confirmLabel={confirmAction.label}
           confirmClass={confirmAction.cls}
-          onConfirm={() => {
-            onAction(alert.id, { status: confirmAction.status });
-            showToast(`Alert marked as ${confirmAction.status.toLowerCase().replace('_', ' ')}`);
+          onConfirm={async () => {
+            const status = confirmAction.status;
             setConfirmAction(null);
+            // Escalation must create an incident row, not just flip a column.
+            if (status === 'ESCALATED') {
+              try {
+                const r = await escalateAlert(alert.id);
+                if (r?.ok) {
+                  onAction(alert.id, { status: 'ESCALATED' });
+                  showToast(`Incident ${r.incident_id || ''} created — see Incidents tab`);
+                } else {
+                  showToast(r?.error || 'Escalation failed', 'error');
+                }
+              } catch (err: any) {
+                showToast(err?.message || 'Escalation failed', 'error');
+              }
+              return;
+            }
+            onAction(alert.id, { status });
+            showToast(`Alert marked as ${status.toLowerCase().replace('_', ' ')}`);
           }}
           onCancel={() => setConfirmAction(null)}
         />
@@ -3491,7 +3627,7 @@ const ResearchOverview = ({ alerts, onAlertClick, setActiveTab }: { alerts: Aler
               const fallbackCount = Array.isArray(ai?.fallback_phases) ? ai.fallback_phases.length : 0;
               return (
                 <button key={alert.id} onClick={() => onAlertClick(alert)} className="w-full px-5 py-3 text-left hover:bg-[var(--s1)] flex items-center gap-4">
-                  <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : 'bg-blue-500'}`} />
+                  <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : alert.severity >= 7 ? 'bg-amber-500' : 'bg-green-500'}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{alert.description}</p>
                     <p className="text-[0.65rem] text-[var(--t3)] font-mono mt-0.5">{alert.id} · rule {alert.rule_id} · {alert.agent_name}</p>
@@ -4134,6 +4270,90 @@ const AgentsTab = () => {
   const selectedModel = config?.assignments?.[selectedPhase] || config?.defaults?.[selectedPhase] || '';
   const selectedStat = getStatForPhase(selectedPhase);
 
+  // ── External LLM provider registry ─────────────────────────────────────────
+  const [providersData, setProvidersData] = useState<LlmProvidersResponse | null>(null);
+  const [providerEditor, setProviderEditor] = useState<{ mode: 'create' | 'edit'; row?: LlmProviderRow } | null>(null);
+  const [testingProviderId, setTestingProviderId] = useState<number | null>(null);
+
+  const kindEmoji = (k: string) => k === 'openrouter' ? '☁' : k === 'openai' ? '🟢' : k === 'anthropic' ? '🟣' : k === 'gemini' ? '🔷' : '⚙';
+
+  const describeAssignedModel = (m: string): string => {
+    if (!m) return '—';
+    if (m.startsWith('local::')) return `🖥 Ollama · ${m.replace('local::', '')}`;
+    const idx = m.indexOf('::');
+    if (idx > 0) {
+      const kind = m.slice(0, idx);
+      const bare = m.slice(idx + 2);
+      return `${kindEmoji(kind)} ${kind} · ${bare}`;
+    }
+    return `☁ OpenRouter · ${m}`;
+  };
+
+  const reloadProviders = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const data = await getLlmProviders();
+      setProvidersData(data);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to load providers', 'error');
+    }
+  }, [isAdmin, showToast]);
+
+  useEffect(() => { reloadProviders(); }, [reloadProviders]);
+
+  const handleProviderTest = async (row: LlmProviderRow) => {
+    setTestingProviderId(row.id);
+    try {
+      const r = await testLlmProvider(row.id);
+      if (r.ok) showToast(`${row.name} OK (${r.latency_ms}ms · ${r.model})`);
+      else      showToast(`${row.name} failed: ${r.error || 'unknown'}`, 'error');
+      await reloadProviders();
+      await getAgentModelConfig().then(setConfig).catch(() => {});
+    } finally {
+      setTestingProviderId(null);
+    }
+  };
+
+  const handleProviderDelete = (row: LlmProviderRow) => {
+    setStepUp({
+      title: `Delete provider "${row.name}"?`,
+      message: 'Re-authenticate to delete this provider. Any agent using it will fall through to the next provider in the chain.',
+      destructive: true,
+      run: async (token) => {
+        setStepUp(null);
+        try {
+          await deleteLlmProvider(row.id, token);
+          showToast(`Removed ${row.name}`);
+          await reloadProviders();
+          await getAgentModelConfig().then(setConfig).catch(() => {});
+        } catch (err: any) {
+          showToast(err?.message || 'Failed to delete', 'error');
+        }
+      },
+    });
+  };
+
+  const handleProviderToggle = (row: LlmProviderRow) => {
+    const targetEnabled = !row.enabled;
+    setStepUp({
+      title: targetEnabled ? `Enable "${row.name}"?` : `Disable "${row.name}"?`,
+      message: targetEnabled
+        ? 'Re-authenticate to enable this provider. It will become part of the active fallback chain.'
+        : 'Re-authenticate to disable this provider. Agents pinned to its models will fall back to the next provider.',
+      run: async (token) => {
+        setStepUp(null);
+        try {
+          await updateLlmProvider(row.id, { enabled: targetEnabled }, token);
+          showToast(targetEnabled ? `Enabled ${row.name}` : `Disabled ${row.name}`);
+          await reloadProviders();
+          await getAgentModelConfig().then(setConfig).catch(() => {});
+        } catch (err: any) {
+          showToast(err?.message || 'Failed', 'error');
+        }
+      },
+    });
+  };
+
   const statusColor: Record<string, string> = {
     unknown:     'text-[var(--t3)]',
     checking:    'text-blue-500',
@@ -4151,6 +4371,97 @@ const AgentsTab = () => {
     <div className="space-y-6">
       {error && (
         <div className="bg-red-50 text-[#d93025] p-3 rounded border border-red-100 text-[0.8rem] font-semibold">{error}</div>
+      )}
+
+      {/* ── External LLM Providers (API keys) ──────────────────────────────── */}
+      {isAdmin && (
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--b1)] bg-[var(--s1)]">
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-[var(--p1)]" />
+              <p className="text-[0.9rem] font-black text-[var(--t7)]">API Providers</p>
+              <span className="text-[0.65rem] text-[var(--t3)] font-semibold">
+                {providersData ? `${providersData.providers.filter(p => p.enabled).length} active · ${providersData.providers.length} total` : 'loading…'}
+              </span>
+            </div>
+            <button
+              onClick={() => setProviderEditor({ mode: 'create' })}
+              className="px-3 py-1.5 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)] transition-colors"
+            >
+              + Add Provider
+            </button>
+          </div>
+
+          <div className="p-5">
+            {!providersData ? (
+              <p className="text-[0.78rem] text-[var(--t3)]">Loading providers…</p>
+            ) : providersData.providers.length === 0 ? (
+              <div className="text-center py-6">
+                <p className="text-[0.85rem] font-bold text-[var(--t5)]">No providers configured.</p>
+                <p className="text-[0.7rem] text-[var(--t3)] mt-1">Add an OpenRouter, OpenAI, Anthropic or Gemini API key to power the AI agents.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {providersData.providers.map(p => {
+                  const ok = p.last_test_ok === 1;
+                  const failed = p.last_test_ok === 0;
+                  return (
+                    <div key={p.id} className={`flex items-center gap-3 px-3 py-2.5 border rounded-lg ${p.enabled ? 'bg-[var(--s0)] border-[var(--b1)]' : 'bg-[var(--s1)] border-[var(--b1)] opacity-60'}`}>
+                      <span className="text-lg shrink-0">{kindEmoji(p.kind)}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-[0.85rem] font-black text-[var(--t7)] truncate">{p.name}</p>
+                          <span className="px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-wide bg-[var(--sa)] text-[var(--p1)] shrink-0">{p.kind}</span>
+                          {!p.enabled && <span className="px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase bg-slate-200 text-slate-500">Disabled</span>}
+                        </div>
+                        <p className="text-[0.65rem] text-[var(--t3)] font-mono truncate">
+                          {p.base_url} · key: {p.api_key_mask} · priority {p.priority}
+                          {p.last_test_at && (
+                            <span className={`ml-2 font-bold ${ok ? 'text-green-600' : failed ? 'text-red-600' : 'text-[var(--t3)]'}`}>
+                              {ok ? '✓ tested' : failed ? `✗ ${p.last_test_error?.slice(0, 50) || 'failed'}` : ''}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleProviderTest(p)}
+                          disabled={testingProviderId === p.id}
+                          className="px-2.5 py-1 text-[0.65rem] font-bold rounded border border-[var(--b2)] text-[var(--t5)] hover:bg-[var(--s1)] disabled:opacity-50"
+                          title="Send a tiny test request"
+                        >
+                          {testingProviderId === p.id ? '…' : 'Test'}
+                        </button>
+                        <button
+                          onClick={() => handleProviderToggle(p)}
+                          className="px-2.5 py-1 text-[0.65rem] font-bold rounded border border-[var(--b2)] text-[var(--t5)] hover:bg-[var(--s1)]"
+                        >
+                          {p.enabled ? 'Disable' : 'Enable'}
+                        </button>
+                        <button
+                          onClick={() => setProviderEditor({ mode: 'edit', row: p })}
+                          className="px-2.5 py-1 text-[0.65rem] font-bold rounded border border-[var(--b2)] text-[var(--t5)] hover:bg-[var(--s1)]"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleProviderDelete(p)}
+                          className="px-2.5 py-1 text-[0.65rem] font-bold rounded border border-red-200 text-red-600 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-[0.62rem] text-[var(--t3)] mt-3">
+              Providers are tried in priority order (lowest first). When one rate-limits, the next is used automatically.
+              Changes here are audited and require re-authentication.
+            </p>
+          </div>
+        </div>
       )}
 
       {/* ── Local LLM Server Card ──────────────────────────────────────────── */}
@@ -4315,11 +4626,20 @@ const AgentsTab = () => {
                     onChange={(e) => handleModelChange(selectedPhase, e.target.value)}
                     className="w-full border border-[var(--b1)] rounded-lg px-3 py-2.5 text-[0.82rem] outline-none focus:border-[var(--p1)] disabled:opacity-60 bg-[var(--s0)]"
                   >
-                    <optgroup label="☁ Cloud (OpenRouter)">
+                    <optgroup label="☁ OpenRouter (free tier)">
                       {cloudOptions.map((model) => (
                         <option key={model} value={model}>{config?.modelLabels?.[model] || model}</option>
                       ))}
                     </optgroup>
+                    {(config?.providerGroups || [])
+                      .filter(g => g.kind !== 'openrouter' && g.models.length > 0)
+                      .map(g => (
+                        <optgroup key={`${g.kind}-${g.providerId}`} label={`${kindEmoji(g.kind)} ${g.providerName} (${g.kind})`}>
+                          {g.models.map(m => (
+                            <option key={m.id} value={m.id}>{m.label}</option>
+                          ))}
+                        </optgroup>
+                      ))}
                     {localStatus === 'connected' && localModels.length > 0 && (
                       <optgroup label="🖥 Local (Ollama)">
                         {localModels.map(m => (
@@ -4330,7 +4650,7 @@ const AgentsTab = () => {
                   </select>
                   <div className="flex justify-between items-center pt-0.5">
                     <span className="text-[0.65rem] text-[var(--t3)] font-semibold">
-                      {isSaving ? 'Saving…' : isLocalAssigned ? `🖥 Ollama · ${selectedModel.replace('local::', '')}` : '☁ OpenRouter'}
+                      {isSaving ? 'Saving…' : describeAssignedModel(selectedModel)}
                     </span>
                     {!isAdmin && <span className="text-[0.62rem] text-amber-600 font-bold">Admin-only setting</span>}
                   </div>
@@ -4406,6 +4726,34 @@ const AgentsTab = () => {
           </div>
         </div>
       )}
+      {providerEditor && providersData && (
+        <ProviderEditorModal
+          mode={providerEditor.mode}
+          row={providerEditor.row}
+          kinds={providersData.kinds}
+          onClose={() => setProviderEditor(null)}
+          onSave={async (payload) => {
+            const isCreate = providerEditor.mode === 'create';
+            setStepUp({
+              title: isCreate ? `Add provider "${payload.name}"?` : `Update provider "${payload.name}"?`,
+              message: 'Re-authenticate to save this provider configuration. This change is audited.',
+              run: async (token) => {
+                setStepUp(null);
+                try {
+                  if (isCreate) await createLlmProvider(payload, token);
+                  else await updateLlmProvider(providerEditor.row!.id, payload, token);
+                  showToast(isCreate ? 'Provider added' : 'Provider updated');
+                  setProviderEditor(null);
+                  await reloadProviders();
+                  await getAgentModelConfig().then(setConfig).catch(() => {});
+                } catch (err: any) {
+                  showToast(err?.message || 'Failed to save', 'error');
+                }
+              },
+            });
+          }}
+        />
+      )}
       {stepUp && (
         <StepUpModal
           title={stepUp.title}
@@ -4415,6 +4763,158 @@ const AgentsTab = () => {
           onCancel={() => setStepUp(null)}
         />
       )}
+    </div>
+  );
+};
+
+const ProviderEditorModal: React.FC<{
+  mode: 'create' | 'edit';
+  row?: LlmProviderRow;
+  kinds: Array<{ id: string; label: string; base_url: string }>;
+  onClose: () => void;
+  onSave: (payload: { name: string; kind: string; base_url: string; api_key: string; priority: number; enabled: boolean; headers_json?: string }) => void;
+}> = ({ mode, row, kinds, onClose, onSave }) => {
+  const [name, setName]         = useState(row?.name || '');
+  const [kind, setKind]         = useState(row?.kind || 'openrouter');
+  const [baseUrl, setBaseUrl]   = useState(row?.base_url || '');
+  const [apiKey, setApiKey]     = useState('');
+  const [priority, setPriority] = useState<number>(row?.priority ?? 100);
+  const [enabled, setEnabled]   = useState<boolean>(row ? !!row.enabled : true);
+  const [showKey, setShowKey]   = useState(false);
+
+  // When the kind changes, prefill base_url from the catalog default
+  useEffect(() => {
+    const k = kinds.find(x => x.id === kind);
+    if (k && (mode === 'create' || !row?.base_url)) setBaseUrl(k.base_url);
+  }, [kind, kinds, mode, row?.base_url]);
+
+  const submit = () => {
+    if (!name.trim()) return;
+    if (mode === 'create' && !apiKey.trim()) return;
+    const payload: any = {
+      name: name.trim(),
+      kind,
+      base_url: baseUrl.trim(),
+      priority,
+      enabled,
+    };
+    if (apiKey.trim()) payload.api_key = apiKey.trim();
+    onSave(payload);
+  };
+
+  const placeholderForKind = (k: string): string => {
+    if (k === 'openai')    return 'sk-proj-…';
+    if (k === 'anthropic') return 'sk-ant-…';
+    if (k === 'openrouter')return 'sk-or-v1-…';
+    if (k === 'gemini')    return 'AI…';
+    return 'API key';
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-[var(--s0)] rounded-2xl shadow-2xl border border-[var(--b1)] w-full max-w-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-[var(--b1)] flex items-center justify-between">
+          <h3 className="text-[1rem] font-black text-[var(--t7)]">
+            {mode === 'create' ? 'Add LLM Provider' : `Edit "${row?.name}"`}
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-[var(--s1)] rounded"><X size={18} /></button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Display name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. OpenAI primary"
+              className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.82rem] outline-none focus:border-[var(--p1)]"
+            />
+          </div>
+
+          <div>
+            <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Provider type</label>
+            <select
+              value={kind}
+              onChange={e => setKind(e.target.value)}
+              className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.82rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]"
+            >
+              {kinds.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Base URL</label>
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={e => setBaseUrl(e.target.value)}
+              placeholder="https://api.example.com/v1"
+              className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.82rem] font-mono outline-none focus:border-[var(--p1)]"
+            />
+            <p className="text-[0.6rem] text-[var(--t3)] mt-1">Must speak the OpenAI-compatible REST shape (chat/completions).</p>
+          </div>
+
+          <div>
+            <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">
+              API key {mode === 'edit' && <span className="font-mono text-[var(--p1)] ml-1">(leave blank to keep current: {row?.api_key_mask})</span>}
+            </label>
+            <div className="relative">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder={placeholderForKind(kind)}
+                className="w-full border border-[var(--b2)] rounded px-3 py-2 pr-16 text-[0.82rem] font-mono outline-none focus:border-[var(--p1)]"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+              >
+                {showKey ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Priority</label>
+              <input
+                type="number"
+                value={priority}
+                onChange={e => setPriority(Math.max(0, Math.min(9999, parseInt(e.target.value, 10) || 0)))}
+                className="w-full border border-[var(--b2)] rounded px-3 py-2 text-[0.82rem] outline-none focus:border-[var(--p1)]"
+              />
+              <p className="text-[0.6rem] text-[var(--t3)] mt-1">Lower number = tried earlier.</p>
+            </div>
+            <div className="flex flex-col">
+              <label className="text-[0.62rem] font-black text-[var(--t3)] uppercase tracking-wider block mb-1">Enabled</label>
+              <button
+                type="button"
+                onClick={() => setEnabled(v => !v)}
+                className={`flex items-center gap-2 px-3 py-2 rounded border ${enabled ? 'bg-green-50 border-green-300 text-green-800' : 'bg-slate-50 border-slate-300 text-slate-500'} text-[0.78rem] font-bold`}
+              >
+                <span className={`w-2 h-2 rounded-full ${enabled ? 'bg-green-600' : 'bg-slate-400'}`} />
+                {enabled ? 'Enabled' : 'Disabled'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 border-t border-[var(--b1)] bg-[var(--s1)] flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded border border-[var(--b2)] text-[var(--t5)] font-bold text-[0.78rem] hover:bg-[var(--s0)]">
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!name.trim() || (mode === 'create' && !apiKey.trim())}
+            className="px-4 py-2 rounded bg-[var(--p1)] text-white font-bold text-[0.78rem] hover:bg-[var(--pd)] disabled:opacity-50"
+          >
+            {mode === 'create' ? 'Add provider' : 'Save changes'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -6639,7 +7139,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
           {alerts.length > 0 ? (
             [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 30).map(alert => {
               const sevLabel = alert.severity >= 13 ? 'CRIT' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MED' : 'LOW';
-              const sevColor = alert.severity >= 13 ? 'text-red-500 bg-red-50' : alert.severity >= 10 ? 'text-orange-500 bg-orange-50' : alert.severity >= 7 ? 'text-blue-500 bg-blue-50' : 'text-green-500 bg-green-50';
+              const sevColor = alert.severity >= 13 ? 'text-red-500 bg-red-50' : alert.severity >= 10 ? 'text-orange-500 bg-orange-50' : alert.severity >= 7 ? 'text-amber-500 bg-amber-50' : 'text-green-500 bg-green-50';
               return (
                 <div key={alert.id} onClick={() => onAlertClick(alert)} className="px-4 py-2.5 border-b border-[var(--b1)] cursor-pointer hover:bg-[var(--sa)] flex items-center gap-3">
                   <span className="text-[0.58rem] text-[var(--t3)] font-mono shrink-0 w-14">{new Date(alert.timestamp.replace(' ', 'T')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
@@ -6672,7 +7172,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
               const risk = getAlertRiskScore(alert);
               return (
                 <button key={alert.id} onClick={() => onAlertClick(alert)} className="w-full px-5 py-3 text-left hover:bg-[var(--s1)] flex items-center gap-4">
-                  <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : 'bg-blue-500'}`} />
+                  <span className={`w-2 h-8 rounded-full ${alert.severity >= 12 ? 'bg-red-500' : alert.severity >= 10 ? 'bg-orange-500' : alert.severity >= 7 ? 'bg-amber-500' : 'bg-green-500'}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-[0.82rem] font-bold text-[var(--t7)] truncate">{alert.description}</p>
                     <p className="text-[0.62rem] text-[var(--t3)] font-mono mt-0.5">{alert.source_ip} · {alert.agent_name} · {alert.status}</p>
@@ -7389,18 +7889,6 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
   if (selectedAlert) {
     return (
       <div className="flex h-full">
-        <div className="w-80 border-r border-[var(--b1)] bg-[var(--s0)] overflow-y-auto shrink-0">
-          <div className="px-4 py-3 border-b bg-[var(--s1)]">
-            <p className="text-[0.72rem] font-black text-[var(--t7)]">Queue ({investigationAlerts.length})</p>
-          </div>
-          {investigationAlerts.map(a => (
-            <button key={a.id} onClick={() => setSelectedAlert(a)}
-              className={`w-full px-3 py-2.5 text-left border-b border-[var(--b1)] hover:bg-[var(--sa)] ${selectedAlert.id === a.id ? 'bg-[var(--sa)] border-l-2 border-l-[var(--p1)]' : ''}`}>
-              <p className="text-[0.7rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
-              <p className="text-[0.58rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.status}</p>
-            </button>
-          ))}
-        </div>
         <div className="flex-1 overflow-y-auto">
           <AlertDetail
             alert={selectedAlert}
@@ -7467,7 +7955,7 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
             const hasAnalysis = !!a.ai_analysis;
             return (
               <button key={a.id} onClick={() => setSelectedAlert(a)} className="w-full px-4 py-3 text-left hover:bg-[var(--sa)] flex items-center gap-4">
-                <span className={`w-2 h-8 rounded-full ${a.severity >= 12 ? 'bg-red-500' : a.severity >= 10 ? 'bg-orange-400' : 'bg-blue-400'}`} />
+                <span className={`w-2 h-8 rounded-full ${a.severity >= 12 ? 'bg-red-500' : a.severity >= 10 ? 'bg-orange-400' : a.severity >= 7 ? 'bg-amber-400' : 'bg-green-400'}`} />
                 <div className="flex-1 min-w-0">
                   <p className="text-[0.78rem] font-semibold text-[var(--t7)] truncate">{a.description}</p>
                   <p className="text-[0.62rem] text-[var(--t3)] font-mono">{a.source_ip} · {a.agent_name} · {a.timestamp?.slice(0, 16)}</p>
@@ -8477,10 +8965,31 @@ export default function App() {
     updateIntegration('wazuh', { config: next }).catch(() => {});
   }, []);
 
+  // Persistent notification history (capped at 50, persisted to localStorage)
+  const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
+    try {
+      const raw = localStorage.getItem('soc_notifications');
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('soc_notifications', JSON.stringify(notifications)); } catch {}
+  }, [notifications]);
+  const unreadCount = notifications.filter(n => !n.read).length;
+  const markAllRead = useCallback(() => setNotifications(prev => prev.map(n => n.read ? n : { ...n, read: true })), []);
+  const clearAllNotifications = useCallback(() => setNotifications([]), []);
+  const removeNotification = useCallback((id: string) => setNotifications(prev => prev.filter(n => n.id !== id)), []);
+  const notificationCtx = React.useMemo<NotificationContextValue>(
+    () => ({ notifications, unreadCount, markAllRead, clearAll: clearAllNotifications, remove: removeNotification }),
+    [notifications, unreadCount, markAllRead, clearAllNotifications, removeNotification],
+  );
+
   const showToast = useCallback((msg: string, type: ToastItem['type'] = 'success') => {
     const id = Math.random().toString(36).slice(2);
     setToasts(prev => [...prev, { id, message: msg, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
+    // Also persist to notification history (cap 50, newest first)
+    setNotifications(prev => [{ id, message: msg, type, timestamp: Date.now(), read: false }, ...prev].slice(0, 50));
   }, []);
 
   const selectedAlert = alerts.find((alert) => alert.id === selectedAlertId) || null;
@@ -8592,22 +9101,24 @@ export default function App() {
   return (
     <DarkModeProvider>
       <ToastContext.Provider value={showToast}>
-        <AuthProvider>
-          <AuthConsumer
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            alerts={alerts}
-            selectedAlert={selectedAlert}
-            setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
-            onAlertAction={handleAlertAction}
-            autoFilter={autoFilter}
-            setAutoFilter={setAutoFilterSynced}
-            refreshAlerts={refreshAlerts}
-            selectedIncidentId={selectedIncidentId}
-            setSelectedIncidentId={setSelectedIncidentId}
-          />
-        </AuthProvider>
-        <ToastContainer toasts={toasts} />
+        <NotificationContext.Provider value={notificationCtx}>
+          <AuthProvider>
+            <AuthConsumer
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              alerts={alerts}
+              selectedAlert={selectedAlert}
+              setSelectedAlert={(alert: Alert | null) => setSelectedAlertId(alert?.id || null)}
+              onAlertAction={handleAlertAction}
+              autoFilter={autoFilter}
+              setAutoFilter={setAutoFilterSynced}
+              refreshAlerts={refreshAlerts}
+              selectedIncidentId={selectedIncidentId}
+              setSelectedIncidentId={setSelectedIncidentId}
+            />
+          </AuthProvider>
+          <ToastContainer toasts={toasts} />
+        </NotificationContext.Provider>
       </ToastContext.Provider>
     </DarkModeProvider>
   );
@@ -9456,7 +9967,9 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
   const [activeId, setActiveId]       = useState<string | null>(null);
   const [detail, setDetail]           = useState<Incident | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [detailTab, setDetailTab]     = useState<'overview'|'observables'|'tasks'|'timeline'|'report'>('overview');
+  const [detailTab, setDetailTab]     = useState<'overview'|'observables'|'tasks'|'reasoning'|'timeline'|'report'>('overview');
+  const [reasoning, setReasoning]     = useState<ReasoningRow[]>([]);
+  const [loadingReasoning, setLoadingReasoning] = useState(false);
   const [myOnly, setMyOnly]           = useState(false);
 
   const [showReassign, setShowReassign] = useState(false);
@@ -9503,9 +10016,20 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
   }, []);
 
   useEffect(() => {
-    if (activeId) { fetchDetail(activeId); setDetailTab('overview'); }
-    else { setDetail(null); setReportEditing(false); }
+    if (activeId) { fetchDetail(activeId); setDetailTab('overview'); setReasoning([]); }
+    else { setDetail(null); setReportEditing(false); setReasoning([]); }
   }, [activeId, fetchDetail]);
+
+  // Lazy-load the reasoning timeline only when the user opens that tab.
+  // Cheap (a single GET on a small table) but no need to fetch eagerly.
+  useEffect(() => {
+    if (detailTab !== 'reasoning' || !activeId) return;
+    setLoadingReasoning(true);
+    getIncidentReasoning(activeId)
+      .then(d => setReasoning(d.reasoning || []))
+      .catch(() => setReasoning([]))
+      .finally(() => setLoadingReasoning(false));
+  }, [detailTab, activeId]);
 
   const filteredList = React.useMemo(() => {
     let out = list;
@@ -9616,6 +10140,7 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
       { key: 'overview'     as const, label: 'Overview',     icon: <Eye size={13} /> },
       { key: 'observables'  as const, label: `Observables (${observables.length})`, icon: <Crosshair size={13} /> },
       { key: 'tasks'        as const, label: `Tasks (${actions.length})`, icon: <ListChecks size={13} /> },
+      { key: 'reasoning'    as const, label: 'Reasoning',    icon: <Activity size={13} /> },
       { key: 'timeline'     as const, label: `Timeline (${detail.timeline?.length || 0})`, icon: <MessageSquare size={13} /> },
       { key: 'report'       as const, label: 'Report',      icon: <FileText size={13} /> },
     ];
@@ -9941,6 +10466,321 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
                   </div>
                 </div>
               )}
+
+              {/* ===== REASONING TAB =====
+                  Visual chain-of-thought across every AI agent that touched
+                  this incident. Grouped into Triage / Investigation / Composition
+                  with per-agent cards showing decision, evidence, and rejected
+                  hypotheses. */}
+              {detailTab === 'reasoning' && (() => {
+                const AGENT_META: Record<string, { icon: any; label: string; tagline: string; color: string; ring: string; bg: string; dot: string }> = {
+                  analysis:    { icon: Search,      label: 'Triage Analyst',  tagline: 'Extracts IOCs, validates severity, flags false positives', color: 'text-violet-700 dark:text-violet-300',  ring: 'ring-violet-200 dark:ring-violet-900',  bg: 'from-violet-50 to-transparent dark:from-violet-950/40',  dot: 'bg-violet-500' },
+                  intel:       { icon: Crosshair,   label: 'Threat Intel',    tagline: 'Maps IOCs to MITRE ATT&CK and assesses reputation',    color: 'text-blue-700 dark:text-blue-300',      ring: 'ring-blue-200 dark:ring-blue-900',      bg: 'from-blue-50 to-transparent dark:from-blue-950/40',      dot: 'bg-blue-500' },
+                  knowledge:   { icon: BookOpen,    label: 'Knowledge / RAG', tagline: 'Pulls relevant playbooks and remediation steps',       color: 'text-amber-700 dark:text-amber-300',    ring: 'ring-amber-200 dark:ring-amber-900',    bg: 'from-amber-50 to-transparent dark:from-amber-950/40',    dot: 'bg-amber-500' },
+                  correlation: { icon: Link2,       label: 'Correlation',     tagline: 'Detects multi-alert campaigns and kill-chain stages',  color: 'text-pink-700 dark:text-pink-300',      ring: 'ring-pink-200 dark:ring-pink-900',      bg: 'from-pink-50 to-transparent dark:from-pink-950/40',      dot: 'bg-pink-500' },
+                  recall:      { icon: Clock,       label: 'Memory Recall',   tagline: 'Finds semantically similar prior incidents',           color: 'text-indigo-700 dark:text-indigo-300',  ring: 'ring-indigo-200 dark:ring-indigo-900',  bg: 'from-indigo-50 to-transparent dark:from-indigo-950/40',  dot: 'bg-indigo-500' },
+                  ioc_check:   { icon: Hash,        label: 'IOC History',     tagline: 'Checks indicators against historical IOC memory',      color: 'text-teal-700 dark:text-teal-300',      ring: 'ring-teal-200 dark:ring-teal-900',      bg: 'from-teal-50 to-transparent dark:from-teal-950/40',      dot: 'bg-teal-500' },
+                  ticketing:   { icon: FileText,    label: 'Ticketing',       tagline: 'Authors the incident ticket and sets priority',        color: 'text-cyan-700 dark:text-cyan-300',      ring: 'ring-cyan-200 dark:ring-cyan-900',      bg: 'from-cyan-50 to-transparent dark:from-cyan-950/40',      dot: 'bg-cyan-500' },
+                  response:    { icon: Zap,         label: 'Response',        tagline: 'Recommends containment actions and target assets',    color: 'text-orange-700 dark:text-orange-300',  ring: 'ring-orange-200 dark:ring-orange-900',  bg: 'from-orange-50 to-transparent dark:from-orange-950/40',  dot: 'bg-orange-500' },
+                  validation:  { icon: CheckCircle, label: 'Validation',      tagline: 'Verifies plan completeness and SLA alignment',         color: 'text-emerald-700 dark:text-emerald-300',ring: 'ring-emerald-200 dark:ring-emerald-900',bg: 'from-emerald-50 to-transparent dark:from-emerald-950/40',dot: 'bg-emerald-500' },
+                };
+                const fallbackMeta = { icon: Activity, label: 'Agent', tagline: '', color: 'text-[var(--t6)]', ring: 'ring-[var(--b1)]', bg: 'from-[var(--s1)] to-transparent', dot: 'bg-slate-400' };
+
+                const PHASES: Array<{ key: 'triage' | 'investigation' | 'composition'; label: string; sub: string; agents: string[] }> = [
+                  { key: 'triage',        label: 'Triage',        sub: 'Initial verdict',                agents: ['analysis'] },
+                  { key: 'investigation', label: 'Investigation', sub: 'Parallel evidence gathering',    agents: ['intel', 'knowledge', 'correlation', 'recall', 'ioc_check'] },
+                  { key: 'composition',   label: 'Composition',   sub: 'Ticket, response, validation',   agents: ['ticketing', 'response', 'validation'] },
+                ];
+
+                const groupedByPhase = PHASES.map(p => ({
+                  ...p,
+                  rows: reasoning.filter(r => p.agents.includes(r.agent)),
+                })).filter(p => p.rows.length > 0);
+
+                const otherRows = reasoning.filter(r => !PHASES.some(p => p.agents.includes(r.agent)));
+                if (otherRows.length > 0) {
+                  groupedByPhase.push({ key: 'composition', label: 'Other', sub: 'Misc agent reasoning', agents: [], rows: otherRows });
+                }
+
+                const totalAgents = new Set(reasoning.map(r => r.agent)).size;
+                const avgConfidence = reasoning.length > 0
+                  ? Math.round((reasoning.reduce((s, r) => s + (r.confidence || 0), 0) / reasoning.length) * 100)
+                  : 0;
+                const firstAt = reasoning[0]?.created_at;
+                const lastAt  = reasoning[reasoning.length - 1]?.created_at;
+                const elapsedMs = (firstAt && lastAt) ? (new Date(lastAt).getTime() - new Date(firstAt).getTime()) : 0;
+                const elapsedLabel = elapsedMs < 1000 ? '< 1s'
+                                   : elapsedMs < 60_000  ? `${Math.round(elapsedMs / 1000)}s`
+                                   : elapsedMs < 3600_000 ? `${Math.round(elapsedMs / 60_000)}m`
+                                   : `${(elapsedMs / 3600_000).toFixed(1)}h`;
+
+                const overallVerdictColor =
+                  avgConfidence >= 85 ? 'text-emerald-600 dark:text-emerald-400' :
+                  avgConfidence >= 60 ? 'text-amber-600 dark:text-amber-400'     :
+                                        'text-red-500 dark:text-red-400';
+                const overallBarColor =
+                  avgConfidence >= 85 ? 'bg-emerald-500' :
+                  avgConfidence >= 60 ? 'bg-amber-500'   :
+                                        'bg-red-500';
+
+                return (
+                  <div className="space-y-4">
+                    {/* ── Hero summary card ─────────────────────────────────────── */}
+                    <div className="bg-gradient-to-br from-violet-50 via-[var(--s0)] to-blue-50 dark:from-violet-950/30 dark:via-[var(--s0)] dark:to-blue-950/30 border border-[var(--b1)] rounded-2xl shadow-sm overflow-hidden">
+                      <div className="px-5 py-4 flex items-center gap-3 border-b border-[var(--b1)]">
+                        <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center shadow-sm">
+                          <Activity size={17} className="text-white" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-[0.95rem] font-black text-[var(--t7)] leading-tight">Reasoning Timeline</p>
+                          <p className="text-[0.66rem] text-[var(--t3)] mt-0.5">How the AI agents thought through this incident, step by step</p>
+                        </div>
+                      </div>
+
+                      {loadingReasoning ? (
+                        <div className="p-10 text-center">
+                          <RefreshCw size={18} className="inline animate-spin text-violet-500 mb-2" />
+                          <p className="text-[0.72rem] text-[var(--t3)]">Loading reasoning trace…</p>
+                        </div>
+                      ) : reasoning.length === 0 ? (
+                        <div className="p-10 text-center space-y-2">
+                          <Activity size={28} className="inline text-[var(--t3)] opacity-50" />
+                          <p className="text-[0.85rem] font-bold text-[var(--t6)]">No reasoning recorded yet</p>
+                          <p className="text-[0.7rem] text-[var(--t3)] max-w-md mx-auto">
+                            New investigations capture per-agent reasoning automatically.
+                            Incidents from before this feature was deployed will be empty.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="px-5 py-5 grid grid-cols-1 sm:grid-cols-4 gap-4">
+                          {/* Overall confidence */}
+                          <div>
+                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Avg confidence</p>
+                            <div className="flex items-baseline gap-1">
+                              <span className={`text-[1.85rem] font-black tabular-nums leading-none ${overallVerdictColor}`}>{avgConfidence}</span>
+                              <span className={`text-[0.85rem] font-bold ${overallVerdictColor}`}>%</span>
+                            </div>
+                            <div className="mt-2 h-1.5 rounded-full bg-[var(--s2)] overflow-hidden">
+                              <div className={`h-full ${overallBarColor} transition-all duration-500`} style={{ width: `${avgConfidence}%` }} />
+                            </div>
+                          </div>
+
+                          {/* Agents that contributed */}
+                          <div>
+                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Agents</p>
+                            <div className="flex items-baseline gap-1">
+                              <span className="text-[1.85rem] font-black tabular-nums leading-none text-[var(--t7)]">{totalAgents}</span>
+                              <span className="text-[0.7rem] text-[var(--t3)] font-bold">distinct</span>
+                            </div>
+                            <div className="mt-2 flex items-center gap-1 flex-wrap">
+                              {Array.from(new Set(reasoning.map(r => r.agent))).slice(0, 9).map((a: string) => {
+                                const m = AGENT_META[a] ?? fallbackMeta;
+                                const Icon = m.icon;
+                                return (
+                                  <span key={a} title={m.label} className={`w-5 h-5 rounded-md flex items-center justify-center ring-1 ${m.ring} bg-[var(--s0)]`}>
+                                    <Icon size={11} className={m.color} />
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Steps */}
+                          <div>
+                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Reasoning steps</p>
+                            <div className="flex items-baseline gap-1">
+                              <span className="text-[1.85rem] font-black tabular-nums leading-none text-[var(--t7)]">{reasoning.length}</span>
+                              <span className="text-[0.7rem] text-[var(--t3)] font-bold">total</span>
+                            </div>
+                            <p className="text-[0.6rem] text-[var(--t3)] mt-2">
+                              across <span className="font-bold text-[var(--t6)]">{groupedByPhase.length}</span> phase{groupedByPhase.length === 1 ? '' : 's'}
+                            </p>
+                          </div>
+
+                          {/* Elapsed */}
+                          <div>
+                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Time elapsed</p>
+                            <div className="flex items-baseline gap-1">
+                              <span className="text-[1.85rem] font-black tabular-nums leading-none text-[var(--t7)]">{elapsedLabel}</span>
+                            </div>
+                            <p className="text-[0.6rem] text-[var(--t3)] mt-2 truncate" title={firstAt ? new Date(firstAt).toLocaleString() : ''}>
+                              start: <span className="font-mono">{firstAt ? new Date(firstAt).toLocaleTimeString() : '—'}</span>
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ── Phase-grouped reasoning cards ─────────────────────────── */}
+                    {!loadingReasoning && reasoning.length > 0 && groupedByPhase.map((phase, phaseIdx) => (
+                      <div key={`${phase.key}-${phaseIdx}`} className="space-y-3">
+                        {/* Phase header */}
+                        <div className="flex items-center gap-3 px-1">
+                          <div className="flex items-center gap-2">
+                            <span className="w-7 h-7 rounded-lg bg-[var(--p1)] text-white flex items-center justify-center text-[0.7rem] font-black shadow-sm">
+                              {phaseIdx + 1}
+                            </span>
+                            <div>
+                              <p className="text-[0.85rem] font-black text-[var(--t7)] leading-tight">{phase.label}</p>
+                              <p className="text-[0.6rem] text-[var(--t3)] font-semibold">{phase.sub}</p>
+                            </div>
+                          </div>
+                          <div className="flex-1 h-px bg-gradient-to-r from-[var(--b1)] to-transparent" />
+                          <span className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">
+                            {phase.rows.length} agent{phase.rows.length === 1 ? '' : 's'}
+                          </span>
+                        </div>
+
+                        {/* Agent cards inside this phase */}
+                        <div className="relative space-y-3 pl-3">
+                          {/* Vertical connector line */}
+                          <div className="absolute left-[18px] top-3 bottom-3 w-px bg-gradient-to-b from-[var(--b1)] via-[var(--b1)] to-transparent" />
+
+                          {phase.rows.map((r, rowIdx) => {
+                            const meta = AGENT_META[r.agent] ?? fallbackMeta;
+                            const Icon = meta.icon;
+                            const conf = Math.round((r.confidence || 0) * 100);
+                            const confColor =
+                              conf >= 85 ? 'text-emerald-600 dark:text-emerald-400' :
+                              conf >= 60 ? 'text-amber-600 dark:text-amber-400'     :
+                                           'text-red-500 dark:text-red-400';
+                            const confBar =
+                              conf >= 85 ? 'bg-emerald-500' :
+                              conf >= 60 ? 'bg-amber-500'   :
+                                           'bg-red-500';
+                            const isLast = rowIdx === phase.rows.length - 1;
+
+                            return (
+                              <div key={r.id} className="relative">
+                                {/* Connector dot */}
+                                <span className={`absolute left-[10px] top-5 w-3 h-3 rounded-full ${meta.dot} ring-4 ring-[var(--s0)] z-10`} />
+
+                                <div className={`ml-8 relative overflow-hidden border border-[var(--b1)] rounded-xl bg-gradient-to-br ${meta.bg} hover:shadow-md transition-shadow`}>
+                                  {/* Card header */}
+                                  <div className="px-4 py-3 flex items-start gap-3 border-b border-[var(--b1)]/60 bg-[var(--s0)]/70 backdrop-blur-sm">
+                                    <div className={`shrink-0 w-10 h-10 rounded-xl ring-1 ${meta.ring} bg-[var(--s0)] flex items-center justify-center shadow-sm`}>
+                                      <Icon size={18} className={meta.color} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <p className={`text-[0.82rem] font-black ${meta.color}`}>{meta.label}</p>
+                                        <span className="text-[0.55rem] font-bold text-[var(--t3)] uppercase tracking-widest">
+                                          step {r.step}
+                                        </span>
+                                      </div>
+                                      <p className="text-[0.62rem] text-[var(--t3)] mt-0.5 truncate">{meta.tagline}</p>
+                                    </div>
+                                    <div className="shrink-0 text-right">
+                                      <p className={`text-[1.05rem] font-black tabular-nums leading-none ${confColor}`}>{conf}%</p>
+                                      <p className="text-[0.55rem] font-bold text-[var(--t3)] uppercase tracking-wider mt-0.5">confidence</p>
+                                    </div>
+                                  </div>
+
+                                  {/* Confidence bar */}
+                                  <div className="h-1 bg-[var(--s2)] overflow-hidden">
+                                    <div className={`h-full ${confBar} transition-all duration-700`} style={{ width: `${conf}%` }} />
+                                  </div>
+
+                                  {/* Body */}
+                                  <div className="p-4 space-y-3">
+                                    {/* Decision — hero text */}
+                                    {r.decision && (
+                                      <div className="flex gap-2.5">
+                                        <span className={`shrink-0 w-1 rounded-full ${meta.dot}`} />
+                                        <p className="text-[0.85rem] text-[var(--t7)] leading-relaxed font-medium italic">
+                                          “{r.decision}”
+                                        </p>
+                                      </div>
+                                    )}
+
+                                    {/* Evidence for / against — visual two-column */}
+                                    {(r.evidence_for?.length > 0 || r.evidence_against?.length > 0) && (
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                        {r.evidence_for?.length > 0 && (
+                                          <div className="group bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 rounded-xl p-3 transition-colors hover:bg-emerald-50 dark:hover:bg-emerald-950/50">
+                                            <div className="flex items-center gap-1.5 mb-2">
+                                              <ThumbsUp size={11} className="text-emerald-600 dark:text-emerald-400" />
+                                              <p className="text-[0.58rem] font-black text-emerald-700 dark:text-emerald-300 uppercase tracking-widest">
+                                                Evidence for ({r.evidence_for.length})
+                                              </p>
+                                            </div>
+                                            <ul className="space-y-1.5">
+                                              {r.evidence_for.map((e, i) => (
+                                                <li key={i} className="text-[0.74rem] text-[var(--t7)] leading-relaxed flex gap-2">
+                                                  <span className="text-emerald-600 dark:text-emerald-400 shrink-0 font-bold mt-0.5">＋</span>
+                                                  <span className="flex-1">{e}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                        {r.evidence_against?.length > 0 && (
+                                          <div className="group bg-red-50/80 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 rounded-xl p-3 transition-colors hover:bg-red-50 dark:hover:bg-red-950/50">
+                                            <div className="flex items-center gap-1.5 mb-2">
+                                              <ThumbsDown size={11} className="text-red-600 dark:text-red-400" />
+                                              <p className="text-[0.58rem] font-black text-red-700 dark:text-red-300 uppercase tracking-widest">
+                                                Evidence against ({r.evidence_against.length})
+                                              </p>
+                                            </div>
+                                            <ul className="space-y-1.5">
+                                              {r.evidence_against.map((e, i) => (
+                                                <li key={i} className="text-[0.74rem] text-[var(--t7)] leading-relaxed flex gap-2">
+                                                  <span className="text-red-500 dark:text-red-400 shrink-0 font-bold mt-0.5">−</span>
+                                                  <span className="flex-1">{e}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {/* Rejected hypotheses — considered & discarded */}
+                                    {r.rejected_hypotheses?.length > 0 && (
+                                      <div className="bg-[var(--s1)] border border-[var(--b1)] rounded-xl p-3">
+                                        <div className="flex items-center gap-1.5 mb-2">
+                                          <XCircle size={11} className="text-[var(--t3)]" />
+                                          <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-widest">
+                                            Considered &amp; rejected ({r.rejected_hypotheses.length})
+                                          </p>
+                                        </div>
+                                        <ul className="space-y-1.5">
+                                          {r.rejected_hypotheses.map((h, i) => (
+                                            <li key={i} className="text-[0.72rem] text-[var(--t4)] leading-relaxed flex gap-2">
+                                              <span className="shrink-0 text-[var(--t3)] mt-0.5">✗</span>
+                                              <span className="line-through decoration-[var(--t3)]/40 flex-1">{h}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+
+                                    {/* Empty body fallback */}
+                                    {!r.decision && !(r.evidence_for?.length) && !(r.evidence_against?.length) && !(r.rejected_hypotheses?.length) && (
+                                      <p className="text-[0.7rem] text-[var(--t3)] italic">This agent ran but did not emit structured reasoning.</p>
+                                    )}
+                                  </div>
+
+                                  {/* Footer — subtle metadata */}
+                                  <div className="px-4 py-2 border-t border-[var(--b1)]/60 bg-[var(--s1)]/40 flex items-center gap-2 flex-wrap">
+                                    <span className="text-[0.55rem] text-[var(--t3)] tabular-nums">
+                                      {new Date(r.created_at).toLocaleString()}
+                                    </span>
+                                    <span className="text-[var(--t3)] text-[0.5rem]">•</span>
+                                    <span className="text-[0.55rem] text-[var(--t3)] font-mono" title={`alert ${r.alert_id} · trace ${r.trace_id}`}>
+                                      alert {r.alert_id.slice(0, 8)}… · trace {r.trace_id.slice(0, 6)}…
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* ===== TIMELINE TAB ===== */}
               {detailTab === 'timeline' && (

@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import {
-  getModelClient, getBackupModelClient, getBackup2ModelClient,
+  resolveClientsForModel,
   getLocalModelClient, isLocalModel, localModelName,
 } from "./client.js";
 
@@ -103,26 +103,28 @@ export async function callStructuredLLM<T>({
     }
   }
 
-  // ── OpenRouter path: primary → backup1 → backup2 → primary retry ─────────
-  const clientGetters = [
-    { label: "primary",  fn: () => getModelClient(model) },
-    { label: "backup1",  fn: () => getBackupModelClient(model) },
-    { label: "backup2",  fn: () => getBackup2ModelClient(model) },
-    { label: "primary2", fn: () => getModelClient(model) },
-  ];
+  // ── External provider path ───────────────────────────────────────────────
+  // resolveClientsForModel walks the DB-backed provider registry in priority
+  // order (or the env-var fallback if no registry is wired). Each entry is
+  // tried in order; rate-limit errors fall through to the next provider with
+  // a short backoff. Quota / hard failures short-circuit.
+  const resolved = resolveClientsForModel(model);
+  if (resolved.length === 0) {
+    console.error(`[LLM Error][${phase}] No providers configured for model "${model}"`);
+    runCtx.fallbackPhases.push(phase);
+    return fallbackParsed.data;
+  }
 
-  for (let i = 0; i < clientGetters.length; i++) {
-    const { label, fn } = clientGetters[i];
-    const client = fn();
-    if (!client) continue;
-
+  for (let i = 0; i < resolved.length; i++) {
+    const { client, provider } = resolved[i];
+    const label = `${provider.kind}#${provider.id}`;
     try {
       const resp   = await client.invoke(messages);
       const json   = extractJSONObject(String(resp.content ?? ""));
       const parsed = schema.safeParse(json);
       if (!parsed.success) {
         const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-        console.error(`[LLM Schema Error][${phase}] ${issues}`);
+        console.error(`[LLM Schema Error][${phase}][${label}] ${issues}`);
         runCtx.fallbackPhases.push(phase);
         return fallbackParsed.data;
       }
@@ -132,13 +134,14 @@ export async function callStructuredLLM<T>({
       const isRateLimit = msg.includes("429") || /rate.?limit/i.test(msg);
       if (isDailyQuotaError(msg)) runCtx.quotaExhausted = true;
 
-      if (isRateLimit && i < clientGetters.length - 1) {
+      if (isRateLimit && i < resolved.length - 1) {
         const delay = (i + 1) * 2000;
-        console.warn(`[LLM][${phase}] rate-limited on ${label} key, trying next in ${delay / 1000}s…`);
+        console.warn(`[LLM][${phase}] rate-limited on ${label}, trying next provider in ${delay / 1000}s…`);
         await sleep(delay);
         continue;
       }
       console.error(`[LLM Error][${phase}][${label}]`, msg.slice(0, 300));
+      if (i < resolved.length - 1) continue;   // keep walking the chain on non-rate-limit errors too
       runCtx.fallbackPhases.push(phase);
       return fallbackParsed.data;
     }

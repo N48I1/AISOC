@@ -1,95 +1,155 @@
 import { ChatOpenAI } from "@langchain/openai";
 import dotenv from "dotenv";
+import type Database from "better-sqlite3";
+import {
+  parseModelId,
+  resolveProviders,
+  PROVIDER_KIND_DEFAULTS,
+  type LlmProvider,
+  type ProviderKind,
+} from "./llm-providers.js";
 
 dotenv.config();
 
-const API_KEY         = process.env.OPENROUTER_API_KEY         || "";
-const API_KEY_BACKUP  = process.env.OPENROUTER_API_KEY_BACKUP  || "";
-const API_KEY_BACKUP2 = process.env.OPENROUTER_API_KEY_BACKUP2 || "";
-const APP_URL         = process.env.APP_URL || "http://localhost:3000";
+const APP_URL = process.env.APP_URL || "http://localhost:3000";
 
-if (!API_KEY) console.warn("[Agents] OPENROUTER_API_KEY not set — AI calls will fail.");
-if (API_KEY_BACKUP)  console.log("[Agents] Backup key 1 loaded.");
-if (API_KEY_BACKUP2) console.log("[Agents] Backup key 2 loaded.");
+// Server.ts wires the SQLite handle in at boot via setProviderDb(). Until it
+// does, fall back to the legacy env-var keys so old deployments don't break.
+let _db: Database.Database | null = null;
 
-const clientCache        = new Map<string, ChatOpenAI>();
-const backupClientCache  = new Map<string, ChatOpenAI>();
-const backup2ClientCache = new Map<string, ChatOpenAI>();
-const localClientCache   = new Map<string, ChatOpenAI>();
+export function setProviderDb(db: Database.Database) { _db = db; }
 
-// Module-level Ollama base URL — updated by setLocalLLMBaseUrl() from server.ts
+const cache = new Map<string, ChatOpenAI>();
+const localClientCache = new Map<string, ChatOpenAI>();
+
 let _localBaseUrl = "http://localhost:11434";
 
 export function setLocalLLMBaseUrl(url: string) {
   _localBaseUrl = url.replace(/\/$/, "");
-  localClientCache.clear(); // invalidate cached clients when URL changes
+  localClientCache.clear();
   console.log(`[Agents] Local LLM base URL set to: ${_localBaseUrl}`);
 }
 
-export function getLocalLLMBaseUrl(): string {
-  return _localBaseUrl;
+export function getLocalLLMBaseUrl(): string { return _localBaseUrl; }
+
+export function isLocalModel(model: string): boolean { return model.startsWith("local::"); }
+export function localModelName(model: string): string { return model.replace(/^local::/, ""); }
+
+export function clearClientCache(): void { cache.clear(); }
+
+function safeJson(s: string): Record<string, string> {
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === "object" ? v : {};
+  } catch { return {}; }
 }
 
-/** Returns true if the model ID refers to a locally-hosted model (Ollama). */
-export function isLocalModel(model: string): boolean {
-  return model.startsWith("local::");
+// Per-provider headers — OpenRouter wants Referer/Title, others don't care.
+function headersFor(p: LlmProvider): Record<string, string> {
+  const extra = p.headers_json ? safeJson(p.headers_json) : {};
+  if (p.kind === "openrouter") {
+    return { "HTTP-Referer": APP_URL, "X-Title": "BBS AISOC Platform", ...extra };
+  }
+  return extra;
 }
 
-/** Strips the "local::" prefix to get the actual Ollama model name. */
-export function localModelName(model: string): string {
-  return model.replace(/^local::/, "");
-}
-
-function makeOpenRouterClient(model: string, apiKey: string): ChatOpenAI {
+function buildClient(p: LlmProvider, model: string): ChatOpenAI {
+  const baseURL = (p.base_url || PROVIDER_KIND_DEFAULTS[p.kind].base_url).replace(/\/$/, "");
   return new ChatOpenAI({
     model,
     temperature: 0.1,
     maxRetries:  0,
-    timeout:     15000,
+    timeout:     30000,
     configuration: {
-      apiKey,
-      baseURL: "https://openrouter.ai/api/v1",
-      defaultHeaders: {
-        "HTTP-Referer": APP_URL,
-        "X-Title": "BBS AISOC Platform",
-      },
+      apiKey: p.api_key || "missing-key",
+      baseURL,
+      defaultHeaders: headersFor(p),
     },
   });
 }
 
+function cacheKey(providerId: number, model: string): string { return `${providerId}::${model}`; }
+
 export function getLocalModelClient(modelName: string, baseUrl?: string): ChatOpenAI {
-  const url    = (baseUrl || _localBaseUrl).replace(/\/$/, "");
-  const cacheKey = `${url}::${modelName}`;
-  if (!localClientCache.has(cacheKey)) {
-    localClientCache.set(cacheKey, new ChatOpenAI({
+  const url = (baseUrl || _localBaseUrl).replace(/\/$/, "");
+  const key = `${url}::${modelName}`;
+  if (!localClientCache.has(key)) {
+    localClientCache.set(key, new ChatOpenAI({
       model:       modelName,
       temperature: 0.1,
       maxRetries:  0,
       timeout:     90000,
-      // Force valid JSON output — Ollama's OpenAI-compatible API supports this
       modelKwargs: { response_format: { type: "json_object" } },
-      configuration: {
-        apiKey:  "ollama",
-        baseURL: `${url}/v1`,
-      },
+      configuration: { apiKey: "ollama", baseURL: `${url}/v1` },
     }));
   }
-  return localClientCache.get(cacheKey)!;
+  return localClientCache.get(key)!;
 }
 
+export interface ResolvedClient { client: ChatOpenAI; provider: LlmProvider; }
+
+// Returns the ordered list of (provider, client) pairs the LLM fallback chain
+// should walk for this model. The model id may pin a specific provider id,
+// a kind, or be a bare model name (legacy → openrouter only).
+export function resolveClientsForModel(model: string): ResolvedClient[] {
+  if (isLocalModel(model)) return [];
+
+  if (!_db) return legacyEnvProviders(model);
+
+  const parsed = parseModelId(model);
+  const providers = resolveProviders(_db, parsed);
+  return providers.map(p => {
+    const key = cacheKey(p.id, parsed.bare);
+    if (!cache.has(key)) cache.set(key, buildClient(p, parsed.bare));
+    return { client: cache.get(key)!, provider: p };
+  });
+}
+
+function legacyEnvProviders(model: string): ResolvedClient[] {
+  const candidates = [
+    { id: -1, name: "env primary",   key: process.env.OPENROUTER_API_KEY         || "" },
+    { id: -2, name: "env backup 1",  key: process.env.OPENROUTER_API_KEY_BACKUP  || "" },
+    { id: -3, name: "env backup 2",  key: process.env.OPENROUTER_API_KEY_BACKUP2 || "" },
+  ].filter(c => c.key);
+  if (candidates.length === 0) {
+    console.warn("[Agents] No LLM providers configured (DB empty + env vars unset). AI calls will fail.");
+  }
+  const bare = parseModelId(model).bare;
+  return candidates.map((c, idx) => {
+    const fake: LlmProvider = {
+      id: c.id, name: c.name, kind: "openrouter" as ProviderKind,
+      base_url: PROVIDER_KIND_DEFAULTS.openrouter.base_url, api_key: c.key,
+      enabled: 1, priority: (idx + 1) * 10, headers_json: null,
+      created_at: "", updated_at: "", last_test_at: null, last_test_ok: null, last_test_error: null,
+    };
+    const key = cacheKey(fake.id, bare);
+    if (!cache.has(key)) cache.set(key, buildClient(fake, bare));
+    return { client: cache.get(key)!, provider: fake };
+  });
+}
+
+// Back-compat shim: returns the first resolved client. Old callers (none in
+// the current tree after the llm.ts refactor) keep working.
 export function getModelClient(model: string): ChatOpenAI {
-  if (!clientCache.has(model)) clientCache.set(model, makeOpenRouterClient(model, API_KEY));
-  return clientCache.get(model)!;
+  const r = resolveClientsForModel(model);
+  if (r.length > 0) return r[0].client;
+  return new ChatOpenAI({ model, configuration: { apiKey: "no-providers-configured", baseURL: "http://0.0.0.0" } });
 }
 
-export function getBackupModelClient(model: string): ChatOpenAI | null {
-  if (!API_KEY_BACKUP) return null;
-  if (!backupClientCache.has(model)) backupClientCache.set(model, makeOpenRouterClient(model, API_KEY_BACKUP));
-  return backupClientCache.get(model)!;
-}
-
-export function getBackup2ModelClient(model: string): ChatOpenAI | null {
-  if (!API_KEY_BACKUP2) return null;
-  if (!backup2ClientCache.has(model)) backup2ClientCache.set(model, makeOpenRouterClient(model, API_KEY_BACKUP2));
-  return backup2ClientCache.get(model)!;
+// Test endpoint helper. Pings the provider with a tiny 1-token JSON
+// completion. Returns ok/error + latency for the admin UI.
+export async function testProvider(p: LlmProvider, model: string): Promise<{ ok: boolean; error?: string; latency_ms?: number }> {
+  const t0 = Date.now();
+  try {
+    const client = buildClient(p, model);
+    const resp = await client.invoke([
+      { type: "system", content: "You respond with valid JSON only." },
+      { type: "human",  content: 'Reply with exactly: {"ok":true}' },
+    ] as any);
+    const txt = String(resp.content ?? "");
+    if (!txt) return { ok: false, error: "Empty response", latency_ms: Date.now() - t0 };
+    return { ok: true, latency_ms: Date.now() - t0 };
+  } catch (err: any) {
+    return { ok: false, error: (err?.message || String(err)).slice(0, 300), latency_ms: Date.now() - t0 };
+  }
 }

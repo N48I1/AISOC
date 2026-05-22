@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
+import {
+  ReasoningSchema,
+  REASONING_PROMPT_INSTRUCTION,
+  REASONING_JSON_EXAMPLE,
+  type ReasoningRow,
+} from "../memory/reasoning.js";
 
 const IocSchema = z.object({
   ips:       z.array(z.string()).default([]),
@@ -23,9 +29,12 @@ const AnalysisSchema = z.object({
   severity_validation:       z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]).default("MEDIUM"),
   recommended_action:        z.enum(["MONITOR", "INVESTIGATE", "CONTAIN", "ESCALATE", "BLOCK", "IGNORE"]).default("INVESTIGATE"),
   is_false_positive:         z.boolean().default(false),
-  false_positive_reason:     z.string().optional(),
+  // The model frequently sends `null` for non-FP alerts. Both `null` and
+  // omitted are acceptable; we normalise either to undefined downstream.
+  false_positive_reason:     z.string().nullable().optional(),
   false_positive_confidence: z.number().min(0).max(1).default(0),
   confidence:                z.number().min(0).max(1).default(0),
+  reasoning:                 ReasoningSchema.optional(),
 });
 
 const SYSTEM_PROMPT = `You are a SOC Alert Triage Agent specializing in Wazuh SIEM alerts.
@@ -122,8 +131,17 @@ Respond with this exact JSON structure:
   "is_false_positive": false,
   "false_positive_reason": "<reason string or omit if not FP>",
   "false_positive_confidence": 0.1,
-  "confidence": 0.85
-}`;
+  "confidence": 0.85,
+  ${REASONING_JSON_EXAMPLE}
+}
+
+REASONING BLOCK — this is the visible chain of thought the analyst will read.
+${REASONING_PROMPT_INSTRUCTION}
+For triage specifically, the reasoning fields should reflect the FP-vs-real decision:
+  - decision: state whether this is FP, real, or uncertain, and why in one sentence
+  - evidence_for: signals that point toward your is_false_positive choice
+  - evidence_against: signals that argue against it (be honest — if asset_context says fp_default but the alert mentions credential access, list that here)
+  - rejected_hypotheses: alternative attack interpretations you considered (e.g. "lateral movement — rejected because no SMB/RDP traffic", "scanner activity — rejected because dst_port is non-standard")`;
 
 export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGENT_MODELS.analysis, ctx?: RunContext) {
   const a = state.alert;
@@ -160,6 +178,8 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
   const iocHits: any[]   = Array.isArray(state.iocMemoryHits)   ? state.iocMemoryHits   : [];
   const suppHit: any     = state.suppressionHit ?? null;
   const corrResult: any  = state.correlationResult ?? null;
+  const priorReasoning: Array<{ alert_id: string; similarity: number; outcome?: string; reasoning: ReasoningRow[] }> =
+    Array.isArray(state.priorReasoning) ? state.priorReasoning : [];
 
   const assetBlock = assetCtx.length ? assetCtx.map((a: any) =>
     `- ${a.value} (${a.type}) → ${a.role}${a.fp_default ? ' [fp_default=TRUE]' : ''}${a.description ? ` — ${a.description}` : ''}`
@@ -186,12 +206,28 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
     ? `CORRELATION ANALYSIS:\n- campaign_detected: ${corrResult.campaign_detected}\n- escalation_needed: ${corrResult.escalation_needed}\n- campaign_name: ${corrResult.campaign_name || 'N/A'}\n- related_alerts: ${corrResult.related_alert_count ?? 0}\n${corrResult.campaign_detected || corrResult.escalation_needed ? '⚠ CORRELATION OVERRIDE: campaign or escalation detected — do NOT classify as false positive regardless of other signals.' : '- No campaign pattern detected.'}`
     : '';
 
+  // Cross-agent memory read: what prior agents concluded on semantically similar incidents.
+  // This is what stops the system "starting from a blank slate" every time — the new triage
+  // benefits from how previous triages reasoned, including their rejected hypotheses.
+  const priorReasoningBlock = priorReasoning.length ? priorReasoning.slice(0, 3).map((p) => {
+    const lines: string[] = [];
+    lines.push(`Prior incident ${p.alert_id} (${(p.similarity * 100).toFixed(0)}% similar${p.outcome ? `, outcome=${p.outcome}` : ''}):`);
+    for (const r of p.reasoning.slice(0, 2)) {
+      lines.push(`  [${r.agent}] decided: ${r.decision || '(no decision recorded)'}`);
+      if (r.evidence_for?.length)        lines.push(`    + ${r.evidence_for.slice(0, 3).join(' | ')}`);
+      if (r.evidence_against?.length)    lines.push(`    - ${r.evidence_against.slice(0, 3).join(' | ')}`);
+      if (r.rejected_hypotheses?.length) lines.push(`    ✗ rejected: ${r.rejected_hypotheses.slice(0, 2).join(' | ')}`);
+    }
+    return lines.join('\n');
+  }).join('\n\n') : '';
+
   const memoryBlock = [
     suppressionBlock,
     corrBlock,
     assetBlock   ? `KNOWN ASSET CONTEXT (analyst-curated):\n${assetBlock}`                                    : '',
     priorFpBlock ? `PRIOR FALSE-POSITIVE OUTCOMES FOR SIMILAR INCIDENTS (semantic recall):\n${priorFpBlock}` : '',
     iocHistBlock ? `IOC HISTORY (this alert's IOCs in past memory):\n${iocHistBlock}`                       : '',
+    priorReasoningBlock ? `PRIOR AGENT REASONING ON SIMILAR INCIDENTS (cross-agent memory read — what previous triages concluded and why; use this to maintain continuity, not as ground truth):\n${priorReasoningBlock}` : '',
   ].filter(Boolean).join('\n\n');
 
   if (memoryBlock) {
@@ -201,6 +237,7 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
       assetCtx.length  ? `${assetCtx.length} asset`   : '',
       priorFp.length   ? `${priorFp.length} prior FP` : '',
       iocHits.length   ? `${iocHits.length} IOC`      : '',
+      priorReasoning.length ? `${priorReasoning.length} prior-reasoning` : '',
     ].filter(Boolean);
     logs.push(`[Analysis] Intelligence context applied: ${parts.join(', ')}`);
   }
@@ -239,6 +276,13 @@ ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
       false_positive_reason:     undefined,
       false_positive_confidence: 0,
       confidence:                0,
+      reasoning: {
+        decision:            "Triage agent did not respond — defaulting to manual review.",
+        evidence_for:        [],
+        evidence_against:    [],
+        rejected_hypotheses: [],
+        confidence:          0,
+      },
     },
     ctx,
   });

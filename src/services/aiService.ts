@@ -21,14 +21,45 @@ export interface LocalModel {
   modified_at: string;
 }
 
+export interface ProviderGroup {
+  providerId:   number;
+  providerName: string;
+  kind:         string;
+  models:       Array<{ id: string; raw: string; label: string }>;
+}
+
 export interface AgentModelConfig {
   agents:          Array<{ phase: AgentPhase; name: string; desc: string }>;
   defaults:        Record<AgentPhase, string>;
   assignments:     Record<AgentPhase, string>;
   availableModels: string[];
   modelLabels?:    Record<string, string>;
+  providerGroups?: ProviderGroup[];
   localConfig?:    { url: string; enabled: boolean };
   localModels?:    LocalModel[];
+}
+
+export interface LlmProviderRow {
+  id: number;
+  name: string;
+  kind: string;
+  base_url: string;
+  enabled: number;
+  priority: number;
+  headers_json: string | null;
+  created_at: string;
+  updated_at: string;
+  last_test_at: string | null;
+  last_test_ok: number | null;
+  last_test_error: string | null;
+  api_key_mask: string;
+  api_key_set: boolean;
+}
+
+export interface LlmProvidersResponse {
+  providers: LlmProviderRow[];
+  kinds: Array<{ id: string; label: string; base_url: string }>;
+  catalog: Record<string, Array<{ id: string; label: string }>>;
 }
 
 export interface AgentStat {
@@ -171,6 +202,73 @@ export async function getLocalLLMModels(): Promise<{ models: LocalModel[]; error
 export async function getAgentStats(): Promise<AgentStat[]> {
   const res = await fetch('/api/ai/agent-stats', { headers: authHeaders() });
   if (!res.ok) return [];
+  return res.json();
+}
+
+// ─── LLM provider registry ───────────────────────────────────────────────────
+export async function getLlmProviders(): Promise<LlmProvidersResponse> {
+  const res = await fetch('/api/admin/llm-providers', { headers: authHeaders() });
+  if (!res.ok) throw new Error('Failed to load providers');
+  return res.json();
+}
+
+export async function createLlmProvider(payload: {
+  name: string;
+  kind: string;
+  base_url?: string;
+  api_key: string;
+  priority?: number;
+  headers_json?: string;
+  enabled?: boolean;
+}, stepUpToken: string): Promise<LlmProviderRow> {
+  const res = await fetch('/api/admin/llm-providers', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'X-Step-Up-Token': stepUpToken },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    if (err.step_up_required) { const e: any = new Error(err.error || 'Re-authentication required'); e.step_up_required = true; throw e; }
+    throw new Error(err.error || 'Failed to create provider');
+  }
+  return res.json();
+}
+
+export async function updateLlmProvider(id: number, payload: Partial<{
+  name: string; kind: string; base_url: string; api_key: string;
+  priority: number; headers_json: string | null; enabled: boolean;
+}>, stepUpToken: string): Promise<LlmProviderRow> {
+  const res = await fetch(`/api/admin/llm-providers/${id}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(), 'X-Step-Up-Token': stepUpToken },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    if (err.step_up_required) { const e: any = new Error(err.error || 'Re-authentication required'); e.step_up_required = true; throw e; }
+    throw new Error(err.error || 'Failed to update provider');
+  }
+  return res.json();
+}
+
+export async function deleteLlmProvider(id: number, stepUpToken: string): Promise<void> {
+  const res = await fetch(`/api/admin/llm-providers/${id}`, {
+    method: 'DELETE',
+    headers: { ...authHeaders(), 'X-Step-Up-Token': stepUpToken },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    if (err.step_up_required) { const e: any = new Error(err.error || 'Re-authentication required'); e.step_up_required = true; throw e; }
+    throw new Error(err.error || 'Failed to delete provider');
+  }
+}
+
+export async function testLlmProvider(id: number, model?: string): Promise<{ ok: boolean; error?: string; latency_ms?: number; model: string }> {
+  const res = await fetch(`/api/admin/llm-providers/${id}/test`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ model: model || '' }),
+  });
   return res.json();
 }
 
@@ -585,6 +683,43 @@ export async function updateIncident(id: string, payload: { report_body?: string
 export async function getIncident(id: string): Promise<Incident | null> {
   const res = await fetch(`/api/incidents/${id}`, { headers: authHeaders() });
   if (!res.ok) return null;
+  return res.json();
+}
+
+// ─── Reasoning timeline (Tier 1.2) ───────────────────────────────────────────
+// Each row is what one agent decided, with the evidence it weighed and the
+// alternatives it rejected. Arrays come back as JSON-parsed string arrays.
+export interface ReasoningRow {
+  id:                  number;
+  alert_id:            string;
+  trace_id:            string;
+  agent:               string;
+  step:                number;
+  decision:            string;
+  evidence_for:        string[];
+  evidence_against:    string[];
+  rejected_hypotheses: string[];
+  confidence:          number;
+  created_at:          string;
+}
+
+export async function getIncidentReasoning(incidentId: string): Promise<{
+  incident_id: string;
+  count:       number;
+  reasoning:   ReasoningRow[];
+}> {
+  const res = await fetch(`/api/incidents/${incidentId}/reasoning`, { headers: authHeaders() });
+  if (!res.ok) return { incident_id: incidentId, count: 0, reasoning: [] };
+  return res.json();
+}
+
+export async function getAlertReasoning(alertId: string): Promise<{
+  alert_id: string;
+  count:    number;
+  reasoning: ReasoningRow[];
+}> {
+  const res = await fetch(`/api/alerts/${alertId}/reasoning`, { headers: authHeaders() });
+  if (!res.ok) return { alert_id: alertId, count: 0, reasoning: [] };
   return res.json();
 }
 

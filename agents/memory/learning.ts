@@ -89,8 +89,36 @@ export function processAutoLearning(): Array<{ value: string; type: string; fp_r
 }
 
 /**
- * Reinforce feedback: update IOC fp/tp counts when analyst confirms verdict.
- * Also triggers auto-learning check for the affected IOCs.
+ * Best-effort IOC type inference from a raw value. Used by reinforceFeedback
+ * when an out-of-band alert (one that never went through triage) requires
+ * inserting a fresh ioc_memory row. Production flow seeds the type via
+ * upsertIocs(); this is a defensive fallback.
+ */
+function inferIocType(v: string): 'ip' | 'domain' | 'hash' | 'url' | 'user' | 'file' | 'unknown' {
+  const s = v.trim();
+  if (!s) return 'unknown';
+  // IPv4 / IPv6
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(s) || /:[0-9a-f:]+/i.test(s)) return 'ip';
+  // hashes (md5/sha1/sha256)
+  if (/^[a-f0-9]{32}$/i.test(s) || /^[a-f0-9]{40}$/i.test(s) || /^[a-f0-9]{64}$/i.test(s)) return 'hash';
+  // urls
+  if (/^https?:\/\//i.test(s)) return 'url';
+  // domains
+  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(s)) return 'domain';
+  // file paths
+  if (/[\\/]/.test(s) && /\.[a-z0-9]{1,5}$/i.test(s)) return 'file';
+  return 'unknown';
+}
+
+/**
+ * Reinforce feedback: bump IOC fp/tp counts when analyst confirms verdict.
+ *
+ * Production flow seeds ioc_memory via upsertIocs() during triage, so the row
+ * already exists by the time the analyst clicks Confirm FP. For out-of-band
+ * alerts (manually inserted, alerts that skipped triage on error, tests), we
+ * fall back to an UPSERT so the feedback signal is never silently lost. The
+ * type column gets a heuristic default; a later real triage run will overwrite
+ * it on next sighting.
  */
 export function reinforceFeedback(
   alertIocValues: string[],
@@ -102,15 +130,20 @@ export function reinforceFeedback(
   const fpInc = verdict === 'FALSE_POSITIVE' ? 1 : 0;
   const tpInc = verdict === 'TRUE_POSITIVE' ? 1 : 0;
 
+  // INSERT-or-UPDATE so out-of-band alerts also capture the signal.
   const stmt = db.prepare(`
-    UPDATE ioc_memory SET
-      fp_count = COALESCE(fp_count, 0) + ?,
-      tp_count = COALESCE(tp_count, 0) + ?
-    WHERE value = ?
+    INSERT INTO ioc_memory (value, type, alert_count, fp_count, tp_count)
+    VALUES (?, ?, 1, ?, ?)
+    ON CONFLICT(value) DO UPDATE SET
+      last_seen = CURRENT_TIMESTAMP,
+      fp_count  = COALESCE(ioc_memory.fp_count, 0) + ?,
+      tp_count  = COALESCE(ioc_memory.tp_count, 0) + ?
   `);
 
   for (const v of alertIocValues) {
-    stmt.run(fpInc, tpInc, v.trim());
+    const value = v.trim();
+    if (!value) continue;
+    stmt.run(value, inferIocType(value), fpInc, tpInc, fpInc, tpInc);
   }
 
   // If TP verdict on a previously auto-learned asset, remove fp_default

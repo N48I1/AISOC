@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
+import { ReasoningSchema, REASONING_PROMPT_INSTRUCTION, REASONING_JSON_EXAMPLE } from "../memory/reasoning.js";
 
 const TicketSchema = z.object({
   title:                   z.string(),
@@ -10,6 +11,7 @@ const TicketSchema = z.object({
   affected_systems:        z.array(z.string()).default([]),
   business_impact:         z.string().default("Unknown"),
   confidence:              z.number().min(0).max(1).default(0),
+  reasoning:               ReasoningSchema.optional(),
 });
 
 export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MODELS.ticketing, ctx?: RunContext) {
@@ -42,8 +44,12 @@ export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MO
   "email_notification_sent": true,
   "affected_systems": ["<hostname or IP>"],
   "business_impact": "<one sentence on business impact>",
-  "confidence": 0.8
-}`,
+  "confidence": 0.8,
+  ${REASONING_JSON_EXAMPLE}
+}
+
+${REASONING_PROMPT_INSTRUCTION}
+For ticketing: evidence_for/against should justify the priority choice with concrete signals from the analysis/intel. rejected_hypotheses should list other priority levels you considered (e.g. "CRITICAL — rejected, no exfiltration evidence and only one host affected").`,
     userPrompt: `Context:\n${JSON.stringify(promptCtx, null, 2)}`,
     fallback: {
       title: "Incident Ticket — Generation Failed",
@@ -53,6 +59,13 @@ export async function ticketingNode(state: any, model: string = DEFAULT_AGENT_MO
       affected_systems: [],
       business_impact: "Unknown — ticket generation failed.",
       confidence: 0,
+      reasoning: {
+        decision:            "Ticketing agent did not respond — defaulting to HIGH priority pending review.",
+        evidence_for:        [],
+        evidence_against:    [],
+        rejected_hypotheses: [],
+        confidence:          0,
+      },
     },
     ctx,
   });

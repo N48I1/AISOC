@@ -18,7 +18,33 @@ import nodemailer from 'nodemailer';
 import { createGlpiTicket }   from './agents/shared/glpi.js';
 import { sendTelegramMessage } from './agents/shared/telegram.js';
 import { findLdapUser, ldapAuthenticate, type LdapConfig } from './agents/shared/ldap.js';
-import { setLocalLLMBaseUrl } from './agents/shared/client.js';
+import { setLocalLLMBaseUrl, setProviderDb, testProvider, clearClientCache } from './agents/shared/client.js';
+import {
+  ensureLlmProvidersTable,
+  seedProvidersFromEnv,
+  listProviders,
+  getProvider,
+  invalidateProviderCache,
+  publicShape,
+  PROVIDER_KIND_DEFAULTS,
+  PROVIDER_MODEL_CATALOG,
+  type ProviderKind,
+} from './agents/shared/llm-providers.js';
+import {
+  ensurePolicyRows,
+  loadPasswordPolicy,
+  loadLockoutPolicy,
+  loadAdminIpAllowlist,
+  loadAuditRetention,
+  invalidatePolicyCache,
+  validatePasswordAgainstPolicy,
+  buildPermissionMatrix,
+  PERMISSIONS,
+  type PasswordPolicy,
+  type LockoutPolicy,
+} from './agents/shared/policy.js';
+import { ipInAnyCidr } from './agents/shared/cidr.js';
+import zlib from 'zlib';
 import {
   AGENT_METADATA,
   AGENT_PHASES,
@@ -32,6 +58,9 @@ import {
   runInvestigation,
   type ModelAssignments,
 } from './agents.js';
+import { reinforceFeedback, processAutoLearning } from './agents/memory/learning.js';
+import { listReasoningForAlert } from './agents/memory/reasoning.js';
+import { extractAssetValuesFromAlert } from './agents/memory/assets.js';
 
 dotenv.config();
 
@@ -137,10 +166,89 @@ async function sendSlackWebhook(webhookUrl: string, text: string): Promise<{ ok:
   }
 }
 
+// --- Response action normalisation -----------------------------------------
+// Single chokepoint for turning LLM-emitted response actions into clean
+// incident_actions rows. Returns null when the action would render as
+// "BLOCK_IP → unknown" (target-required type with no extractable target) —
+// those rows are dropped rather than seeded.
+const AGENT_TYPE_TO_DB_ACTION: Record<string, string> = {
+  BLOCK_IP:        'block_ip',
+  ISOLATE_HOST:    'isolate_host',
+  DISABLE_USER:    'disable_user',
+  RESET_PASSWORD:  'reset_password',
+  QUARANTINE_FILE: 'other',
+  NOTIFY_TEAM:     'escalate',
+};
+const TARGET_REQUIRED_ACTION_TYPES = new Set(['block_ip', 'isolate_host', 'disable_user', 'reset_password', 'firewall_rule']);
+const PLACEHOLDER_TARGET_RE = /^(unknown|n\/a|none|null|undefined|tbd|todo|target|ip|host|user|file|the target|<.*>)$/i;
+
+function normaliseSeedAction(
+  a: any,
+  alertCtx: { source_ip?: string|null; dest_ip?: string|null; user?: string|null; agent_name?: string|null } | null,
+  fallbackPriority: string,
+): { action_type: string; target: string | null; priority: string; description: string } | null {
+  if (!a) return null;
+
+  let actionType = '';
+  const rawType = typeof a === 'object' && a?.type ? String(a.type).toUpperCase() : '';
+  if (rawType && AGENT_TYPE_TO_DB_ACTION[rawType]) {
+    actionType = AGENT_TYPE_TO_DB_ACTION[rawType];
+  } else if (rawType && /^(BLOCK_IP|ISOLATE_HOST|DISABLE_USER|RESET_PASSWORD|COLLECT_FORENSICS|FIREWALL_RULE|ESCALATE|OTHER)$/.test(rawType)) {
+    actionType = rawType.toLowerCase();
+  } else {
+    const text = typeof a === 'string' ? a : (a?.action || a?.description || a?.title || a?.reason || '');
+    const lower = String(text || '').toLowerCase();
+    if      (/block.*ip|firewall block/.test(lower))             actionType = 'block_ip';
+    else if (/isolate|quarantine|disconnect/.test(lower))        actionType = 'isolate_host';
+    else if (/disable.*user|disable.*account/.test(lower))       actionType = 'disable_user';
+    else if (/reset password|password reset/.test(lower))        actionType = 'reset_password';
+    else if (/forensic|memory dump|capture|collect/.test(lower)) actionType = 'collect_forensics';
+    else if (/firewall rule|acl|policy|sinkhole|waf rule/.test(lower)) actionType = 'firewall_rule';
+    else if (/escalate|notify lead|notify team/.test(lower))     actionType = 'escalate';
+    else                                                          actionType = 'other';
+  }
+
+  let target: string | null = null;
+  const rawTargetCandidate = typeof a === 'object'
+    ? (a.target || a.ip || a.user || a.host || a.dest || a.dest_ip || null)
+    : null;
+  const rawTarget = rawTargetCandidate ? String(rawTargetCandidate).trim() : '';
+  if (rawTarget && !PLACEHOLDER_TARGET_RE.test(rawTarget)) {
+    target = rawTarget;
+  } else {
+    const ip   = alertCtx?.source_ip?.trim() || null;
+    const dest = alertCtx?.dest_ip?.trim()   || null;
+    const user = alertCtx?.user?.trim()      || null;
+    const host = alertCtx?.agent_name?.trim()|| null;
+    if      (actionType === 'block_ip')                                            target = ip || dest;
+    else if (actionType === 'isolate_host' || actionType === 'collect_forensics') target = host;
+    else if (actionType === 'disable_user' || actionType === 'reset_password')    target = user;
+    else if (actionType === 'firewall_rule')                                       target = ip || dest;
+  }
+
+  if (TARGET_REQUIRED_ACTION_TYPES.has(actionType) && !target) return null;
+
+  const rawDesc = typeof a === 'string'
+    ? a
+    : (a?.reason || a?.description || a?.action || '').toString().trim();
+  const description = rawDesc
+    || (target ? `${actionType.replace(/_/g, ' ')} ${target}` : actionType.replace(/_/g, ' '));
+
+  const rawPriority = typeof a === 'object' ? a?.priority : null;
+  const priority = (typeof rawPriority === 'string' && /^(CRITICAL|HIGH|MEDIUM|LOW)$/i.test(rawPriority))
+    ? rawPriority.toUpperCase()
+    : (fallbackPriority || 'MEDIUM');
+
+  return { action_type: actionType, target, priority, description: description.slice(0, 500) };
+}
+
 // --- Database Setup ---------------------------------------------------------
 let db: Database.Database;
 try {
-  db = new Database('soc.db');
+  // Honour SOC_DB_PATH so the server and agents/memory layer point at the
+  // same file. Without this they only happen to share `soc.db` when run from
+  // the repo root — testing with an alternate DB would silently diverge.
+  db = new Database(process.env.SOC_DB_PATH || 'soc.db');
   db.pragma('journal_mode = WAL');
 
   db.exec(`
@@ -335,6 +443,28 @@ try {
     CREATE INDEX IF NOT EXISTS idx_asset_value ON asset_context(value);
     CREATE INDEX IF NOT EXISTS idx_asset_type  ON asset_context(type);
 
+    -- ── Per-agent structured reasoning (Tier 1.2) ──────────────────────────
+    -- Every LLM-backed node emits a structured reasoning block per run.
+    -- The orchestrator persists each block here so the UI can render the
+    -- Reasoning timeline and so the next run can read what prior agents
+    -- concluded on semantically similar incidents (cross-agent memory read).
+    CREATE TABLE IF NOT EXISTS incident_reasoning (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id TEXT,
+      trace_id TEXT,
+      agent TEXT NOT NULL,            -- analysis | intel | knowledge | correlation | ticketing | response | validation | recall | ioc_check
+      step  INTEGER DEFAULT 0,        -- position within the trace, for ordering
+      decision TEXT,                  -- one-line conclusion
+      evidence_for TEXT,              -- JSON array of bullets
+      evidence_against TEXT,          -- JSON array of bullets
+      rejected_hypotheses TEXT,       -- JSON array of bullets
+      confidence REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(alert_id) REFERENCES alerts(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_reasoning_alert ON incident_reasoning(alert_id);
+    CREATE INDEX IF NOT EXISTS idx_reasoning_trace ON incident_reasoning(trace_id);
+
     -- ── Suppression rules (pattern-based FP auto-dismiss) ──────────────────
     CREATE TABLE IF NOT EXISTS suppression_rules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -399,10 +529,87 @@ try {
   safeAlter('ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0');
   safeAlter("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'");
   safeAlter('ALTER TABLE users ADD COLUMN access_expires_at TEXT');
+  // Session invalidation (NIST 800-53 AC-12, ISO 27001 A.5.16). Every issued
+  // JWT carries the current epoch; bumping the column kills all of a user's
+  // active tokens on the next request.
+  safeAlter('ALTER TABLE users ADD COLUMN jwt_epoch INTEGER DEFAULT 0');
+  // JIT temporary privilege (NIST 800-53 AC-6(2), ISO 27001 A.8.2). Admin can
+  // grant a higher role for a bounded window; expiry tick clears it.
+  safeAlter('ALTER TABLE users ADD COLUMN temp_role TEXT');
+  safeAlter('ALTER TABLE users ADD COLUMN temp_role_expires_at TEXT');
+  safeAlter('ALTER TABLE users ADD COLUMN temp_role_granted_by INTEGER');
+
+  // Password history (NIST 800-63B, ISO 27001 A.5.17). One row per change,
+  // trimmed to policy.history_depth on every insert.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS password_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_pwhist_user ON password_history(user_id, created_at DESC);
+    `);
+  } catch (err: any) {
+    console.warn('[Migration] password_history table create failed:', err?.message);
+  }
+
+  // Access review evidence (ISO 27001 A.5.18, NIST 800-53 AC-2(j)). Each
+  // review records a snapshot of every active user + the admin's decision.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS access_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        started_by INTEGER,
+        due_at DATETIME,
+        completed_at DATETIME,
+        note TEXT
+      );
+      CREATE TABLE IF NOT EXISTS access_review_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        review_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username_at_time TEXT,
+        role_at_time TEXT,
+        decision TEXT DEFAULT 'pending',
+        decided_by INTEGER,
+        decided_at DATETIME,
+        notes TEXT,
+        FOREIGN KEY (review_id) REFERENCES access_reviews(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_ari_review ON access_review_items(review_id);
+    `);
+  } catch (err: any) {
+    console.warn('[Migration] access_reviews table create failed:', err?.message);
+  }
+
   try {
     db.prepare("UPDATE users SET created_at = COALESCE(created_at, datetime('now'))").run();
   } catch (err: any) {
     console.warn('[Migration] users created_at backfill failed:', err?.message);
+  }
+
+  // Seed the four security-policy rows into `integrations` with NIST/ISO
+  // defaults. Idempotent — existing rows are not overwritten.
+  try {
+    ensurePolicyRows(db);
+  } catch (err: any) {
+    console.warn('[Migration] ensurePolicyRows failed:', err?.message);
+  }
+
+  // LLM provider registry (multi-provider configuration: OpenRouter, OpenAI,
+  // Anthropic, Gemini, custom). Seed from legacy OPENROUTER env keys on first
+  // boot so existing deployments upgrade cleanly. Then hand the DB to the
+  // client cache so resolveClientsForModel() can walk the registry.
+  try {
+    ensureLlmProvidersTable(db);
+    seedProvidersFromEnv(db);
+    setProviderDb(db);
+  } catch (err: any) {
+    console.warn('[Migration] LLM provider registry init failed:', err?.message);
   }
 
   // ── Seed known-asset entries (idempotent — won't overwrite manual changes) ──
@@ -642,21 +849,11 @@ try {
           if (reportBody) { setReport.run(reportBody, inc.id); reportsBackfilled++; }
 
           const planActions: any[] = j?.response?.actions || j?.phaseData?.response?.actions || [];
+          const alertCtx = getLinkedAlertSrc.get(inc.id) as any;
           for (const a of (Array.isArray(planActions) ? planActions : [])) {
-            const text = typeof a === 'string' ? a : (a?.action || a?.description || a?.title || JSON.stringify(a));
-            const lower = String(text || '').toLowerCase();
-            let actionType = 'other';
-            if      (/block.*ip|firewall block/.test(lower))             actionType = 'block_ip';
-            else if (/isolate|quarantine|disconnect/.test(lower))        actionType = 'isolate_host';
-            else if (/disable.*user|disable.*account/.test(lower))       actionType = 'disable_user';
-            else if (/reset password|password reset/.test(lower))        actionType = 'reset_password';
-            else if (/forensic|memory dump|capture|collect/.test(lower)) actionType = 'collect_forensics';
-            else if (/firewall rule|acl|policy/.test(lower))             actionType = 'firewall_rule';
-            else if (/escalate|notify lead/.test(lower))                 actionType = 'escalate';
-            const target = a?.target || a?.ip || a?.user || a?.host || null;
-            const priority = a?.priority || inc.severity || 'MEDIUM';
-            const desc = String(text || '').slice(0, 500);
-            insAction.run(inc.id, actionType, target, priority, desc, order++);
+            const row = normaliseSeedAction(a, alertCtx, inc.severity || 'MEDIUM');
+            if (!row) continue;
+            insAction.run(inc.id, row.action_type, row.target, row.priority, row.description, order++);
             totalActions++;
             createdAny = true;
             usedSource = 'analysis';
@@ -684,6 +881,26 @@ try {
     }
   } catch (err: any) {
     console.warn('[Backfill] Action/report backfill failed:', err?.message);
+  }
+
+  // ── One-time cleanup: purge nonsensical "BLOCK_IP → unknown" rows from older
+  //    incidents that were seeded before action normalisation existed.
+  try {
+    const purged = db.prepare(`
+      DELETE FROM incident_actions
+      WHERE status = 'pending'
+        AND (
+          (action_type IN ('block_ip', 'isolate_host', 'disable_user', 'reset_password', 'firewall_rule')
+            AND (target IS NULL OR trim(target) = '' OR lower(trim(target)) IN ('unknown','n/a','none','null','undefined','tbd','todo','target','ip','host','user','file')))
+          OR
+          (description IS NULL OR trim(description) = '')
+        )
+    `).run();
+    if (purged.changes > 0) {
+      console.log(`[Cleanup] Removed ${purged.changes} incident action(s) with missing/placeholder targets`);
+    }
+  } catch (err: any) {
+    console.warn('[Cleanup] Action purge failed:', err?.message);
   }
 
   // ── One-time backfill: bring existing alerts under the new FP-archive rules ──
@@ -792,7 +1009,8 @@ try {
   }
 
   // Seed demo campaign alerts — always refresh timestamps so they stay in the 72-hour correlation window
-  {
+  // Gated behind SEED_DEMO_ALERTS=1 so production never sees the fake APT campaign.
+  if (process.env.SEED_DEMO_ALERTS === '1') {
     const tsAgo = (h: number) =>
       new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
 
@@ -974,7 +1192,8 @@ try {
   }
 
   // ── Seed FP-candidate alerts (always reset to NEW so Noise Filter always has demos) ──
-  {
+  // Gated behind SEED_DEMO_ALERTS=1 so production never sees the fake FP candidates.
+  if (process.env.SEED_DEMO_ALERTS === '1') {
     const tsAgo = (h: number) =>
       new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
 
@@ -1346,6 +1565,91 @@ function writeAudit(userId: number | null, action: string, details: string) {
   }
 }
 
+// --- Feedback-loop IOC extraction -------------------------------------------
+// Collect every IOC value associated with a stored alert so analyst feedback
+// (confirm-FP / escalate / reclassify) can be propagated into ioc_memory.
+//
+// Sources, in priority order:
+//   1. The cached triage_data JSON (best — already includes LLM-extracted IOCs)
+//   2. The alert row's raw fields (source_ip, dest_ip, agent_name, hostname, user)
+//   3. extractAssetValuesFromAlert as a last-resort fallback
+function extractIocsForFeedback(alertId: string): string[] {
+  try {
+    const row: any = db.prepare(
+      'SELECT id, source_ip, dest_ip, agent_name, hostname, user, triage_data, full_log FROM alerts WHERE id = ?'
+    ).get(alertId);
+    if (!row) return [];
+
+    const set = new Set<string>();
+    const add = (v: any) => {
+      if (v == null) return;
+      const s = String(v).trim();
+      if (s && s.toLowerCase() !== 'unknown' && s.toLowerCase() !== 'n/a') set.add(s);
+    };
+
+    add(row.source_ip);
+    add(row.dest_ip);
+    add(row.agent_name);
+    add(row.hostname);
+    add(row.user);
+
+    if (row.triage_data) {
+      try {
+        const triage = JSON.parse(row.triage_data);
+        const iocs = triage?.iocs || {};
+        for (const key of ['ips', 'users', 'hosts', 'hashes', 'files', 'domains', 'urls']) {
+          const arr = iocs[key];
+          if (Array.isArray(arr)) for (const v of arr) add(v);
+        }
+      } catch { /* non-JSON triage_data — skip */ }
+    }
+
+    // Last-resort fallback: synthesize an alert-shaped object for the helper
+    if (set.size === 0) {
+      try {
+        const synth: any = {
+          source_ip: row.source_ip, dest_ip: row.dest_ip,
+          agent_name: row.agent_name, hostname: row.hostname, user: row.user,
+        };
+        if (row.full_log) {
+          try { synth.data = JSON.parse(row.full_log).data; } catch {}
+        }
+        for (const v of extractAssetValuesFromAlert(synth)) add(v);
+      } catch {}
+    }
+
+    return Array.from(set);
+  } catch (err: any) {
+    console.warn(`[Feedback] IOC extract failed for ${alertId}:`, err?.message);
+    return [];
+  }
+}
+
+// Apply analyst feedback to the memory layer. Verdict is what the analyst
+// actually decided ('FALSE_POSITIVE' or 'TRUE_POSITIVE'). Triggers
+// processAutoLearning() so an IOC that just crossed the FP threshold can be
+// auto-registered immediately rather than waiting for the next cron tick.
+function applyFeedbackToMemory(
+  alertId: string,
+  verdict: 'FALSE_POSITIVE' | 'TRUE_POSITIVE',
+  context: string,
+): { iocs: string[]; auto_registered: number } {
+  const iocs = extractIocsForFeedback(alertId);
+  if (iocs.length === 0) {
+    console.log(`[Feedback] ${verdict} for ${alertId} — no IOCs to reinforce (${context})`);
+    return { iocs: [], auto_registered: 0 };
+  }
+  try {
+    reinforceFeedback(iocs, verdict);
+    const newlyRegistered = processAutoLearning();
+    console.log(`[Feedback] ${verdict} for ${alertId}: reinforced ${iocs.length} IOC(s); auto-registered ${newlyRegistered.length} (${context})`);
+    return { iocs, auto_registered: newlyRegistered.length };
+  } catch (err: any) {
+    console.warn(`[Feedback] reinforce failed for ${alertId}:`, err?.message);
+    return { iocs, auto_registered: 0 };
+  }
+}
+
 // Read the saved LDAP config from the integrations table. Returns null if the
 // row is missing, disabled, or the config blob is empty/unparseable.
 function readLdapConfig(): (LdapConfig & { allow_local_fallback: boolean; default_role: string }) | null {
@@ -1505,23 +1809,39 @@ function getSeverityLabel(level: number): string {
 }
 
 // --- Server Setup -----------------------------------------------------------
-// ── Password complexity validator ─────────────────────────────────────────────
-const PASSWORD_RULES = {
-  minLength: 8,
-  requireUppercase: true,
-  requireLowercase: true,
-  requireDigit: true,
-  requireSpecial: true,
-};
-
+// Password complexity is driven by the `password_policy` integrations row
+// (NIST 800-63B / ISO 27001 A.5.17). validatePassword() reads the live policy
+// every call (the helper caches for 30s) so admin changes take effect quickly.
 function validatePassword(pw: string): { ok: boolean; errors: string[] } {
-  const errors: string[] = [];
-  if (pw.length < PASSWORD_RULES.minLength) errors.push(`At least ${PASSWORD_RULES.minLength} characters`);
-  if (PASSWORD_RULES.requireUppercase && !/[A-Z]/.test(pw)) errors.push('At least one uppercase letter');
-  if (PASSWORD_RULES.requireLowercase && !/[a-z]/.test(pw)) errors.push('At least one lowercase letter');
-  if (PASSWORD_RULES.requireDigit     && !/\d/.test(pw))    errors.push('At least one digit');
-  if (PASSWORD_RULES.requireSpecial   && !/[^A-Za-z0-9]/.test(pw)) errors.push('At least one special character (!@#$...)');
-  return { ok: errors.length === 0, errors };
+  return validatePasswordAgainstPolicy(pw, loadPasswordPolicy(db));
+}
+
+function recordPasswordChange(userId: number, newHash: string): void {
+  try {
+    db.prepare('INSERT INTO password_history (user_id, password_hash) VALUES (?, ?)').run(userId, newHash);
+    const policy = loadPasswordPolicy(db);
+    const keep = Math.max(1, policy.history_depth || 10);
+    // Trim — keep the most recent `keep` rows for this user
+    db.prepare(`
+      DELETE FROM password_history
+      WHERE user_id = ?
+        AND id NOT IN (
+          SELECT id FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+        )
+    `).run(userId, userId, keep);
+  } catch (err: any) {
+    console.warn('[password_history] insert failed:', err?.message);
+  }
+}
+
+function passwordMatchesHistory(userId: number, candidate: string): boolean {
+  const policy = loadPasswordPolicy(db);
+  const depth = Math.max(0, policy.history_depth || 0);
+  if (depth === 0) return false;
+  const rows = db.prepare(
+    'SELECT password_hash FROM password_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
+  ).all(userId, depth) as Array<{ password_hash: string }>;
+  return rows.some(r => bcrypt.compareSync(candidate, r.password_hash));
 }
 
 // ── Role hierarchy for RBAC (higher number = more privilege) ─────────────────
@@ -1533,8 +1853,10 @@ const ROLE_LEVEL: Record<string, number> = {
   ADMIN:         4,
 };
 
-const MAX_FAILED_LOGINS = 5;
-const LOCKOUT_MINUTES   = 15;
+// Lockout thresholds come from the `lockout_policy` integrations row
+// (ISO 27001 A.8.5, NIST 800-53 AC-7). Hardcoded fallbacks kick in only if
+// the row is missing.
+function getLockoutPolicy(): LockoutPolicy { return loadLockoutPolicy(db); }
 
 async function startServer() {
   const app = express();
@@ -1559,12 +1881,36 @@ async function startServer() {
   // Global rate limiter — 200 req/min per IP
   app.use(rateLimit({ windowMs: 60_000, max: 200, standardHeaders: true, legacyHeaders: false }));
 
-  // Auth Middleware
+  // Resolve a user's effective role — base role OR (if not expired) temp role,
+  // whichever has the higher privilege level. Lets us implement JIT elevation
+  // (NIST 800-53 AC-6(2), ISO 27001 A.8.2) without a separate role check.
+  function effectiveRole(u: any): string {
+    if (!u) return 'ANALYST';
+    const base = u.role || 'ANALYST';
+    if (!u.temp_role || !u.temp_role_expires_at) return base;
+    if (new Date(u.temp_role_expires_at).getTime() < Date.now()) return base;
+    const bl = ROLE_LEVEL[base]      ?? -1;
+    const tl = ROLE_LEVEL[u.temp_role] ?? -1;
+    return tl > bl ? u.temp_role : base;
+  }
+
+  // Auth Middleware — verifies JWT signature, checks the embedded epoch
+  // against the user's row (mismatch = revoked / forced logout), and rejects
+  // disabled accounts even mid-session.
   const authenticate = (req: any, res: any, next: any) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
     try {
-      req.user = jwt.verify(token, JWT_SECRET);
+      const decoded: any = jwt.verify(token, JWT_SECRET);
+      const row: any = db.prepare(
+        'SELECT id, username, role, email, status, jwt_epoch, temp_role, temp_role_expires_at FROM users WHERE id = ?'
+      ).get(decoded.id);
+      if (!row) return res.status(401).json({ error: 'User no longer exists' });
+      if (row.status === 'disabled') return res.status(403).json({ error: 'Account disabled' });
+      const tokenEpoch = typeof decoded.epoch === 'number' ? decoded.epoch : 0;
+      const userEpoch  = row.jwt_epoch || 0;
+      if (tokenEpoch !== userEpoch) return res.status(401).json({ error: 'Session revoked' });
+      req.user = { id: row.id, username: row.username, role: effectiveRole(row), email: row.email, base_role: row.role };
       next();
     } catch {
       res.status(401).json({ error: 'Invalid token' });
@@ -1573,6 +1919,18 @@ async function startServer() {
 
   const requireAdmin = (req: any, res: any, next: any) => {
     if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Admin only' });
+    // Admin IP allowlist (ISO 27001 A.5.15, NIST 800-53 AC-3 / SC-7). When
+    // enabled, only requests sourced from a CIDR in the allowlist may invoke
+    // admin endpoints. Blocked requests are audited so a denial-of-service
+    // misconfiguration shows up in the log.
+    const allow = loadAdminIpAllowlist(db);
+    if (allow.enabled && allow.cidrs.length > 0) {
+      const ip = (req.ip || req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim();
+      if (!ipInAnyCidr(ip, allow.cidrs)) {
+        writeAudit(req.user?.id ?? null, 'ADMIN_IP_BLOCKED', `Admin call denied from ${ip} (${req.method} ${req.path})`);
+        return res.status(403).json({ error: 'Admin access not allowed from this network' });
+      }
+    }
     next();
   };
 
@@ -1607,14 +1965,18 @@ async function startServer() {
   };
 
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const userProfileFields = 'id, username, email, role, display_name, avatar_color, timezone, notify_email, notify_critical, notify_assignments, bio, last_login, password_changed_at, created_at, must_change_password, status, access_expires_at';
+  const userProfileFields = 'id, username, email, role, display_name, avatar_color, timezone, notify_email, notify_critical, notify_assignments, bio, last_login, password_changed_at, created_at, must_change_password, status, access_expires_at, temp_role, temp_role_expires_at';
 
   app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(401).json({ error: 'Invalid credentials' });
 
     const issueToken = (u: any) => {
-      const token = jwt.sign({ id: u.id, username: u.username, role: u.role, email: u.email }, JWT_SECRET);
+      // Embed jwt_epoch — bumping the column kills every outstanding token
+      // for this user (NIST 800-53 AC-12, ISO 27001 A.5.16).
+      const fresh: any = db.prepare('SELECT jwt_epoch FROM users WHERE id = ?').get(u.id);
+      const epoch = fresh?.jwt_epoch ?? 0;
+      const token = jwt.sign({ id: u.id, username: u.username, role: u.role, email: u.email, epoch }, JWT_SECRET);
       const profile = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(u.id);
       return { token, user: profile };
     };
@@ -1680,15 +2042,21 @@ async function startServer() {
 
     if (!bcrypt.compareSync(password, user.password)) {
       const attempts = (user.failed_logins || 0) + 1;
-      writeAudit(user.id, 'LOGIN_FAILED', `Bad password for ${username} from ${req.ip || 'unknown'} (attempt ${attempts}/${MAX_FAILED_LOGINS})`);
-      if (attempts >= MAX_FAILED_LOGINS) {
-        const lockUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60000).toISOString();
+      const lockout = getLockoutPolicy();
+      writeAudit(user.id, 'LOGIN_FAILED', `Bad password for ${username} from ${req.ip || 'unknown'} (attempt ${attempts}/${lockout.max_failed_attempts})`);
+      if (attempts >= lockout.max_failed_attempts) {
+        const lockUntil = new Date(Date.now() + lockout.lockout_minutes * 60000).toISOString();
         db.prepare('UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?').run(attempts, lockUntil, user.id);
         writeAudit(user.id, 'ACCOUNT_LOCKED', `Account locked after ${attempts} failed attempts`);
-        return res.status(423).json({ error: `Too many failed attempts. Account locked for ${LOCKOUT_MINUTES} min.`, locked: true });
+        return res.status(423).json({ error: `Too many failed attempts. Account locked for ${lockout.lockout_minutes} min.`, locked: true });
       }
       db.prepare('UPDATE users SET failed_logins = ? WHERE id = ?').run(attempts, user.id);
-      return res.status(401).json({ error: 'Invalid credentials', attemptsRemaining: MAX_FAILED_LOGINS - attempts });
+      const captchaRequired = attempts >= lockout.captcha_after;
+      return res.status(401).json({
+        error: 'Invalid credentials',
+        attemptsRemaining: lockout.max_failed_attempts - attempts,
+        captchaRequired,
+      });
     }
 
     db.prepare("UPDATE users SET failed_logins = 0, locked_until = NULL, last_login = datetime('now') WHERE id = ?").run(user.id);
@@ -1988,8 +2356,13 @@ async function startServer() {
     if (!target) return res.status(404).json({ error: 'User not found' });
     const tempPassword = crypto.randomBytes(12).toString('base64url');
     const hashed = bcrypt.hashSync(tempPassword, 10);
-    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now'), must_change_password = 1, failed_logins = 0, locked_until = NULL WHERE id = ?").run(hashed, targetId);
-    writeAudit(req.user.id, 'PASSWORD_RESET', `Reset password for ${target.username} (must change on next login)`);
+    // Bump jwt_epoch too — a forced password reset implies any active sessions
+    // for that user should die immediately (NIST 800-53 AC-12).
+    db.prepare(
+      "UPDATE users SET password = ?, password_changed_at = datetime('now'), must_change_password = 1, failed_logins = 0, locked_until = NULL, jwt_epoch = COALESCE(jwt_epoch, 0) + 1 WHERE id = ?"
+    ).run(hashed, targetId);
+    recordPasswordChange(targetId, hashed);
+    writeAudit(req.user.id, 'PASSWORD_RESET', `Reset password for ${target.username} (must change on next login; sessions revoked)`);
     res.json({ temp_password: tempPassword });
   });
 
@@ -2055,6 +2428,7 @@ async function startServer() {
         `INSERT INTO users (username, password, email, role, display_name, password_changed_at, created_at, must_change_password, status)
          VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'active')`
       ).run(username, hashed, email || null, role || 'TIER1', display_name || null, mustChange);
+      recordPasswordChange(Number(result.lastInsertRowid), hashed);
       writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${role || 'TIER1'})${mustChange ? ' [must change pw]' : ''}`);
       const created: any = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(result.lastInsertRowid);
       // Return the temp password ONCE in the response (it's never stored in plaintext anywhere else)
@@ -2101,9 +2475,21 @@ async function startServer() {
     res.json(rows);
   });
 
-  // Password rules endpoint (for frontend validation hints)
+  // Password rules endpoint (for frontend validation hints) — sourced from
+  // the live `password_policy` integrations row. Shape is preserved for
+  // backwards compatibility with existing frontend code that reads camelCase.
   app.get('/api/auth/password-rules', (_req, res) => {
-    res.json(PASSWORD_RULES);
+    const p = loadPasswordPolicy(db);
+    res.json({
+      minLength:        p.min_length,
+      requireUppercase: p.require_uppercase,
+      requireLowercase: p.require_lowercase,
+      requireDigit:     p.require_digit,
+      requireSpecial:   p.require_special,
+      blockCommon:      p.block_common_passwords,
+      historyDepth:     p.history_depth,
+      maxAgeDays:       p.max_age_days,
+    });
   });
 
   app.patch('/api/users/me/password', authenticate, (req: any, res) => {
@@ -2116,7 +2502,12 @@ async function startServer() {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
     if (!bcrypt.compareSync(currentPassword, user.password))
       return res.status(401).json({ message: 'Current password is incorrect.' });
-    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now'), must_change_password = 0 WHERE id = ?").run(bcrypt.hashSync(newPassword, 10), req.user.id);
+    if (passwordMatchesHistory(req.user.id, newPassword)) {
+      return res.status(400).json({ message: 'This password was used recently. Choose a new one.' });
+    }
+    const newHash = bcrypt.hashSync(newPassword, 10);
+    db.prepare("UPDATE users SET password = ?, password_changed_at = datetime('now'), must_change_password = 0 WHERE id = ?").run(newHash, req.user.id);
+    recordPasswordChange(req.user.id, newHash);
     writeAudit(req.user.id, 'PASSWORD_CHANGED', `User ${user.username} changed password`);
     res.json({ message: 'Password updated.' });
   });
@@ -2139,6 +2530,278 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  // ── Session management ───────────────────────────────────────────────────
+  // Revoke-all: bump my own jwt_epoch. Every outstanding token (this browser
+  // included — caller will be kicked to login on the next request). NIST
+  // 800-53 AC-12 (Session Termination), ISO 27001 A.5.16.
+  app.post('/api/users/me/sessions/revoke-all', authenticate, (req: any, res) => {
+    db.prepare('UPDATE users SET jwt_epoch = COALESCE(jwt_epoch, 0) + 1 WHERE id = ?').run(req.user.id);
+    writeAudit(req.user.id, 'SESSIONS_REVOKED', `User ${req.user.username} revoked all of their sessions`);
+    res.json({ ok: true });
+  });
+
+  // Admin: forcibly revoke all sessions for any user
+  app.post('/api/admin/users/:id/revoke-sessions', authenticate, requireAdmin, (req: any, res) => {
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    db.prepare('UPDATE users SET jwt_epoch = COALESCE(jwt_epoch, 0) + 1 WHERE id = ?').run(targetId);
+    writeAudit(req.user.id, 'SESSIONS_REVOKED', `Admin revoked all sessions for ${target.username} (#${targetId})`);
+    res.json({ ok: true });
+  });
+
+  // ── JIT temp role (Phase 3.6, NIST AC-6(2), ISO A.8.2) ───────────────────
+  // Grant a user a temporary higher role for up to 4h. Step-up gated because
+  // it's an elevation event. The expiry tick (below) auto-clears when the
+  // window passes.
+  app.post('/api/admin/users/:id/temp-role', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
+    const targetId = parseInt(req.params.id);
+    const { role, minutes } = req.body || {};
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    const target: any = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!role || !(role in ROLE_LEVEL)) return res.status(400).json({ error: 'Invalid role' });
+    const dur = Math.min(240, Math.max(5, parseInt(minutes, 10) || 60));   // 5min–4h
+    if ((ROLE_LEVEL[role] ?? -1) <= (ROLE_LEVEL[target.role] ?? -1)) {
+      return res.status(400).json({ error: 'temp_role must be higher than base role' });
+    }
+    const expiresAt = new Date(Date.now() + dur * 60_000).toISOString();
+    db.prepare(
+      'UPDATE users SET temp_role = ?, temp_role_expires_at = ?, temp_role_granted_by = ? WHERE id = ?'
+    ).run(role, expiresAt, req.user.id, targetId);
+    writeAudit(req.user.id, 'TEMP_ROLE_GRANTED', `Granted ${target.username} temp role ${role} for ${dur} min (until ${expiresAt})`);
+    res.json({ ok: true, role, expires_at: expiresAt });
+  });
+
+  app.delete('/api/admin/users/:id/temp-role', authenticate, requireAdmin, (req: any, res) => {
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    const target: any = db.prepare('SELECT username FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    db.prepare('UPDATE users SET temp_role = NULL, temp_role_expires_at = NULL WHERE id = ?').run(targetId);
+    writeAudit(req.user.id, 'TEMP_ROLE_REVOKED', `Revoked temp role for ${target.username}`);
+    res.json({ ok: true });
+  });
+
+  // ── Inactive-user report (Phase 3.3, ISO A.5.18, NIST AC-2(3)) ───────────
+  app.get('/api/admin/inactive-users', authenticate, requireAdmin, (req: any, res) => {
+    const days = Math.max(1, Math.min(3650, parseInt(req.query.days as string, 10) || 90));
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const rows = db.prepare(`
+      SELECT id, username, email, role, status, last_login, created_at
+      FROM users
+      WHERE status = 'active'
+        AND (last_login IS NULL OR last_login < ?)
+      ORDER BY (last_login IS NULL) DESC, last_login ASC
+    `).all(cutoff);
+    res.json({ days, cutoff, count: rows.length, users: rows });
+  });
+
+  // Bulk disable selected users from the inactive report
+  app.post('/api/admin/inactive-users/disable', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
+    const ids: any[] = Array.isArray(req.body?.user_ids) ? req.body.user_ids : [];
+    const cleanIds = ids.map(x => parseInt(x, 10)).filter(n => Number.isFinite(n));
+    if (cleanIds.length === 0) return res.status(400).json({ error: 'user_ids required' });
+    if (cleanIds.includes(req.user.id)) return res.status(400).json({ error: 'Cannot disable your own account' });
+    const placeholders = cleanIds.map(() => '?').join(',');
+    const r = db.prepare(`UPDATE users SET status='disabled', jwt_epoch = COALESCE(jwt_epoch, 0) + 1 WHERE id IN (${placeholders})`).run(...cleanIds);
+    writeAudit(req.user.id, 'BULK_USER_DISABLED', `Bulk-disabled ${r.changes} inactive user(s) [step-up verified]`);
+    res.json({ disabled: r.changes });
+  });
+
+  // ── Permission matrix (Phase 3.1, ISO A.5.15 evidence) ───────────────────
+  app.get('/api/admin/permissions', authenticate, requireAdmin, (_req, res) => {
+    res.json({ roles: ['ANALYST','TIER1','TIER2','INCIDENT_LEAD','ADMIN'], matrix: buildPermissionMatrix() });
+  });
+
+  // ── Security policy management (read/write) ──────────────────────────────
+  // Thin wrappers over the four `integrations` policy rows. Allows the admin
+  // UI to load + edit them without exposing arbitrary integration writes.
+  const POLICY_ROWS = ['password_policy', 'lockout_policy', 'admin_ip_allowlist', 'audit_retention'] as const;
+  type PolicyName = typeof POLICY_ROWS[number];
+
+  app.get('/api/admin/security-policies', authenticate, requireAdmin, (_req, res) => {
+    res.json({
+      password_policy:    loadPasswordPolicy(db),
+      lockout_policy:     loadLockoutPolicy(db),
+      admin_ip_allowlist: loadAdminIpAllowlist(db),
+      audit_retention:    loadAuditRetention(db),
+    });
+  });
+
+  app.patch('/api/admin/security-policies/:name', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
+    const name = req.params.name as PolicyName;
+    if (!POLICY_ROWS.includes(name)) return res.status(400).json({ error: 'Unknown policy' });
+    const config = req.body?.config;
+    if (!config || typeof config !== 'object') return res.status(400).json({ error: 'config object required' });
+    db.prepare('UPDATE integrations SET config = ? WHERE name = ?').run(JSON.stringify(config), name);
+    invalidatePolicyCache();
+    const auditAction =
+      name === 'password_policy'    ? 'PASSWORD_POLICY_CHANGED'
+      : name === 'lockout_policy'   ? 'LOCKOUT_POLICY_CHANGED'
+      : name === 'admin_ip_allowlist' ? 'ADMIN_IP_ALLOWLIST_CHANGED'
+      : 'AUDIT_RETENTION_CHANGED';
+    writeAudit(req.user.id, auditAction, `Updated ${name} → ${JSON.stringify(config)}`);
+    res.json({ ok: true });
+  });
+
+  // ── Admin health card (Phase 4.3) ────────────────────────────────────────
+  app.get('/api/admin/health', authenticate, requireAdmin, (_req, res) => {
+    const counts: Record<string, number> = {};
+    for (const t of ['alerts','incidents','users','audit_logs','incident_actions','password_history','api_keys']) {
+      try {
+        const r: any = db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
+        counts[t] = r?.c ?? 0;
+      } catch { counts[t] = -1; }
+    }
+    const dbPath = path.join(__dirname, 'aisoc.db');
+    let dbSize = 0;
+    try { dbSize = fs.statSync(dbPath).size; } catch { /* ignore */ }
+    const lastHb: any = db.prepare('SELECT MAX(last_heartbeat_at) AS hb FROM api_keys').get();
+    const mem = process.memoryUsage();
+    res.json({
+      uptime_seconds: Math.round(process.uptime()),
+      node_version:   process.version,
+      db_size_bytes:  dbSize,
+      row_counts:     counts,
+      last_ingest_heartbeat: lastHb?.hb || null,
+      memory: {
+        rss:        mem.rss,
+        heap_used:  mem.heapUsed,
+        heap_total: mem.heapTotal,
+      },
+    });
+  });
+
+  // ── Compliance evidence reports (Phase 4.4) ─────────────────────────────
+  // CSV streamed downloads — handed to auditors as point-in-time evidence.
+  function streamCsv(res: any, filename: string, header: string[], rows: any[][]) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const esc = (v: any) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    res.write(header.join(',') + '\n');
+    for (const r of rows) res.write(r.map(esc).join(',') + '\n');
+    res.end();
+  }
+
+  app.get('/api/admin/reports/user-roster.csv', authenticate, requireAdmin, (req: any, res) => {
+    const rows = db.prepare(`
+      SELECT id, username, email, role, status, COALESCE(last_login, '') AS last_login,
+             COALESCE(created_at,'') AS created_at, COALESCE(access_expires_at,'') AS access_expires_at,
+             COALESCE(temp_role,'') AS temp_role
+      FROM users ORDER BY username ASC
+    `).all() as any[];
+    streamCsv(res, `user-roster-${new Date().toISOString().split('T')[0]}.csv`,
+      ['id','username','email','role','status','last_login','created_at','access_expires_at','temp_role'],
+      rows.map((r: any) => [r.id, r.username, r.email, r.role, r.status, r.last_login, r.created_at, r.access_expires_at, r.temp_role]));
+    writeAudit(req.user?.id, 'COMPLIANCE_REPORT_DOWNLOADED', 'user-roster.csv');
+  });
+
+  app.get('/api/admin/reports/failed-logins.csv', authenticate, requireAdmin, (req: any, res) => {
+    const days = Math.max(1, Math.min(365, parseInt(req.query.days as string, 10) || 90));
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const rows = db.prepare(`
+      SELECT timestamp, user_id, action, details
+      FROM audit_logs
+      WHERE action IN ('LOGIN_FAILED', 'ACCOUNT_LOCKED') AND timestamp >= ?
+      ORDER BY timestamp DESC
+    `).all(cutoff) as any[];
+    streamCsv(res, `failed-logins-${days}d.csv`,
+      ['timestamp','user_id','action','details'],
+      rows.map((r: any) => [r.timestamp, r.user_id ?? '', r.action, r.details]));
+    writeAudit(req.user.id, 'COMPLIANCE_REPORT_DOWNLOADED', `failed-logins.csv (${days}d)`);
+  });
+
+  app.get('/api/admin/reports/admin-actions.csv', authenticate, requireAdmin, (req: any, res) => {
+    const days = Math.max(1, Math.min(365, parseInt(req.query.days as string, 10) || 90));
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const adminActions = [
+      'USER_CREATED','USER_DELETED','USER_ROLE_CHANGED','USER_STATUS_CHANGED','USER_PROFILE_UPDATED',
+      'PASSWORD_RESET','USER_UNLOCKED','SESSIONS_REVOKED','TEMP_ROLE_GRANTED','TEMP_ROLE_REVOKED',
+      'PASSWORD_POLICY_CHANGED','LOCKOUT_POLICY_CHANGED','ADMIN_IP_ALLOWLIST_CHANGED','AUDIT_RETENTION_CHANGED',
+      'ADMIN_IP_BLOCKED','BULK_USER_DISABLED','ALERTS_RESET','INVESTIGATION_CLEARED','FP_ARCHIVE_CLEARED',
+      'ACCESS_REVIEW_STARTED','ACCESS_REVIEW_COMPLETED','AUDIT_ARCHIVED','STEP_UP_VERIFIED','STEP_UP_FAILED',
+    ];
+    const ph = adminActions.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT timestamp, user_id, action, details
+      FROM audit_logs
+      WHERE action IN (${ph}) AND timestamp >= ?
+      ORDER BY timestamp DESC
+    `).all(...adminActions, cutoff) as any[];
+    streamCsv(res, `admin-actions-${days}d.csv`,
+      ['timestamp','user_id','action','details'],
+      rows.map((r: any) => [r.timestamp, r.user_id ?? '', r.action, r.details]));
+    writeAudit(req.user.id, 'COMPLIANCE_REPORT_DOWNLOADED', `admin-actions.csv (${days}d)`);
+  });
+
+  app.get('/api/admin/reports/privileged-coverage.csv', authenticate, requireAdmin, (req: any, res) => {
+    // Privileged-account hygiene snapshot: who holds privileged roles, when
+    // they last logged in, whether they have a pending password change.
+    const rows = db.prepare(`
+      SELECT id, username, role, COALESCE(temp_role,'') AS temp_role,
+             COALESCE(last_login, '') AS last_login,
+             COALESCE(password_changed_at, '') AS password_changed_at,
+             COALESCE(must_change_password, 0) AS must_change_password,
+             status
+      FROM users
+      WHERE role IN ('ADMIN','INCIDENT_LEAD') OR temp_role IN ('ADMIN','INCIDENT_LEAD')
+      ORDER BY role DESC, username ASC
+    `).all() as any[];
+    streamCsv(res, `privileged-coverage.csv`,
+      ['id','username','role','temp_role','last_login','password_changed_at','must_change_password','status'],
+      rows.map((r: any) => [r.id, r.username, r.role, r.temp_role, r.last_login, r.password_changed_at, r.must_change_password, r.status]));
+    writeAudit(req.user.id, 'COMPLIANCE_REPORT_DOWNLOADED', 'privileged-coverage.csv');
+  });
+
+  // ── Access reviews (Phase 3.4) ───────────────────────────────────────────
+  app.post('/api/admin/access-reviews', authenticate, requireAdmin, (req: any, res) => {
+    const due = req.body?.due_at || null;
+    const r: any = db.prepare('INSERT INTO access_reviews (started_by, due_at, note) VALUES (?, ?, ?)').run(req.user.id, due, req.body?.note || null);
+    const reviewId = Number(r.lastInsertRowid);
+    const users = db.prepare(`SELECT id, username, role FROM users WHERE status='active'`).all() as any[];
+    const ins = db.prepare(`INSERT INTO access_review_items (review_id, user_id, username_at_time, role_at_time) VALUES (?, ?, ?, ?)`);
+    const tx = db.transaction((list: any[]) => { for (const u of list) ins.run(reviewId, u.id, u.username, u.role); });
+    tx(users);
+    writeAudit(req.user.id, 'ACCESS_REVIEW_STARTED', `Started review #${reviewId} with ${users.length} user(s)`);
+    res.json({ id: reviewId, items: users.length });
+  });
+
+  app.get('/api/admin/access-reviews', authenticate, requireAdmin, (_req, res) => {
+    const rows = db.prepare(`SELECT * FROM access_reviews ORDER BY started_at DESC LIMIT 50`).all();
+    res.json(rows);
+  });
+
+  app.get('/api/admin/access-reviews/:id', authenticate, requireAdmin, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    const review = db.prepare('SELECT * FROM access_reviews WHERE id = ?').get(id);
+    if (!review) return res.status(404).json({ error: 'Not found' });
+    const items = db.prepare('SELECT * FROM access_review_items WHERE review_id = ? ORDER BY id ASC').all(id);
+    res.json({ review, items });
+  });
+
+  app.patch('/api/admin/access-reviews/:id/items/:itemId', authenticate, requireAdmin, (req: any, res) => {
+    const itemId = parseInt(req.params.itemId, 10);
+    const { decision, notes } = req.body || {};
+    if (!['keep','change_role','disable'].includes(decision)) return res.status(400).json({ error: 'Invalid decision' });
+    db.prepare(`UPDATE access_review_items SET decision = ?, decided_by = ?, decided_at = datetime('now'), notes = ? WHERE id = ?`)
+      .run(decision, req.user.id, notes || null, itemId);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/admin/access-reviews/:id/complete', authenticate, requireAdmin, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    const items = db.prepare('SELECT decision, user_id, username_at_time, role_at_time FROM access_review_items WHERE review_id = ?').all(id) as any[];
+    db.prepare(`UPDATE access_reviews SET completed_at = datetime('now') WHERE id = ?`).run(id);
+    writeAudit(req.user.id, 'ACCESS_REVIEW_COMPLETED', `Review #${id} completed; decisions=${JSON.stringify(items)}`);
+    res.json({ ok: true });
+  });
+
   // ── Admin ─────────────────────────────────────────────────────────────────
   app.post('/api/admin/reset-alerts', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const result = db.prepare(`UPDATE alerts SET status='NEW', ai_analysis=NULL, mitre_attack=NULL, remediation_steps=NULL, email_sent=0`).run();
@@ -2153,7 +2816,7 @@ async function startServer() {
     const inPlaceholders = idList.map(() => '?').join(',');
     const tx = db.transaction(() => {
       // Children with FK on alerts.id — order doesn't matter, but delete all before parent.
-      for (const tbl of ['incident_responses', 'agent_runs', 'feedback', 'action_logs', 'blocks', 'working_memory']) {
+      for (const tbl of ['incident_alerts', 'agent_runs', 'feedback', 'action_logs', 'firewall_blocks', 'working_memory', 'incident_reasoning', 'incident_insights']) {
         try {
           db.prepare(`DELETE FROM ${tbl} WHERE alert_id IN (${inPlaceholders})`).run(...idList);
         } catch { /* table may not exist on older schemas */ }
@@ -2164,19 +2827,35 @@ async function startServer() {
     return tx();
   }
 
-  // Wipe everything currently visible in the Incidents tab (TRIAGED / ESCALATED / CLOSED / ANALYZING).
+  // Wipe everything currently visible in the Incidents tab AND the Alert Queue.
+  // - Alert Queue rows: alerts with status TRIAGED / ESCALATED / CLOSED / ANALYZING
+  // - Incidents tab rows: every row in the `incidents` table + its FK children
   // FP archive entries (FALSE_POSITIVE / FP_CONFIRMED) are preserved.
   app.post('/api/admin/clear-investigation', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const STATUSES = ['TRIAGED', 'ESCALATED', 'CLOSED', 'ANALYZING'];
     const placeholders = STATUSES.map(() => '?').join(',');
-    const ids = db.prepare(`SELECT id FROM alerts WHERE status IN (${placeholders})`).all(...STATUSES) as any[];
-    const idList = ids.map(r => r.id);
+    const queueIds = db.prepare(`SELECT id FROM alerts WHERE status IN (${placeholders})`).all(...STATUSES) as any[];
+    const queueIdList = queueIds.map(r => r.id);
 
     try {
-      const deleted = deleteAlertsAndChildren(idList);
-      writeAudit(req.user?.id, 'INVESTIGATION_CLEARED', `Deleted ${deleted} alerts from Incidents queue [step-up verified]`);
-      io.emit('alerts_cleared', { ids: idList });
-      res.json({ ok: true, deleted });
+      let deletedIncidents = 0;
+      const tx = db.transaction(() => {
+        // 1. Drop incidents table contents (and all FK children referencing incidents.id)
+        for (const tbl of ['incident_alerts', 'incident_timeline', 'incident_actions']) {
+          try { db.prepare(`DELETE FROM ${tbl}`).run(); } catch { /* table may not exist */ }
+        }
+        deletedIncidents = db.prepare('DELETE FROM incidents').run().changes;
+      });
+      tx();
+
+      // 2. Drop the Alert Queue rows (alerts + their FK children)
+      const deletedAlerts = deleteAlertsAndChildren(queueIdList);
+
+      writeAudit(req.user?.id, 'INVESTIGATION_CLEARED',
+        `Cleared Incidents+Queue: ${deletedIncidents} incident(s), ${deletedAlerts} queued alert(s) [step-up verified]`);
+      io.emit('alerts_cleared', { ids: queueIdList });
+      io.emit('incidents_cleared', {});
+      res.json({ ok: true, deleted: deletedIncidents + deletedAlerts, incidents: deletedIncidents, alerts: deletedAlerts });
     } catch (err: any) {
       console.error('[Clear Incidents] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Failed to clear Incidents' });
@@ -2514,12 +3193,28 @@ async function startServer() {
       } catch {}
     }
 
+    // Expose every enabled provider's curated model list so the per-agent
+    // dropdown can show options across providers. Each entry carries a
+    // provider-pinned model id (e.g. "anthropic::claude-sonnet-4-6") that the
+    // resolver in client.ts will route to the right kind.
+    const providers = listProviders(db, { includeDisabled: false });
+    const externalGroups = providers.map(p => {
+      const catalog = PROVIDER_MODEL_CATALOG[p.kind as ProviderKind] || [];
+      return {
+        providerId: p.id,
+        providerName: p.name,
+        kind: p.kind,
+        models: catalog.map(m => ({ id: `${p.kind}::${m.id}`, raw: m.id, label: m.label })),
+      };
+    });
+
     res.json({
       agents:          AGENT_PHASES.map(phase => ({ phase, ...AGENT_METADATA[phase] })),
       defaults:        DEFAULT_AGENT_MODELS,
       assignments,
       availableModels: OPENROUTER_FREE_MODELS,
       modelLabels:     OPENROUTER_MODEL_LABELS,
+      providerGroups:  externalGroups,
       localConfig:     { url: localUrl, enabled: localEnabled },
       localModels,
     });
@@ -2529,10 +3224,23 @@ async function startServer() {
     const { phase } = req.params;
     const { model } = req.body || {};
     if (!isAgentPhase(phase)) return res.status(400).json({ error: 'Invalid phase' });
-    const isOpenRouter = typeof model === 'string' && OPENROUTER_FREE_MODELS.includes(model as any);
-    const isLocal      = typeof model === 'string' && model.startsWith('local::');
-    if (!isOpenRouter && !isLocal)
+    if (typeof model !== 'string' || model.trim().length === 0) {
       return res.status(400).json({ error: 'Invalid model selection' });
+    }
+
+    // Accept three classes:
+    //  1. local::<name>                 (Ollama)
+    //  2. <providerKind>::<model>       (anthropic, openai, gemini, custom, openrouter)
+    //  3. bare OpenRouter free-tier id  (legacy compat)
+    const isLocal      = model.startsWith('local::');
+    const isOpenRouter = OPENROUTER_FREE_MODELS.includes(model as any);
+    const idx = model.indexOf('::');
+    const validKinds = ['openrouter','openai','anthropic','gemini','custom'];
+    const isPrefixed = idx > 0 && (validKinds.includes(model.slice(0, idx)) || /^\d+$/.test(model.slice(0, idx)));
+    if (!isLocal && !isOpenRouter && !isPrefixed) {
+      return res.status(400).json({ error: 'Invalid model id — expected local::, <provider>::<model>, or a known OpenRouter model' });
+    }
+
     const previous: any = db.prepare('SELECT model FROM agent_settings WHERE phase = ?').get(phase);
     db.prepare(`INSERT INTO agent_settings (phase, model) VALUES (?, ?) ON CONFLICT(phase) DO UPDATE SET model=excluded.model`).run(phase, model);
     writeAudit(req.user?.id, 'AI_MODEL_CHANGED', `Phase '${phase}': ${previous?.model || '(default)'} → ${model} [step-up verified]`);
@@ -2570,6 +3278,126 @@ async function startServer() {
     if (!result.ok) return res.json({ ok: false, error: result.error });
     const count = result.data?.models?.length ?? 0;
     res.json({ ok: true, model_count: count, message: `Connected — ${count} model${count === 1 ? '' : 's'} available` });
+  });
+
+  // ── LLM provider registry (multi-provider configuration) ─────────────────
+  // GET returns providers with their API keys masked. The full key is only
+  // ever returned to the admin once (in the create response, if they didn't
+  // supply one — currently they always supply it). All writes are audited
+  // and step-up gated because a stolen key is a high-blast-radius event.
+  app.get('/api/admin/llm-providers', authenticate, requireAdmin, (_req, res) => {
+    const rows = listProviders(db, { includeDisabled: true });
+    res.json({
+      providers: rows.map(publicShape),
+      kinds: Object.entries(PROVIDER_KIND_DEFAULTS).map(([id, v]) => ({ id, label: v.label, base_url: v.base_url })),
+      catalog: PROVIDER_MODEL_CATALOG,
+    });
+  });
+
+  app.post('/api/admin/llm-providers', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
+    const { name, kind, base_url, api_key, priority, headers_json, enabled } = req.body || {};
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
+    if (!kind || !(kind in PROVIDER_KIND_DEFAULTS)) return res.status(400).json({ error: 'Invalid kind' });
+    if (!api_key || typeof api_key !== 'string') return res.status(400).json({ error: 'api_key required' });
+    const url = (base_url && String(base_url).trim()) || PROVIDER_KIND_DEFAULTS[kind as ProviderKind].base_url;
+    if (!url) return res.status(400).json({ error: 'base_url required for custom kind' });
+    const r = db.prepare(
+      'INSERT INTO llm_providers (name, kind, base_url, api_key, enabled, priority, headers_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      name.trim(),
+      kind,
+      url,
+      api_key,
+      enabled === false ? 0 : 1,
+      Number.isFinite(priority) ? Number(priority) : 100,
+      headers_json ? String(headers_json) : null,
+    );
+    invalidateProviderCache();
+    clearClientCache();
+    writeAudit(req.user.id, 'LLM_PROVIDER_CREATED', `Added ${kind} provider "${name}" (id=${r.lastInsertRowid})`);
+    const created = getProvider(db, Number(r.lastInsertRowid));
+    res.json(created ? publicShape(created) : { ok: true });
+  });
+
+  app.patch('/api/admin/llm-providers/:id', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+    const existing = getProvider(db, id);
+    if (!existing) return res.status(404).json({ error: 'Provider not found' });
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    const changes: string[] = [];
+
+    const set = (col: string, val: any, label: string) => {
+      updates.push(`${col} = ?`);
+      values.push(val);
+      changes.push(label);
+    };
+
+    if (typeof req.body?.name === 'string' && req.body.name.trim() !== existing.name) {
+      set('name', req.body.name.trim(), `name → ${req.body.name.trim()}`);
+    }
+    if (typeof req.body?.kind === 'string' && req.body.kind !== existing.kind) {
+      if (!(req.body.kind in PROVIDER_KIND_DEFAULTS)) return res.status(400).json({ error: 'Invalid kind' });
+      set('kind', req.body.kind, `kind → ${req.body.kind}`);
+    }
+    if (typeof req.body?.base_url === 'string' && req.body.base_url !== existing.base_url) {
+      set('base_url', req.body.base_url, `base_url updated`);
+    }
+    if (typeof req.body?.api_key === 'string' && req.body.api_key.length > 0 && req.body.api_key !== existing.api_key) {
+      set('api_key', req.body.api_key, `api_key rotated`);
+    }
+    if (req.body?.enabled !== undefined) {
+      const v = req.body.enabled ? 1 : 0;
+      if (v !== existing.enabled) set('enabled', v, `enabled → ${v ? 'yes' : 'no'}`);
+    }
+    if (req.body?.priority !== undefined && Number(req.body.priority) !== existing.priority) {
+      set('priority', Number(req.body.priority), `priority → ${req.body.priority}`);
+    }
+    if (req.body?.headers_json !== undefined && (req.body.headers_json || null) !== existing.headers_json) {
+      set('headers_json', req.body.headers_json || null, `headers updated`);
+    }
+
+    if (updates.length === 0) return res.json(publicShape(existing));
+
+    updates.push("updated_at = datetime('now')");
+    values.push(id);
+    db.prepare(`UPDATE llm_providers SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    invalidateProviderCache();
+    clearClientCache();
+    writeAudit(req.user.id, 'LLM_PROVIDER_UPDATED', `Updated provider #${id} "${existing.name}" — ${changes.join('; ')}`);
+    const updated = getProvider(db, id);
+    res.json(updated ? publicShape(updated) : { ok: true });
+  });
+
+  app.delete('/api/admin/llm-providers/:id', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+    const existing = getProvider(db, id);
+    if (!existing) return res.status(404).json({ error: 'Provider not found' });
+    db.prepare('DELETE FROM llm_providers WHERE id = ?').run(id);
+    invalidateProviderCache();
+    clearClientCache();
+    writeAudit(req.user.id, 'LLM_PROVIDER_DELETED', `Deleted provider #${id} "${existing.name}" (${existing.kind})`);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/admin/llm-providers/:id/test', authenticate, requireAdmin, async (req: any, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+    const provider = getProvider(db, id);
+    if (!provider) return res.status(404).json({ error: 'Provider not found' });
+    const supplied = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+    const catalog = PROVIDER_MODEL_CATALOG[provider.kind as ProviderKind] || [];
+    const probeModel = supplied || catalog[0]?.id || 'gpt-4o-mini';
+    const result = await testProvider(provider, probeModel);
+    db.prepare(
+      `UPDATE llm_providers SET last_test_at = datetime('now'), last_test_ok = ?, last_test_error = ? WHERE id = ?`
+    ).run(result.ok ? 1 : 0, result.ok ? null : (result.error || 'unknown'), id);
+    invalidateProviderCache();
+    writeAudit(req.user.id, 'LLM_PROVIDER_TESTED', `Tested #${id} "${provider.name}" with ${probeModel} → ${result.ok ? 'ok' : 'failed: ' + result.error}`);
+    res.json({ ...result, model: probeModel });
   });
 
   // ── Agent statistics ───────────────────────────────────────────────────────
@@ -3235,7 +4063,9 @@ async function startServer() {
     db.prepare('INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id) VALUES (?, ?)').run(incId, args.alertId);
     db.prepare("UPDATE alerts SET status = 'ESCALATED', escalated_at = datetime('now') WHERE id = ?").run(args.alertId);
 
-    // Seed incident_actions from the agent's response.actions (best-effort)
+    // Seed incident_actions from the agent's response.actions.
+    // Every row is normalised + validated; actions that would render as "BLOCK_IP → unknown"
+    // (target-required type with no extractable target) are dropped on the floor.
     try {
       const parsed = JSON.parse(alert.ai_analysis || '{}');
       const planActions: any[] = parsed?.response?.actions || parsed?.phaseData?.response?.actions || [];
@@ -3243,21 +4073,17 @@ async function startServer() {
         `INSERT INTO incident_actions (incident_id, action_type, target, priority, status, source, description, order_index)
          VALUES (?, ?, ?, ?, 'pending', 'ai', ?, ?)`
       );
+      const alertCtx = {
+        source_ip:  alert.source_ip  || null,
+        dest_ip:    alert.dest_ip    || null,
+        user:       alert.user       || null,
+        agent_name: alert.agent_name || null,
+      };
       let orderIdx = 0;
       for (const a of (Array.isArray(planActions) ? planActions : [])) {
-        const text = typeof a === 'string' ? a : (a?.action || a?.description || a?.title || JSON.stringify(a));
-        const lower = String(text || '').toLowerCase();
-        let actionType = 'other';
-        if (/block.*ip|firewall block/.test(lower))           actionType = 'block_ip';
-        else if (/isolate|quarantine|disconnect/.test(lower)) actionType = 'isolate_host';
-        else if (/disable.*user|disable.*account/.test(lower))actionType = 'disable_user';
-        else if (/reset password|password reset/.test(lower)) actionType = 'reset_password';
-        else if (/forensic|memory dump|capture|collect/.test(lower)) actionType = 'collect_forensics';
-        else if (/firewall rule|acl|policy/.test(lower))      actionType = 'firewall_rule';
-        else if (/escalate|notify lead/.test(lower))          actionType = 'escalate';
-        const target = a?.target || a?.ip || a?.user || a?.host || null;
-        const actionPriority = a?.priority || priority || 'MEDIUM';
-        insAction.run(incId, actionType, target, actionPriority, String(text || '').slice(0, 500), orderIdx++);
+        const row = normaliseSeedAction(a, alertCtx, priority || 'MEDIUM');
+        if (!row) continue;
+        insAction.run(incId, row.action_type, row.target, row.priority, row.description, orderIdx++);
       }
     } catch { /* malformed action_plan — skip seeding */ }
 
@@ -3409,6 +4235,38 @@ async function startServer() {
     `).all(id);
 
     res.json(inc);
+  });
+
+  // ── Reasoning timeline (Tier 1.2) ─────────────────────────────────────────
+  // Returns the structured reasoning every agent emitted for an alert.
+  // Used by the UI's "Reasoning timeline" panel: each card shows what one
+  // agent decided, the evidence it weighed, and the alternatives it rejected.
+  app.get('/api/alerts/:id/reasoning', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const rows = listReasoningForAlert(id);
+      res.json({ alert_id: id, count: rows.length, reasoning: rows });
+    } catch (err: any) {
+      console.warn(`[Reasoning] fetch failed for ${id}:`, err?.message);
+      res.status(500).json({ error: err?.message || 'reasoning fetch failed' });
+    }
+  });
+
+  // Aggregate the reasoning of every alert linked to an incident, in
+  // chronological order. Lets the incident detail panel render a single
+  // unified timeline across all linked alerts.
+  app.get('/api/incidents/:id/reasoning', authenticate, (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const linked = db.prepare('SELECT alert_id FROM incident_alerts WHERE incident_id = ?').all(id) as any[];
+      if (linked.length === 0) return res.json({ incident_id: id, count: 0, reasoning: [] });
+      const all = linked.flatMap((r: any) => listReasoningForAlert(r.alert_id));
+      all.sort((a: any, b: any) => String(a.created_at).localeCompare(String(b.created_at)) || a.step - b.step);
+      res.json({ incident_id: id, count: all.length, reasoning: all });
+    } catch (err: any) {
+      console.warn(`[Reasoning] incident fetch failed for ${id}:`, err?.message);
+      res.status(500).json({ error: err?.message || 'reasoning fetch failed' });
+    }
   });
 
   // Action lifecycle (recommend → approve → execute)
@@ -3590,9 +4448,40 @@ async function startServer() {
        VALUES (?, 'reclassified_fp', ?, 'RECLASSIFIED_FP', ?, ?)`
     ).run(id, inc.status, req.user?.id ?? null, note || null);
 
-    writeAudit(req.user?.id, 'INCIDENT_RECLASSIFIED_FP', `Incident ${id} reclassified as FP (${linked.length} alert(s) returned to archive)`);
+    // Reclassification means a prior escalation was wrong. We append an FP
+    // signal (fp_count++) to every IOC in the affected alerts. We deliberately
+    // do NOT decrement the prior tp_count: at the time of escalation the
+    // analyst genuinely thought it was real — that's a signal in itself, and
+    // erasing it would distort the calibration tracking we'll add later. The
+    // empirical fp_ratio rebalances on its own as both counters coexist.
+    let totalIocs = 0;
+    let totalRegistered = 0;
+    for (const r of linked) {
+      const iocs = extractIocsForFeedback(r.alert_id);
+      if (iocs.length === 0) continue;
+      try {
+        reinforceFeedback(iocs, 'FALSE_POSITIVE');
+        totalIocs += iocs.length;
+      } catch (err: any) {
+        console.warn(`[Feedback] reclassify reinforce failed for ${r.alert_id}:`, err?.message);
+      }
+    }
+    try {
+      const newly = processAutoLearning();
+      totalRegistered = newly.length;
+    } catch {}
+
+    writeAudit(
+      req.user?.id, 'INCIDENT_RECLASSIFIED_FP',
+      `Incident ${id} reclassified as FP — ${linked.length} alert(s) returned, ${totalIocs} IOC(s) reinforced as FP, ${totalRegistered} auto-registered`,
+    );
     io.emit('incident_updated', { id });
-    res.json({ ok: true, status: 'RECLASSIFIED_FP', alerts_returned_to_archive: linked.length });
+    res.json({
+      ok: true,
+      status: 'RECLASSIFIED_FP',
+      alerts_returned_to_archive: linked.length,
+      feedback: { iocs_reinforced: totalIocs, auto_registered: totalRegistered },
+    });
   });
 
   app.patch('/api/incidents/:id/assign', authenticate, (req: any, res) => {
@@ -3762,6 +4651,8 @@ async function startServer() {
   });
 
   // ── Escalate alert: legacy endpoint, delegates to incident creation ────────
+  // Escalation is the strongest "this is real" signal an analyst can give —
+  // reinforce as TRUE_POSITIVE so the IOCs in this alert get tp_count++.
   app.post('/api/alerts/:id/escalate', authenticate, async (req: any, res) => {
     const { id } = req.params;
     try {
@@ -3771,8 +4662,12 @@ async function startServer() {
         create_glpi: true,
         user_id:     req.user?.id ?? null,
       });
-      writeAudit(req.user?.id, 'ALERT_ESCALATED', `Alert ${id} escalated → incident ${r.id} (legacy)`);
-      res.json({ ok: true, status: 'ESCALATED', incident_id: r.id });
+      const fb = applyFeedbackToMemory(id, 'TRUE_POSITIVE', 'alert-escalate');
+      writeAudit(
+        req.user?.id, 'ALERT_ESCALATED',
+        `Alert ${id} escalated → incident ${r.id} — reinforced ${fb.iocs.length} IOC(s) as TP`,
+      );
+      res.json({ ok: true, status: 'ESCALATED', incident_id: r.id, feedback: fb });
     } catch (err: any) {
       console.error('[Legacy escalate] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Escalation failed' });
@@ -3780,6 +4675,10 @@ async function startServer() {
   });
 
   // ── Confirm FP (analyst confirms FP verdict) ──────────────────────────────
+  // Wires the analyst's verdict into ioc_memory: every IOC seen in this alert
+  // gets fp_count++ via reinforceFeedback. processAutoLearning() then promotes
+  // any IOC that crossed the auto-register threshold into asset_context as
+  // fp_default=1, so the next alert with the same IOC can short-circuit.
   app.post('/api/alerts/:id/confirm-fp', authenticate, (req: any, res) => {
     const { id } = req.params;
     db.prepare(
@@ -3790,18 +4689,45 @@ async function startServer() {
          filtered_at = COALESCE(filtered_at, datetime('now'))
        WHERE id = ?`
     ).run(id);
-    writeAudit(req.user?.id, 'FP_CONFIRMED', `Alert ${id} FP confirmed by analyst`);
+
+    const fb = applyFeedbackToMemory(id, 'FALSE_POSITIVE', 'confirm-fp');
+    writeAudit(
+      req.user?.id, 'FP_CONFIRMED',
+      `Alert ${id} FP confirmed — reinforced ${fb.iocs.length} IOC(s), auto-registered ${fb.auto_registered}`,
+    );
     io.emit('alert_updated', { id, status: 'FP_CONFIRMED' });
-    res.json({ ok: true, status: 'FP_CONFIRMED' });
+    res.json({ ok: true, status: 'FP_CONFIRMED', feedback: fb });
   });
 
-  // ── Override FP (analyst overrides, sends back to investigation) ───────────
-  app.post('/api/alerts/:id/override-fp', authenticate, (req: any, res) => {
+  // ── Override FP (analyst rejects FP verdict — alert was real) ─────────────
+  // The analyst is telling the system this WAS a true positive. We:
+  //   1. Clear the FP markers on the alert
+  //   2. Promote it into an incident (so it shows up on the Incidents tab)
+  //   3. Reinforce TP signal in ioc_memory so similar alerts won't be auto-FP'd
+  app.post('/api/alerts/:id/override-fp', authenticate, async (req: any, res) => {
     const { id } = req.params;
-    db.prepare("UPDATE alerts SET status = 'FILTERED', fp_method = NULL, fp_reason = NULL, fp_confidence = 0 WHERE id = ?").run(id);
-    writeAudit(req.user?.id, 'FP_OVERRIDDEN', `Alert ${id} FP overridden — sent to investigation`);
-    io.emit('alert_updated', { id, status: 'FILTERED' });
-    res.json({ ok: true, status: 'FILTERED' });
+    try {
+      db.prepare("UPDATE alerts SET fp_method = NULL, fp_reason = NULL, fp_confidence = 0 WHERE id = ?").run(id);
+
+      const inc = await createIncidentFromAlert({
+        alertId:     id,
+        assigned_to: null,
+        create_glpi: true,
+        note:        'Promoted from FP archive — analyst overrode the FP verdict',
+        user_id:     req.user?.id ?? null,
+      });
+
+      const fb = applyFeedbackToMemory(id, 'TRUE_POSITIVE', 'override-fp');
+      writeAudit(
+        req.user?.id, 'FP_OVERRIDDEN',
+        `Alert ${id} FP overridden → incident ${inc.id} — reinforced ${fb.iocs.length} IOC(s) as TP, auto-registered ${fb.auto_registered}`,
+      );
+      io.emit('alert_updated', { id, status: 'ESCALATED' });
+      res.json({ ok: true, status: 'ESCALATED', incident_id: inc.id, feedback: fb });
+    } catch (err: any) {
+      console.error('[Override FP] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Override failed' });
+    }
   });
 
   // ── Pipeline Funnel Analytics ─────────────────────────────────────────────
@@ -4269,6 +5195,89 @@ async function startServer() {
       }
     } catch (err: any) {
       console.warn('[SLA] Background job error:', err?.message);
+    }
+  }, 5 * 60_000);
+
+  // ── Account-lifecycle tick (every 5 min) ─────────────────────────────────
+  // - Disables users whose access_expires_at has passed (ISO A.5.18 / NIST AC-2(2))
+  // - Clears temp_role grants that have expired (NIST AC-6(2))
+  setInterval(() => {
+    try {
+      const expired = db.prepare(
+        "SELECT id, username FROM users WHERE status='active' AND access_expires_at IS NOT NULL AND access_expires_at <> '' AND access_expires_at < datetime('now')"
+      ).all() as Array<{ id: number; username: string }>;
+      for (const u of expired) {
+        db.prepare(`UPDATE users SET status='disabled', jwt_epoch = COALESCE(jwt_epoch,0) + 1 WHERE id = ?`).run(u.id);
+        writeAudit(null, 'USER_ACCESS_EXPIRED', `Auto-disabled ${u.username} (#${u.id}); access window elapsed`);
+      }
+      const tempExpired = db.prepare(
+        "SELECT id, username, temp_role FROM users WHERE temp_role IS NOT NULL AND temp_role_expires_at IS NOT NULL AND temp_role_expires_at < datetime('now')"
+      ).all() as Array<{ id: number; username: string; temp_role: string }>;
+      for (const u of tempExpired) {
+        db.prepare(`UPDATE users SET temp_role = NULL, temp_role_expires_at = NULL WHERE id = ?`).run(u.id);
+        writeAudit(null, 'TEMP_ROLE_EXPIRED', `Temp role ${u.temp_role} expired for ${u.username} (#${u.id})`);
+      }
+    } catch (err: any) {
+      console.warn('[Lifecycle] tick error:', err?.message);
+    }
+  }, 5 * 60_000);
+
+  // ── Audit retention tick (Phase 4.1, ISO A.8.15, NIST AU-11) ─────────────
+  // Runs every hour; rows older than retention_days are streamed to
+  // YYYY-MM-DD.jsonl.gz and deleted. Idempotent — the same day's archive
+  // appends. archive_to_file=false skips writing (rows still deleted, with
+  // an audit row for accountability).
+  async function runAuditRetentionOnce() {
+    const cfg = loadAuditRetention(db);
+    const days = Math.max(7, cfg.retention_days || 365);   // floor at 7d
+    const cutoffIso = new Date(Date.now() - days * 86_400_000).toISOString();
+    const rows = db.prepare('SELECT id, timestamp, user_id, action, details FROM audit_logs WHERE timestamp < ?').all(cutoffIso) as any[];
+    if (rows.length === 0) return;
+
+    if (cfg.archive_to_file) {
+      try {
+        const dir = path.resolve(cfg.archive_path || './audit-archive');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, `audit-${new Date().toISOString().split('T')[0]}.jsonl.gz`);
+        const payload = rows.map(r => JSON.stringify(r)).join('\n') + '\n';
+        const gz = zlib.gzipSync(Buffer.from(payload, 'utf8'));
+        fs.appendFileSync(file, gz);
+      } catch (err: any) {
+        console.warn('[Audit retention] archive failed; aborting delete:', err?.message);
+        return;
+      }
+    }
+
+    const ids = rows.map(r => r.id);
+    const chunk = 500;
+    let total = 0;
+    for (let i = 0; i < ids.length; i += chunk) {
+      const slice = ids.slice(i, i + chunk);
+      const ph = slice.map(() => '?').join(',');
+      const r = db.prepare(`DELETE FROM audit_logs WHERE id IN (${ph})`).run(...slice);
+      total += r.changes;
+    }
+    writeAudit(null, 'AUDIT_ARCHIVED', `Archived + deleted ${total} audit row(s) older than ${days}d`);
+  }
+
+  setInterval(() => { runAuditRetentionOnce().catch(err => console.warn('[Audit retention] error:', err?.message)); }, 60 * 60_000);
+  // Kick off once at boot (after a short delay to let the rest of startup settle)
+  setTimeout(() => { runAuditRetentionOnce().catch(() => {}); }, 30_000);
+
+  // ── Auto-learning tick (every 5 min) ──────────────────────────────────────
+  // Periodically scan ioc_memory for indicators that crossed the FP threshold
+  // (>= 95% FP across >= 10 observations) and promote them to asset_context
+  // with fp_default=1. Each per-feedback call also runs this immediately, so
+  // this tick is a safety net for events that didn't go through the analyst
+  // endpoints (e.g. agent commits during ingest).
+  setInterval(() => {
+    try {
+      const newly = processAutoLearning();
+      if (newly.length > 0) {
+        writeAudit(null, 'AUTO_LEARN_TICK', `Auto-learned ${newly.length} new FP-default asset(s): ${newly.map(n => n.value).join(', ')}`);
+      }
+    } catch (err: any) {
+      console.warn('[AutoLearn tick] error:', err?.message);
     }
   }, 5 * 60_000);
 }

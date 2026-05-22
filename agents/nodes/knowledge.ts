@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
+import { ReasoningSchema, REASONING_PROMPT_INSTRUCTION, REASONING_JSON_EXAMPLE } from "../memory/reasoning.js";
 
 const KnowledgeSchema = z.object({
   remediation_steps:        z.string(),
@@ -8,6 +9,7 @@ const KnowledgeSchema = z.object({
   containment_priority:     z.enum(["IMMEDIATE", "HIGH", "MEDIUM", "LOW"]).default("MEDIUM"),
   estimated_effort_minutes: z.number().default(60),
   confidence:               z.number().min(0).max(1).default(0),
+  reasoning:                ReasoningSchema.optional(),
 });
 
 export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT_MODELS.knowledge, ctx?: RunContext) {
@@ -25,8 +27,12 @@ export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT
   "playbook_reference": "<e.g. NIST IR-2 or internal PB-WEB-001>",
   "containment_priority": "<IMMEDIATE|HIGH|MEDIUM|LOW>",
   "estimated_effort_minutes": 15,
-  "confidence": 0.85
-}`,
+  "confidence": 0.85,
+  ${REASONING_JSON_EXAMPLE}
+}
+
+${REASONING_PROMPT_INSTRUCTION}
+For the knowledge agent: evidence_for/against should reference the attack category and concrete elements of the alert that drove playbook selection. rejected_hypotheses should list other playbooks you considered (e.g. "PB-WEB-001 — rejected, no HTTP/web vector observed").`,
     userPrompt: `Alert: ${state.alert?.description || ""}\nLog: ${(state.alert?.full_log || "").slice(0, 500)}\nAnalysis: ${state.analysis?.analysis_summary || ""}`,
     fallback: {
       remediation_steps: "Playbook retrieval unavailable — LLM did not respond.",
@@ -34,6 +40,13 @@ export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT
       containment_priority: "HIGH",
       estimated_effort_minutes: 0,
       confidence: 0,
+      reasoning: {
+        decision:            "Knowledge agent did not respond — no playbook selected.",
+        evidence_for:        [],
+        evidence_against:    [],
+        rejected_hypotheses: [],
+        confidence:          0,
+      },
     },
     ctx,
   });
