@@ -32,6 +32,19 @@ export function setLocalLLMBaseUrl(url: string) {
 
 export function getLocalLLMBaseUrl(): string { return _localBaseUrl; }
 
+// Local-LLM auto-fallback (used when every external provider has failed).
+// Pushed from server.ts at boot + on config save so llm.ts can read it without
+// touching the DB directly.
+let _localFallbackEnabled = false;
+let _localFallbackModel   = "";
+export function setLocalLLMFallback(enabled: boolean, model: string) {
+  _localFallbackEnabled = !!enabled;
+  _localFallbackModel   = (model || "").trim();
+}
+export function getLocalLLMFallback(): { enabled: boolean; model: string } {
+  return { enabled: _localFallbackEnabled, model: _localFallbackModel };
+}
+
 export function isLocalModel(model: string): boolean { return model.startsWith("local::"); }
 export function localModelName(model: string): string { return model.replace(/^local::/, ""); }
 

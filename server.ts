@@ -18,7 +18,7 @@ import nodemailer from 'nodemailer';
 import { createGlpiTicket }   from './agents/shared/glpi.js';
 import { sendTelegramMessage } from './agents/shared/telegram.js';
 import { findLdapUser, ldapAuthenticate, type LdapConfig } from './agents/shared/ldap.js';
-import { setLocalLLMBaseUrl, setProviderDb, testProvider, clearClientCache } from './agents/shared/client.js';
+import { setLocalLLMBaseUrl, setLocalLLMFallback, setProviderDb, testProvider, clearClientCache } from './agents/shared/client.js';
 import {
   ensureLlmProvidersTable,
   seedProvidersFromEnv,
@@ -612,19 +612,6 @@ try {
     console.warn('[Migration] LLM provider registry init failed:', err?.message);
   }
 
-  // ── Seed known-asset entries (idempotent — won't overwrite manual changes) ──
-  const seedAsset = db.prepare(`
-    INSERT OR IGNORE INTO asset_context (value, type, role, description, fp_default, source)
-    VALUES (?, ?, ?, ?, ?, 'system_seed')
-  `);
-  seedAsset.run('172.10.9.10', 'ip',   'scanner',    'OpenVAS vulnerability scanner — authorized daily scans 02:00–04:00', 1);
-  seedAsset.run('10.0.0.50',  'ip',   'scanner',    'Nessus vulnerability scanner — authorized weekly scans', 1);
-  seedAsset.run('10.0.0.30',  'ip',   'monitoring', 'Internal monitoring host — Zabbix/healthcheck probes', 1);
-  seedAsset.run('10.0.0.20',  'ip',   'backup',     'Backup service host — nightly backup jobs run as root', 1);
-  seedAsset.run('10.0.0.99',  'ip',   'monitoring', 'QA test bench — automated smoke tests', 1);
-  seedAsset.run('backup-svc', 'user', 'backup',     'Backup service account — runs tar/rsync under sudo', 1);
-  seedAsset.run('monitoring', 'user', 'monitoring', 'Monitoring service account — healthcheck SSH probes', 1);
-
   // ── Pipeline redesign migrations ──────────────────────────────────────────
   safeAlter("ALTER TABLE alerts ADD COLUMN fp_method       TEXT");           // suppression | memory | triage | null
   safeAlter("ALTER TABLE alerts ADD COLUMN fp_confidence   REAL DEFAULT 0");
@@ -1008,475 +995,7 @@ try {
     console.log('[DB] Seeded 6 default playbooks');
   }
 
-  // Seed demo campaign alerts — always refresh timestamps so they stay in the 72-hour correlation window
-  // Gated behind SEED_DEMO_ALERTS=1 so production never sees the fake APT campaign.
-  if (process.env.SEED_DEMO_ALERTS === '1') {
-    const tsAgo = (h: number) =>
-      new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
 
-    const demoAlerts: Array<{
-      id: string; hoursAgo: number; rule_id: string; description: string;
-      severity: number; source_ip: string; dest_ip: string; user: string;
-      hostname: string; agent_name: string; full_log: string;
-    }> = [
-      // g — newest (shown first in queue)
-      {
-        id: 'demo-exfil-001', hoursAgo: 2,
-        rule_id: '92100',
-        description: 'Data exfiltration: 2.3 GB transferred from DB-SERVER-02 to 185.220.101.45 over encrypted channel',
-        severity: 15,
-        source_ip: '10.0.1.20', dest_ip: '185.220.101.45',
-        user: 'root', hostname: 'DB-SERVER-02', agent_name: 'DB-SERVER-02',
-        full_log: JSON.stringify({ timestamp: tsAgo(2), rule: { id: '92100', description: 'Large outbound data transfer to suspicious IP', level: 15 }, data: { srcip: '10.0.1.20', dstip: '185.220.101.45', dstport: 443, bytes_out: 2469606400, proto: 'TCP', duration_seconds: 1847 }, agent: { name: 'DB-SERVER-02' } }),
-      },
-      // f
-      {
-        id: 'demo-privesc-001', hoursAgo: 8,
-        rule_id: '5501',
-        description: 'Privilege escalation: User svc_backup added to sudoers group on DB-SERVER-02',
-        severity: 13,
-        source_ip: '10.0.1.20', dest_ip: '',
-        user: 'svc_backup', hostname: 'DB-SERVER-02', agent_name: 'DB-SERVER-02',
-        full_log: JSON.stringify({ timestamp: tsAgo(8), rule: { id: '5501', description: 'User added to privileged group', level: 13 }, data: { user: 'svc_backup', group: 'sudo', command: 'usermod -aG sudo svc_backup', srcip: '10.0.1.20' }, agent: { name: 'DB-SERVER-02' } }),
-      },
-      // e
-      {
-        id: 'demo-lateral-001', hoursAgo: 14,
-        rule_id: '60122',
-        description: 'Lateral movement: Pass-the-hash attack from WEB-SERVER-01 to DB-SERVER-02 using stolen NTLM hash',
-        severity: 14,
-        source_ip: '10.0.1.10', dest_ip: '10.0.1.20',
-        user: 'svc_backup', hostname: 'DB-SERVER-02', agent_name: 'DB-SERVER-02',
-        full_log: JSON.stringify({ timestamp: tsAgo(14), rule: { id: '60122', description: 'Pass-the-hash attack detected', level: 14 }, data: { srcip: '10.0.1.10', dstip: '10.0.1.20', user: 'svc_backup', auth_type: 'NTLM', logon_type: 3, hash: 'aad3b435b51404eeaad3b435b51404ee' }, agent: { name: 'DB-SERVER-02' } }),
-      },
-      // d
-      {
-        id: 'demo-c2-beacon-001', hoursAgo: 20,
-        rule_id: '87702',
-        description: 'C2 beacon detected: WEB-SERVER-01 making periodic HTTPS requests to 77.91.68.45:8443',
-        severity: 12,
-        source_ip: '10.0.1.10', dest_ip: '77.91.68.45',
-        user: 'www-data', hostname: 'WEB-SERVER-01', agent_name: 'WEB-SERVER-01',
-        full_log: JSON.stringify({ timestamp: tsAgo(20), rule: { id: '87702', description: 'Known C2 framework beacon pattern', level: 12 }, data: { srcip: '10.0.1.10', dstip: '77.91.68.45', dstport: 8443, proto: 'HTTPS', interval_seconds: 60, user_agent: 'Mozilla/5.0' }, agent: { name: 'WEB-SERVER-01' } }),
-      },
-      // c
-      {
-        id: 'demo-webshell-001', hoursAgo: 28,
-        rule_id: '31108',
-        description: 'Webshell upload detected: PHP backdoor written to /var/www/html/uploads/ on WEB-SERVER-01',
-        severity: 13,
-        source_ip: '185.220.101.45', dest_ip: '10.0.1.10',
-        user: 'www-data', hostname: 'WEB-SERVER-01', agent_name: 'WEB-SERVER-01',
-        full_log: JSON.stringify({ timestamp: tsAgo(28), rule: { id: '31108', description: 'Web shell upload detected', level: 13 }, data: { srcip: '185.220.101.45', file: '/var/www/html/uploads/img_cache.php', md5: 'e3b0c44298fc1c149afb', content_type: 'application/x-php' }, agent: { name: 'WEB-SERVER-01' } }),
-      },
-      // b
-      {
-        id: 'demo-ssh-brute-001', hoursAgo: 36,
-        rule_id: '5712',
-        description: 'SSH brute-force attack: 185.220.101.45 made 347 failed login attempts on WEB-SERVER-01',
-        severity: 10,
-        source_ip: '185.220.101.45', dest_ip: '10.0.1.10',
-        user: 'root', hostname: 'WEB-SERVER-01', agent_name: 'WEB-SERVER-01',
-        full_log: JSON.stringify({ timestamp: tsAgo(36), rule: { id: '5712', description: 'SSHD brute force trying to get access to the system', level: 10 }, data: { srcip: '185.220.101.45', dstip: '10.0.1.10', user: 'root', attempts: 347 }, agent: { name: 'WEB-SERVER-01' } }),
-      },
-      // a — oldest (shown last in queue)
-      {
-        id: 'demo-recon-001', hoursAgo: 48,
-        rule_id: '40101',
-        description: 'Nmap SYN port scan: 185.220.101.45 scanned 1024 ports on GATEWAY-01',
-        severity: 5,
-        source_ip: '185.220.101.45', dest_ip: '10.0.1.1',
-        user: '', hostname: 'GATEWAY-01', agent_name: 'GATEWAY-01',
-        full_log: JSON.stringify({ timestamp: tsAgo(48), rule: { id: '40101', description: 'Nmap port scan detected', level: 5 }, data: { srcip: '185.220.101.45', dstip: '10.0.1.1', proto: 'TCP', flags: 'SYN', dstports: '22,80,443,3306,8080,8443' }, agent: { name: 'GATEWAY-01' } }),
-      },
-
-      // --- MISP IOC alerts (real malicious infrastructure) ---
-
-      // MISP-1: DNS beacon to anhei.gotdns.com (known C2, resolves to 103.226.132.7)
-      {
-        id: 'demo-misp-dns-001', hoursAgo: 0.5,
-        rule_id: '5300',
-        description: 'DNS C2 beacon: WORKSTATION-12 queried known malicious domain anhei.gotdns.com (resolves to 103.226.132.7) — 47 queries in 10 minutes indicating periodic beaconing',
-        severity: 14,
-        source_ip: '10.0.2.15', dest_ip: '103.226.132.7',
-        user: 'jsmith', hostname: 'WORKSTATION-12', agent_name: 'WORKSTATION-12',
-        full_log: JSON.stringify({
-          timestamp: tsAgo(0.5),
-          rule: { id: '5300', description: 'DNS query to known C2 domain', level: 14 },
-          data: {
-            srcip: '10.0.2.15',
-            dstip: '103.226.132.7',
-            dstport: 53,
-            proto: 'UDP',
-            program_name: 'dns',
-            dns: {
-              question: { name: 'anhei.gotdns.com', type: 'A' },
-              answers:  [{ name: 'anhei.gotdns.com', type: 'A', data: '103.226.132.7' }],
-              query_count: 47,
-              interval_seconds: 13,
-            },
-          },
-          agent: { name: 'WORKSTATION-12', ip: '10.0.2.15' },
-        }),
-      },
-
-      // MISP-2: Direct TCP connection to 103.226.132.7:8443 (known APT C2 node)
-      {
-        id: 'demo-misp-conn-001', hoursAgo: 1,
-        rule_id: '87703',
-        description: 'Outbound connection to known APT C2 server 103.226.132.7:8443 from WORKSTATION-22 (10.0.2.22) — TLS session with suspicious JA3 fingerprint matching Cobalt Strike',
-        severity: 15,
-        source_ip: '10.0.2.22', dest_ip: '103.226.132.7',
-        user: 'mlopez', hostname: 'WORKSTATION-22', agent_name: 'WORKSTATION-22',
-        full_log: JSON.stringify({
-          timestamp: tsAgo(1),
-          rule: { id: '87703', description: 'Outbound connection to known malicious IP', level: 15 },
-          data: {
-            srcip: '10.0.2.22',
-            dstip: '103.226.132.7',
-            dstport: 8443,
-            proto: 'TCP',
-            bytes_out: 18432,
-            bytes_in: 4096,
-            duration_seconds: 3600,
-            tls: {
-              ja3: '72a7c9feebf2d402c7053b2cc0ced61e',
-              sni: '103.226.132.7',
-              version: 'TLSv1.2',
-            },
-          },
-          agent: { name: 'WORKSTATION-22', ip: '10.0.2.22' },
-        }),
-      },
-
-      // MISP-3: DNS beaconing to apperu.gnway.cc (DGA-style C2 domain)
-      {
-        id: 'demo-misp-dga-001', hoursAgo: 1.5,
-        rule_id: '5301',
-        description: 'DGA-pattern C2 beacon: WORKSTATION-12 queried apperu.gnway.cc — domain exhibits DGA characteristics (random subdomain prefix, .cc TLD, dynamic DNS provider gnway), consistent with Emotet/Trickbot loader activity',
-        severity: 13,
-        source_ip: '10.0.2.15', dest_ip: '',
-        user: 'jsmith', hostname: 'WORKSTATION-12', agent_name: 'WORKSTATION-12',
-        full_log: JSON.stringify({
-          timestamp: tsAgo(1.5),
-          rule: { id: '5301', description: 'DGA-pattern DNS query to suspected C2 domain', level: 13 },
-          data: {
-            srcip: '10.0.2.15',
-            dstport: 53,
-            proto: 'UDP',
-            program_name: 'dns',
-            dns: {
-              question: { name: 'apperu.gnway.cc', type: 'A' },
-              query_count: 23,
-              interval_seconds: 26,
-            },
-          },
-          agent: { name: 'WORKSTATION-12', ip: '10.0.2.15' },
-        }),
-      },
-    ];
-
-    // Upsert: insert first time; on conflict refresh timestamp only if older than 70 hours (keeps alerts in 72h correlation window)
-    const upsertAlert = db.prepare(`
-      INSERT INTO alerts (id, timestamp, rule_id, description, severity, source_ip, dest_ip, user, hostname, agent_name, full_log, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW')
-      ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp
-      WHERE timestamp < datetime('now', '-70 hours')
-    `);
-
-    for (const a of demoAlerts) {
-      upsertAlert.run(a.id, tsAgo(a.hoursAgo), a.rule_id, a.description, a.severity,
-        a.source_ip, a.dest_ip, a.user, a.hostname, a.agent_name, a.full_log);
-    }
-    console.log('[DB] Seeded 7 demo campaign alerts (Operation Midnight APT)');
-  }
-
-  // ── Seed FP-candidate alerts (always reset to NEW so Noise Filter always has demos) ──
-  // Gated behind SEED_DEMO_ALERTS=1 so production never sees the fake FP candidates.
-  if (process.env.SEED_DEMO_ALERTS === '1') {
-    const tsAgo = (h: number) =>
-      new Date(Date.now() - h * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
-
-    const fpCandidates = [
-      // ── OpenVAS scanner (172.10.9.10) — asset_context fp_default=1 ──────────
-      {
-        id: 'fp-cand-openvas-xss-001',
-        hoursAgo: 0.1,
-        rule_id: '31103',
-        description: 'Web attack: XSS attempt detected — <script>alert(document.cookie)</script> in POST /api/login body',
-        severity: 8,
-        source_ip: '172.10.9.10',
-        dest_ip: '10.0.1.100',
-        agent_name: 'web-app-01',
-        full_log: JSON.stringify({
-          rule: { id: '31103', description: 'Web attack: XSS (Cross-Site Scripting) attempt detected', level: 8 },
-          data: {
-            srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443,
-            url: '/api/login', method: 'POST', program_name: 'nginx',
-            http: { request_body: '<script>alert(document.cookie)</script>', status: 403 },
-            openvas: { scan_id: 'ov-scan-20240115', plugin_id: '10848', plugin_name: 'XSS injection test' },
-          },
-          agent: { name: 'web-app-01', ip: '10.0.1.100' },
-        }),
-      },
-      {
-        id: 'fp-cand-openvas-sqli-001',
-        hoursAgo: 0.15,
-        rule_id: '31106',
-        description: "Web attack: SQL injection — ' UNION SELECT null,null,version()-- in GET /search?q=",
-        severity: 9,
-        source_ip: '172.10.9.10',
-        dest_ip: '10.0.1.100',
-        agent_name: 'web-app-01',
-        full_log: JSON.stringify({
-          rule: { id: '31106', description: 'SQL Injection attempt detected in URL parameter', level: 9 },
-          data: {
-            srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443,
-            url: "/search?q=' UNION SELECT null,null,version()--", method: 'GET', program_name: 'nginx',
-            http: { status: 400 },
-            openvas: { scan_id: 'ov-scan-20240115', plugin_id: '10913', plugin_name: 'SQL injection test' },
-          },
-          agent: { name: 'web-app-01', ip: '10.0.1.100' },
-        }),
-      },
-      {
-        id: 'fp-cand-openvas-traversal-001',
-        hoursAgo: 0.2,
-        rule_id: '31120',
-        description: 'Web attack: Path traversal — ../../../../etc/passwd in GET /download?file=',
-        severity: 8,
-        source_ip: '172.10.9.10',
-        dest_ip: '10.0.1.100',
-        agent_name: 'web-app-01',
-        full_log: JSON.stringify({
-          rule: { id: '31120', description: 'Path traversal attack detected', level: 8 },
-          data: {
-            srcip: '172.10.9.10', dstip: '10.0.1.100', dstport: 443,
-            url: '/download?file=../../../../etc/passwd', method: 'GET', program_name: 'nginx',
-            http: { status: 403 },
-            openvas: { scan_id: 'ov-scan-20240115', plugin_id: '10386', plugin_name: 'Path traversal test' },
-          },
-          agent: { name: 'web-app-01', ip: '10.0.1.100' },
-        }),
-      },
-      {
-        id: 'fp-cand-openvas-scan-001',
-        hoursAgo: 0.3,
-        rule_id: '40101',
-        description: 'Port scan: OpenVAS host discovery — TCP SYN sweep across /24 subnet 10.0.1.0',
-        severity: 7,
-        source_ip: '172.10.9.10',
-        dest_ip: '10.0.1.0',
-        agent_name: 'firewall-01',
-        full_log: JSON.stringify({
-          rule: { id: '40101', description: 'Multiple ports scanned — possible port scan', level: 7 },
-          data: {
-            srcip: '172.10.9.10', dstip: '10.0.1.0', proto: 'TCP', program_name: 'iptables',
-            ports_scanned: 1024, scan_type: 'SYN', rate: '500pps',
-            openvas: { scan_id: 'ov-scan-20240115', type: 'host_discovery' },
-          },
-          agent: { name: 'firewall-01', ip: '10.0.1.1' },
-        }),
-      },
-      // ── Nessus scanner (10.0.0.50) — asset_context fp_default=1 ─────────────
-      {
-        id: 'fp-cand-nessus-bruteforce-001',
-        hoursAgo: 0.5,
-        rule_id: '5712',
-        description: 'SSH brute-force: 523 failed login attempts from 10.0.0.50 in 2 minutes',
-        severity: 10,
-        source_ip: '10.0.0.50',
-        dest_ip: '10.0.1.50',
-        agent_name: 'ssh-server-01',
-        full_log: JSON.stringify({
-          rule: { id: '5712', description: 'SSHD brute force trying to get access to the system', level: 10 },
-          data: {
-            srcip: '10.0.0.50', dstip: '10.0.1.50', dstport: 22, program_name: 'sshd',
-            failed_attempts: 523, interval_seconds: 120,
-            nessus: { scan_id: 'nessus-weekly-001', plugin_id: '10205', plugin_name: 'SSH Server Default Credentials' },
-          },
-          agent: { name: 'ssh-server-01', ip: '10.0.1.50' },
-        }),
-      },
-      {
-        id: 'fp-cand-nessus-vuln-001',
-        hoursAgo: 0.6,
-        rule_id: '40305',
-        description: 'Vulnerability scan: Nessus probing SMB/445 for MS17-010 EternalBlue',
-        severity: 9,
-        source_ip: '10.0.0.50',
-        dest_ip: '10.0.1.80',
-        agent_name: 'win-server-01',
-        full_log: JSON.stringify({
-          rule: { id: '40305', description: 'SMB exploit attempt: EternalBlue probe detected', level: 9 },
-          data: {
-            srcip: '10.0.0.50', dstip: '10.0.1.80', dstport: 445, proto: 'TCP', program_name: 'snort',
-            cve: 'CVE-2017-0144', exploit: 'EternalBlue',
-            nessus: { scan_id: 'nessus-weekly-001', plugin_id: '97833', plugin_name: 'MS17-010 Check' },
-          },
-          agent: { name: 'win-server-01', ip: '10.0.1.80' },
-        }),
-      },
-      // ── Backup service (10.0.0.20) — asset_context fp_default=1 ─────────────
-      {
-        id: 'fp-cand-backup-sudo-001',
-        hoursAgo: 0.8,
-        rule_id: '5402',
-        description: 'Privilege escalation: backup-svc ran rsync as root — /var/backups/full-20240115.tar.gz',
-        severity: 8,
-        source_ip: '10.0.0.20',
-        dest_ip: '',
-        agent_name: 'backup-host-01',
-        full_log: JSON.stringify({
-          rule: { id: '5402', description: 'Sudo command run by user', level: 8 },
-          data: {
-            srcip: '10.0.0.20', program_name: 'sudo',
-            srcuser: 'backup-svc', run_as: 'root',
-            command: '/usr/bin/rsync -avz /data/ /mnt/backup/full-20240115/',
-            cwd: '/home/backup-svc',
-          },
-          agent: { name: 'backup-host-01', ip: '10.0.0.20' },
-        }),
-      },
-      {
-        id: 'fp-cand-backup-cron-001',
-        hoursAgo: 1.0,
-        rule_id: '2930',
-        description: 'Suspicious file access: logrotate compressed /var/log/auth.log during scheduled rotation',
-        severity: 4,
-        source_ip: '10.0.0.10',
-        dest_ip: '',
-        agent_name: 'siem-server-01',
-        full_log: JSON.stringify({
-          rule: { id: '2930', description: 'Log file modified or rotated', level: 4 },
-          data: {
-            srcip: '10.0.0.10', program_name: 'logrotate',
-            file: '/var/log/auth.log', action: 'compress',
-            triggered_by: 'cron', user: 'root', schedule: '0 4 * * *',
-          },
-          agent: { name: 'siem-server-01', ip: '10.0.0.10' },
-        }),
-      },
-      // ── Monitoring host (10.0.0.30) — asset_context fp_default=1 ─────────────
-      {
-        id: 'fp-cand-monitor-ssh-001',
-        hoursAgo: 1.2,
-        rule_id: '5760',
-        description: 'Multiple failed SSH logins: monitoring user made 48 attempts against 12 hosts (Zabbix agent check)',
-        severity: 6,
-        source_ip: '10.0.0.30',
-        dest_ip: '10.0.1.0',
-        agent_name: 'monitoring-01',
-        full_log: JSON.stringify({
-          rule: { id: '5760', description: 'Multiple SSH authentication failures from same source', level: 6 },
-          data: {
-            srcip: '10.0.0.30', dstport: 22, program_name: 'sshd',
-            srcuser: 'monitoring', failed_attempts: 48, unique_hosts: 12,
-            zabbix: { check_type: 'ssh_agent_reachability', interval: 60 },
-          },
-          agent: { name: 'monitoring-01', ip: '10.0.0.30' },
-        }),
-      },
-      {
-        id: 'fp-cand-monitor-http-001',
-        hoursAgo: 1.4,
-        rule_id: '31101',
-        description: 'Automated web probe: 240 GET /health requests/hr from Zabbix monitoring — HTTP 200',
-        severity: 3,
-        source_ip: '10.0.0.30',
-        dest_ip: '10.0.1.100',
-        agent_name: 'web-app-01',
-        full_log: JSON.stringify({
-          rule: { id: '31101', description: 'Repetitive web requests from same source', level: 3 },
-          data: {
-            srcip: '10.0.0.30', dstip: '10.0.1.100', dstport: 80,
-            url: '/health', method: 'GET', program_name: 'nginx',
-            user_agent: 'Zabbix HTTP check/6.0', request_count: 240, interval_seconds: 15, http_status: 200,
-          },
-          agent: { name: 'web-app-01', ip: '10.0.1.100' },
-        }),
-      },
-      // ── Test bench (10.0.0.99) — asset_context fp_default=1 ─────────────────
-      {
-        id: 'fp-cand-test-pentest-001',
-        hoursAgo: 1.6,
-        rule_id: '99001',
-        description: 'Penetration test: OWASP ZAP active scan — automated security test suite initiated',
-        severity: 8,
-        source_ip: '10.0.0.99',
-        dest_ip: '10.0.1.100',
-        agent_name: 'test-bench',
-        full_log: JSON.stringify({
-          rule: { id: '99001', description: 'Multiple web attack signatures detected — possible pentest', level: 8 },
-          data: {
-            srcip: '10.0.0.99', dstip: '10.0.1.100', dstport: 443,
-            program_name: 'nginx', user_agent: 'Mozilla/5.0 (compatible; OWASP ZAP/2.14.0)',
-            attack_types: ['xss', 'sqli', 'path_traversal', 'cmdi'],
-            test_run_id: 'zap-scan-ci-20240115-0900',
-          },
-          agent: { name: 'test-bench', ip: '10.0.0.99' },
-        }),
-      },
-      // ── False-positive-by-pattern (triage LLM rules) ──────────────────────────
-      {
-        id: 'fp-cand-nmap-internal-001',
-        hoursAgo: 1.8,
-        rule_id: '40100',
-        description: 'Nmap scan: internal network discovery — nmap -sV -p 1-65535 10.0.0.0/16 by sysadmin',
-        severity: 6,
-        source_ip: '10.0.1.200',
-        dest_ip: '10.0.0.0',
-        agent_name: 'sysadmin-ws',
-        full_log: JSON.stringify({
-          rule: { id: '40100', description: 'Nmap port scanner detected', level: 6 },
-          data: {
-            srcip: '10.0.1.200', dstip: '10.0.0.0', proto: 'TCP', program_name: 'snort',
-            tool: 'nmap', flags: '-sV -p 1-65535', target: '10.0.0.0/16', user: 'sysadmin',
-          },
-          agent: { name: 'sysadmin-ws', ip: '10.0.1.200' },
-        }),
-      },
-    ];
-
-    // Always reset these to NEW so Noise Filter always has alerts to demo
-    const upsertFpCandidate = db.prepare(`
-      INSERT INTO alerts (id, timestamp, rule_id, description, severity, source_ip, dest_ip, agent_name, full_log, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW')
-      ON CONFLICT(id) DO UPDATE SET
-        timestamp  = excluded.timestamp,
-        status     = 'NEW',
-        fp_method  = NULL,
-        fp_confidence = NULL,
-        fp_reason  = NULL,
-        fp_details = NULL,
-        triage_data = NULL,
-        filtered_at = NULL,
-        ai_analysis = NULL
-    `);
-
-    for (const a of fpCandidates) {
-      upsertFpCandidate.run(a.id, tsAgo(a.hoursAgo), a.rule_id, a.description,
-        a.severity, a.source_ip, a.dest_ip || null, a.agent_name, a.full_log);
-    }
-    console.log(`[DB] Seeded ${fpCandidates.length} FP-candidate alerts (status=NEW) for Noise Filter demo`);
-  }
-
-  // ── Seed default suppression rules (INSERT OR IGNORE — won't overwrite user edits) ──
-  {
-    const suppTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppression_rules'").get();
-    if (suppTable) {
-      const seedRule = db.prepare(`
-        INSERT OR IGNORE INTO suppression_rules
-          (name, source_ip_pattern, description_pattern, min_severity, max_severity, reason, enabled, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, 1, 'system_seed')
-      `);
-      seedRule.run('OpenVAS Scanner Traffic',  '172.10.9.10',   null,                   0, 15, 'Authorized OpenVAS vulnerability scanner — all traffic from this IP is expected');
-      seedRule.run('Nessus Scanner Traffic',   '10.0.0.50',     null,                   0, 15, 'Authorized Nessus vulnerability scanner — all traffic from this IP is expected');
-      seedRule.run('Nmap Internal Scan',       null,            'nmap',                 0, 8,  'Internal nmap scans by sysadmin are authorized and scheduled');
-      seedRule.run('Test/Smoke Alerts',        null,            'test|smoke|pentest',   0, 9,  'Automated test and pentest alerts from CI/CD or QA bench');
-      seedRule.run('Logrotate/Cron Activity',  null,            'logrotate|cron',       0, 6,  'Scheduled log rotation and cron activity is expected system maintenance');
-    }
-  }
 
   // Seed integration rows if not already present (INSERT OR IGNORE preserves user config)
   const seedIntegration = db.prepare(
@@ -1531,9 +1050,13 @@ try {
   const seedLocalCfg = db.prepare('INSERT OR IGNORE INTO local_llm_config (key, value) VALUES (?, ?)');
   seedLocalCfg.run('url',     'http://localhost:11434');
   seedLocalCfg.run('enabled', '0');
-  // Apply stored URL to the LLM client module
+  seedLocalCfg.run('fallback_model', '');   // e.g. 'llama3.1:8b' — used when all external providers fail
+  // Apply stored URL + fallback config to the LLM client module
   const storedLocalUrl = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value;
   if (storedLocalUrl) setLocalLLMBaseUrl(storedLocalUrl);
+  const storedLocalEnabled  = (db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
+  const storedFallbackModel = (db.prepare("SELECT value FROM local_llm_config WHERE key='fallback_model'").get() as any)?.value || '';
+  setLocalLLMFallback(storedLocalEnabled, storedFallbackModel);
 
   // Seed model assignments only if a phase has no entry yet — preserves user overrides across restarts
   const seedAgentSetting = db.prepare(
@@ -3249,17 +2772,23 @@ async function startServer() {
 
   // ── Local LLM (Ollama) config ────────────────────────────────────────────
   app.get('/api/local-llm/config', authenticate, (_req, res) => {
-    const url     = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value || 'http://localhost:11434';
-    const enabled = (db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
-    res.json({ url, enabled });
+    const url            = (db.prepare("SELECT value FROM local_llm_config WHERE key='url'").get() as any)?.value || 'http://localhost:11434';
+    const enabled        = (db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
+    const fallback_model = (db.prepare("SELECT value FROM local_llm_config WHERE key='fallback_model'").get() as any)?.value || '';
+    res.json({ url, enabled, fallback_model });
   });
 
   app.patch('/api/local-llm/config', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
-    const { url, enabled } = req.body;
+    const { url, enabled, fallback_model } = req.body;
     const upd = db.prepare('INSERT INTO local_llm_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
     const changes: string[] = [];
-    if (url     !== undefined) { upd.run('url',     String(url));        setLocalLLMBaseUrl(String(url)); changes.push(`url=${url}`); }
-    if (enabled !== undefined) { upd.run('enabled', enabled ? '1' : '0'); changes.push(`enabled=${enabled}`); }
+    if (url             !== undefined) { upd.run('url',             String(url));                 setLocalLLMBaseUrl(String(url)); changes.push(`url=${url}`); }
+    if (enabled         !== undefined) { upd.run('enabled',         enabled ? '1' : '0');         changes.push(`enabled=${enabled}`); }
+    if (fallback_model  !== undefined) { upd.run('fallback_model',  String(fallback_model));      changes.push(`fallback_model=${fallback_model}`); }
+    // Re-push the (possibly changed) fallback config to the LLM module
+    const curEnabled  = (db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
+    const curFallback = (db.prepare("SELECT value FROM local_llm_config WHERE key='fallback_model'").get() as any)?.value || '';
+    setLocalLLMFallback(curEnabled, curFallback);
     writeAudit(req.user?.id, 'LOCAL_LLM_CONFIG', `Local LLM config updated: ${changes.join(', ')} [step-up verified]`);
     res.json({ ok: true });
   });

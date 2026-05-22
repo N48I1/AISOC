@@ -2,7 +2,7 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import {
   resolveClientsForModel,
-  getLocalModelClient, isLocalModel, localModelName,
+  getLocalModelClient, isLocalModel, localModelName, getLocalLLMFallback,
 } from "./client.js";
 
 function extractJSONObject(raw: string): unknown {
@@ -142,8 +142,31 @@ export async function callStructuredLLM<T>({
       }
       console.error(`[LLM Error][${phase}][${label}]`, msg.slice(0, 300));
       if (i < resolved.length - 1) continue;   // keep walking the chain on non-rate-limit errors too
-      runCtx.fallbackPhases.push(phase);
-      return fallbackParsed.data;
+      // All external providers exhausted — fall through to local fallback below.
+      break;
+    }
+  }
+
+  // ── Local LLM fallback (when every external provider has failed) ─────────
+  // Triggers when local_llm_config.enabled = '1' AND a fallback_model is set.
+  // This lets us keep auto-orchestrate working when the OpenRouter free tier
+  // hits its daily cap.
+  const localFb = getLocalLLMFallback();
+  if (localFb.enabled && localFb.model) {
+    console.warn(`[LLM][${phase}] All external providers failed — falling back to local::${localFb.model}`);
+    try {
+      const client = getLocalModelClient(localFb.model);
+      const resp   = await client.invoke(messages);
+      const json   = extractJSONObject(String(resp.content ?? ""));
+      const parsed = schema.safeParse(json);
+      if (parsed.success) {
+        runCtx.fallbackPhases.push(`${phase}:local-fallback`);
+        return parsed.data;
+      }
+      const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+      console.error(`[LLM Schema Error][${phase}][local-fallback] ${issues}`);
+    } catch (err: any) {
+      console.error(`[LLM Error][${phase}][local-fallback]`, (err?.message ?? String(err)).slice(0, 300));
     }
   }
 
