@@ -976,8 +976,11 @@ try {
       ).run(username, hashed, email, role, displayName, avatarColor);
     }
   };
-  seedUser('admin',     'admin123',     'admin@aisoc.local',      'ADMIN', 'Administrator',     '#8b5cf6');
-  seedUser('nelhilali', 'Analyst@2025', 'nelhilali@aisoc.local',  'TIER1', 'N. El Hilali',      '#3b82f6');
+  // Seed passwords come from env (.env, git-ignored). If unset, fall back to a
+  // random one-time secret so no usable default credential ever ships in source.
+  const seedPassword = (envVar: string) =>
+    process.env[envVar] || crypto.randomBytes(18).toString('base64url');
+  seedUser('admin',     seedPassword('ADMIN_SEED_PASSWORD'),   'admin@aisoc.local',      'ADMIN', 'Administrator',     '#8b5cf6');
 
   // Seed default playbooks if none exist
   const playbookCount = (db.prepare('SELECT COUNT(*) as c FROM playbooks').get() as any).c;
