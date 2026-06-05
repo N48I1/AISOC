@@ -3819,7 +3819,7 @@ const Dashboard = ({ alerts, onAlertClick }: { alerts: Alert[], onAlertClick: (a
 const LdapSection = () => {
   const toast    = useToast();
   const { user } = useAuth();
-  const isAdmin  = user?.role === 'ADMIN';
+  const isAdmin  = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
 
   type LdapCfg = {
     url:                  string;
@@ -4072,7 +4072,7 @@ const AgentsTab = () => {
   const [error,        setError]       = useState('');
   const [savingPhase,  setSavingPhase] = useState<AgentPhase | null>(null);
   const [agentStats,   setAgentStats]  = useState<AgentStat[]>([]);
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
 
   // ── Local LLM state ────────────────────────────────────────────────────────
   const [localUrl,     setLocalUrl]    = useState('http://localhost:11434');
@@ -5038,6 +5038,10 @@ const EditUserModal: React.FC<{
   onResetPassword: (tempPassword: string) => void;
 }> = ({ user, isSelf, onClose, onSaved, onResetPassword }) => {
   const showToast = useToast();
+  const { user: me } = useAuth();
+  // Only a SUPER_ADMIN may assign the ADMIN / SUPER_ADMIN tiers. The current
+  // role is always offered so the select renders correctly for any target.
+  const canSuper = me?.role === 'SUPER_ADMIN';
   const [form, setForm] = useState({
     display_name: user.display_name || '',
     email: user.email || '',
@@ -5115,7 +5119,8 @@ const EditUserModal: React.FC<{
                 <option value="TIER1">SOC Analyst L1 (TIER1)</option>
                 <option value="TIER2">SOC Analyst L2 (TIER2)</option>
                 <option value="INCIDENT_LEAD">Incident Lead</option>
-                <option value="ADMIN">Administrator</option>
+                {(canSuper || form.role === 'ADMIN') && <option value="ADMIN">Administrator</option>}
+                {(canSuper || form.role === 'SUPER_ADMIN') && <option value="SUPER_ADMIN">Super Administrator</option>}
               </select>
             </div>
             <div>
@@ -5172,7 +5177,9 @@ const SettingsTab = () => {
   const showToast = useToast();
   const { user, token } = useAuth();
   const { dark, toggle: toggleDark } = useDarkMode();
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
+  // Only super admins may create/assign the ADMIN and SUPER_ADMIN tiers.
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN';
 
   // Sub-tab navigation
   const [section, setSection] = useState<AdminSection>('users');
@@ -5523,7 +5530,8 @@ const SettingsTab = () => {
                     <option value="TIER1">SOC Analyst L1 (TIER1)</option>
                     <option value="TIER2">SOC Analyst L2 (TIER2)</option>
                     <option value="INCIDENT_LEAD">Incident Lead</option>
-                    <option value="ADMIN">Administrator</option>
+                    {isSuperAdmin && <option value="ADMIN">Administrator</option>}
+                    {isSuperAdmin && <option value="SUPER_ADMIN">Super Administrator</option>}
                   </select>
                 </div>
 
@@ -5643,7 +5651,8 @@ const SettingsTab = () => {
                             <option value="TIER1">SOC Analyst L1</option>
                             <option value="TIER2">SOC Analyst L2</option>
                             <option value="INCIDENT_LEAD">Incident Lead</option>
-                            <option value="ADMIN">Administrator</option>
+                            {(isSuperAdmin || currentEditRole === 'ADMIN') && <option value="ADMIN">Administrator</option>}
+                            {(isSuperAdmin || currentEditRole === 'SUPER_ADMIN') && <option value="SUPER_ADMIN">Super Administrator</option>}
                           </select>
                           <button onClick={() => handleRoleChange(u.id, currentEditRole)} className="text-green-600 hover:text-green-700 p-0.5"><CheckCircle size={15} /></button>
                           <button onClick={() => setEditingRole(prev => { const n = {...prev}; delete n[u.id]; return n; })} className="text-[var(--t3)] hover:text-[var(--t6)] p-0.5"><XCircle size={15} /></button>
@@ -5651,6 +5660,7 @@ const SettingsTab = () => {
                       ) : (
                         <div className="flex items-center gap-1.5">
                           <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
+                            u.role === 'SUPER_ADMIN'   ? 'bg-rose-100 text-rose-700'     :
                             u.role === 'ADMIN'         ? 'bg-purple-100 text-purple-700' :
                             u.role === 'INCIDENT_LEAD' ? 'bg-indigo-100 text-indigo-700' :
                             u.role === 'TIER2'         ? 'bg-blue-100 text-blue-700'     :
@@ -7563,7 +7573,7 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
 const FpArchiveTab = () => {
   const toast = useToast();
   const { user, token } = useAuth();
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
   const [data, setData] = useState<{ alerts: any[]; total: number }>({ alerts: [], total: 0 });
   const [page, setPage] = useState(1);
   const [methodFilter, setMethodFilter] = useState('');
@@ -7790,7 +7800,7 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
 }) => {
   const toast = useToast();
   const { user, token } = useAuth();
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
   const [investigating, setInvestigating] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -7946,6 +7956,7 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
                     <input type="radio" name="assignee" checked={escForm.assigned_to === a.id} onChange={() => setEscForm({ ...escForm, assigned_to: a.id })} />
                     <span className="text-[0.78rem] font-semibold text-[var(--t7)] flex-1">{a.username}</span>
                     <span className={`px-2 py-0.5 rounded text-[0.55rem] font-black uppercase tracking-widest ${
+                      a.role === 'SUPER_ADMIN' ? 'bg-rose-100 text-rose-700' :
                       a.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' :
                       a.role === 'INCIDENT_LEAD' ? 'bg-indigo-100 text-indigo-700' :
                       'bg-blue-100 text-blue-700'
@@ -8303,7 +8314,7 @@ const AuditLogViewer: React.FC = () => {
 const IntegrationsTab = () => {
   const toast = useToast();
   const { user, token } = useAuth();
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
   const [activeSection, setActiveSection] = useState<'notifications' | 'ldap' | 'logs' | 'audit' | 'ingest'>('notifications');
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
@@ -9144,7 +9155,7 @@ const KnowledgeBaseTab = ({
 }) => {
   const showToast = useToast();
   const { user }  = useAuth();
-  const isAdmin   = user?.role === 'ADMIN';
+  const isAdmin   = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
 
   type Section = 'playbooks' | 'incidents' | 'iocs';
   const [section, setSection] = useState<Section>('playbooks');
@@ -9959,7 +9970,7 @@ const ActionRow: React.FC<ActionRowProps> = ({
 const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId }: { setActiveTab: (t: string) => void; initialIncidentId?: string | null; clearInitialIncidentId?: () => void }) => {
   const toast = useToast();
   const { user } = useAuth();
-  const isAdminOrLead = user?.role === 'ADMIN' || user?.role === 'INCIDENT_LEAD';
+  const isAdminOrLead = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN || user?.role === 'INCIDENT_LEAD';
 
   const [list, setList]               = useState<Incident[]>([]);
   const [total, setTotal]             = useState(0);
@@ -10955,7 +10966,7 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
                   ) : (
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-[0.72rem] font-bold text-amber-700">Unassigned</p>
-                      {!isClosed && ['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
+                      {!isClosed && ['SUPER_ADMIN', 'ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
                         <button onClick={handleTake}
                           className="px-2 py-0.5 rounded-lg bg-blue-600 text-white text-[0.6rem] font-bold hover:bg-blue-700 flex items-center gap-1">
                           <UserPlus size={10} />Claim
@@ -11022,7 +11033,7 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
               {!isClosed && (
                 <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-4 space-y-2">
                   <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Quick Actions</p>
-                  {!detail.assigned_to && ['ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
+                  {!detail.assigned_to && ['SUPER_ADMIN', 'ADMIN', 'INCIDENT_LEAD', 'TIER2'].includes(user?.role || '') && (
                     <button onClick={handleTake}
                       className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-[0.7rem] font-bold hover:bg-blue-700 flex items-center gap-2 transition-colors">
                       <UserPlus size={12} />Claim Incident

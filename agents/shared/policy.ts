@@ -163,9 +163,9 @@ export function validatePasswordAgainstPolicy(pw: string, policy: PasswordPolicy
 // viewer. Maps a permission key to the minimum role level. ROLE_LEVEL is
 // duplicated in server.ts (intentional — both must agree). When endpoints
 // gain or lose protection, update this table so the matrix UI stays accurate.
-export type RoleName = 'ANALYST' | 'TIER1' | 'TIER2' | 'INCIDENT_LEAD' | 'ADMIN';
+export type RoleName = 'ANALYST' | 'TIER1' | 'TIER2' | 'INCIDENT_LEAD' | 'ADMIN' | 'SUPER_ADMIN';
 
-export const ROLE_NAMES: RoleName[] = ['ANALYST', 'TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN'];
+export const ROLE_NAMES: RoleName[] = ['ANALYST', 'TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN', 'SUPER_ADMIN'];
 
 export const ROLE_LEVELS: Record<RoleName, number> = {
   ANALYST:       0,
@@ -173,6 +173,7 @@ export const ROLE_LEVELS: Record<RoleName, number> = {
   TIER2:         2,
   INCIDENT_LEAD: 3,
   ADMIN:         4,
+  SUPER_ADMIN:   5,
 };
 
 export interface Permission { key: string; description: string; min_level: number; area: string; }
@@ -189,13 +190,14 @@ export const PERMISSIONS: Permission[] = [
   { area: 'Memory',    key: 'memory.view',                description: 'View IOC / asset / insight memory',      min_level: ROLE_LEVELS.TIER1 },
   { area: 'Memory',    key: 'memory.suppression.approve', description: 'Approve suppression suggestions',        min_level: ROLE_LEVELS.ADMIN },
   { area: 'Users',     key: 'users.view',                 description: 'List users',                             min_level: ROLE_LEVELS.ADMIN },
-  { area: 'Users',     key: 'users.manage',               description: 'Create / edit / disable users',          min_level: ROLE_LEVELS.ADMIN },
+  { area: 'Users',     key: 'users.manage',               description: 'Create / edit / disable users below admin', min_level: ROLE_LEVELS.ADMIN },
   { area: 'Users',     key: 'users.reset_password',       description: 'Reset another user\'s password',         min_level: ROLE_LEVELS.ADMIN },
   { area: 'Users',     key: 'users.revoke_sessions',      description: 'Force-logout another user',              min_level: ROLE_LEVELS.ADMIN },
+  { area: 'Users',     key: 'users.manage_admins',        description: 'Manage admins / assign ADMIN role',      min_level: ROLE_LEVELS.SUPER_ADMIN },
   { area: 'Settings',  key: 'settings.ai_models',         description: 'Change AI model selection (+ step-up)',  min_level: ROLE_LEVELS.ADMIN },
   { area: 'Settings',  key: 'settings.integrations',      description: 'Manage notification integrations',       min_level: ROLE_LEVELS.ADMIN },
   { area: 'Settings',  key: 'settings.password_policy',   description: 'Edit password policy',                   min_level: ROLE_LEVELS.ADMIN },
-  { area: 'Settings',  key: 'settings.ip_allowlist',      description: 'Edit admin IP allowlist',                min_level: ROLE_LEVELS.ADMIN },
+  { area: 'Settings',  key: 'settings.ip_allowlist',      description: 'Edit admin IP allowlist',                min_level: ROLE_LEVELS.SUPER_ADMIN },
   { area: 'Admin Ops', key: 'admin.reset_alerts',         description: 'Destructive: reset alerts (+ step-up)',  min_level: ROLE_LEVELS.ADMIN },
   { area: 'Admin Ops', key: 'admin.clear_investigation',  description: 'Destructive: clear incidents queue',     min_level: ROLE_LEVELS.ADMIN },
   { area: 'Admin Ops', key: 'admin.clear_fp_archive',     description: 'Destructive: clear FP archive',          min_level: ROLE_LEVELS.ADMIN },

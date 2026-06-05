@@ -1,6 +1,7 @@
-export type UserRole = 'ADMIN' | 'TIER1' | 'TIER2' | 'INCIDENT_LEAD' | 'ANALYST';
+export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'TIER1' | 'TIER2' | 'INCIDENT_LEAD' | 'ANALYST';
 
 export const ROLE_LABELS: Record<UserRole, string> = {
+  SUPER_ADMIN:   'Super Administrator',
   ADMIN:         'Administrator',
   INCIDENT_LEAD: 'Incident Lead',
   TIER2:         'SOC Analyst L2',
@@ -9,7 +10,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 };
 
 export const ROLE_LEVEL: Record<string, number> = {
-  ANALYST: 0, TIER1: 1, TIER2: 2, INCIDENT_LEAD: 3, ADMIN: 4,
+  ANALYST: 0, TIER1: 1, TIER2: 2, INCIDENT_LEAD: 3, ADMIN: 4, SUPER_ADMIN: 5,
 };
 
 export type IncidentPhase = 'detection' | 'analysis' | 'containment' | 'eradication' | 'recovery' | 'post_incident';

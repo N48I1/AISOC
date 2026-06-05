@@ -618,6 +618,7 @@ try {
   safeAlter("ALTER TABLE alerts ADD COLUMN fp_reason       TEXT");
   safeAlter("ALTER TABLE alerts ADD COLUMN fp_details      TEXT");           // JSON
   safeAlter("ALTER TABLE alerts ADD COLUMN triage_data     TEXT");           // JSON — cached triage from FP scan
+  safeAlter("ALTER TABLE alerts ADD COLUMN after_hours      INTEGER DEFAULT 0"); // 1 = arrived outside active hours → risk-elevated, not archived
   safeAlter("ALTER TABLE alerts ADD COLUMN filtered_at     DATETIME");
   safeAlter("ALTER TABLE alerts ADD COLUMN investigated_at DATETIME");
   safeAlter("ALTER TABLE alerts ADD COLUMN escalated_at    DATETIME");
@@ -980,7 +981,9 @@ try {
   // random one-time secret so no usable default credential ever ships in source.
   const seedPassword = (envVar: string) =>
     process.env[envVar] || crypto.randomBytes(18).toString('base64url');
-  seedUser('admin',     seedPassword('ADMIN_SEED_PASSWORD'),   'admin@aisoc.local',      'ADMIN', 'Administrator',     '#8b5cf6');
+  // The bootstrap account is the platform owner — seed it as SUPER_ADMIN so a
+  // fresh install always has one account that can manage admins.
+  seedUser('admin',     seedPassword('ADMIN_SEED_PASSWORD'),   'admin@aisoc.local',      'SUPER_ADMIN', 'Administrator', '#8b5cf6');
 
   // Seed default playbooks if none exist
   const playbookCount = (db.prepare('SELECT COUNT(*) as c FROM playbooks').get() as any).c;
@@ -1377,7 +1380,26 @@ const ROLE_LEVEL: Record<string, number> = {
   TIER2:         2,
   INCIDENT_LEAD: 3,
   ADMIN:         4,
+  SUPER_ADMIN:   5,
 };
+
+// Privileged-account administration rule (NIST 800-53 AC-6, ISO 27001 A.8.2):
+// an actor may only administer accounts *strictly below* their own role level,
+// and may only assign roles strictly below their own. This stops admins from
+// neutralizing each other (delete/disable/demote/reset a peer admin) and means
+// only a SUPER_ADMIN can manage ADMIN accounts or mint new admins.
+function canAdminister(actorRole: string, targetRole: string): boolean {
+  return (ROLE_LEVEL[actorRole] ?? -1) > (ROLE_LEVEL[targetRole] ?? 99);
+}
+// Role assignment: you may assign any role strictly below your own level. A
+// SUPER_ADMIN may additionally assign SUPER_ADMIN (so the owner tier can have
+// more than one holder and never gets locked out / single-point-of-failure).
+function canAssignRole(actorRole: string, newRole: string): boolean {
+  const a = ROLE_LEVEL[actorRole] ?? -1;
+  const n = ROLE_LEVEL[newRole] ?? 99;
+  if (a >= ROLE_LEVEL.SUPER_ADMIN) return n <= ROLE_LEVEL.SUPER_ADMIN;
+  return a > n;
+}
 
 // Lockout thresholds come from the `lockout_policy` integrations row
 // (ISO 27001 A.8.5, NIST 800-53 AC-7). Hardcoded fallbacks kick in only if
@@ -1444,7 +1466,8 @@ async function startServer() {
   };
 
   const requireAdmin = (req: any, res: any, next: any) => {
-    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Admin only' });
+    // Level-based so SUPER_ADMIN (5) inherits every ADMIN (4) endpoint.
+    if ((ROLE_LEVEL[req.user?.role] ?? -1) < ROLE_LEVEL.ADMIN) return res.status(403).json({ error: 'Admin only' });
     // Admin IP allowlist (ISO 27001 A.5.15, NIST 800-53 AC-3 / SC-7). When
     // enabled, only requests sourced from a CIDR in the allowlist may invoke
     // admin endpoints. Blocked requests are audited so a denial-of-service
@@ -1809,7 +1832,13 @@ async function startServer() {
     const target: any = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
 
-    const allowedRoles = ['TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN', 'ANALYST'];
+    // Privileged-account protection: you may only edit users strictly below
+    // your own role (self-edits of profile fields are allowed, handled below).
+    if (targetId !== req.user.id && !canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot manage a user at or above your own role level' });
+    }
+
+    const allowedRoles = ['ANALYST', 'TIER1', 'TIER2', 'INCIDENT_LEAD', 'ADMIN', 'SUPER_ADMIN'];
     const allowedStatus = ['active', 'disabled'];
     const updates: string[] = [];
     const values: any[] = [];
@@ -1818,6 +1847,15 @@ async function startServer() {
     if (req.body.role !== undefined) {
       if (!allowedRoles.includes(req.body.role)) return res.status(400).json({ error: 'Invalid role' });
       if (req.body.role !== target.role) {
+        // You may only assign roles strictly below your own level — so a regular
+        // ADMIN can't promote anyone to ADMIN/SUPER_ADMIN, and can't elevate
+        // their own privilege by proxy.
+        if (!canAssignRole(req.user.role, req.body.role)) {
+          return res.status(403).json({ error: 'You cannot assign a role at or above your own level' });
+        }
+        if (targetId === req.user.id) {
+          return res.status(400).json({ error: 'Cannot change your own role' });
+        }
         updates.push('role = ?');
         values.push(req.body.role);
         auditMessages.push({ action: 'USER_ROLE_CHANGED', details: `Changed ${target.username} role: ${target.role} → ${req.body.role}` });
@@ -1878,8 +1916,11 @@ async function startServer() {
   app.post('/api/users/:id/reset-password', authenticate, requireAdmin, (req: any, res) => {
     const targetId = parseInt(req.params.id);
     if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
-    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    const target: any = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot reset the password of a user at or above your own role level' });
+    }
     const tempPassword = crypto.randomBytes(12).toString('base64url');
     const hashed = bcrypt.hashSync(tempPassword, 10);
     // Bump jwt_epoch too — a forced password reset implies any active sessions
@@ -1896,8 +1937,11 @@ async function startServer() {
     const targetId = parseInt(req.params.id);
     if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
     if (targetId === req.user.id) return res.status(400).json({ error: 'Cannot delete your own account' });
-    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    const target: any = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot delete a user at or above your own role level' });
+    }
     db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
     writeAudit(req.user.id, 'USER_DELETED', `Deleted user ${target.username} (#${targetId})`);
     res.json({ ok: true });
@@ -1907,7 +1951,7 @@ async function startServer() {
   app.get('/api/users/analysts', authenticate, (_req, res) => {
     const rows = db.prepare(
       `SELECT id, username, role, display_name, avatar_color FROM users
-       ORDER BY CASE role WHEN 'ADMIN' THEN 0 WHEN 'INCIDENT_LEAD' THEN 1 WHEN 'TIER2' THEN 2 WHEN 'TIER1' THEN 3 ELSE 4 END, username ASC`
+       ORDER BY CASE role WHEN 'SUPER_ADMIN' THEN 0 WHEN 'ADMIN' THEN 1 WHEN 'INCIDENT_LEAD' THEN 2 WHEN 'TIER2' THEN 3 WHEN 'TIER1' THEN 4 ELSE 5 END, username ASC`
     ).all();
     res.json(rows);
   });
@@ -1924,6 +1968,13 @@ async function startServer() {
       must_change_password,
     } = req.body;
     if (!username) return res.status(400).json({ error: 'username required' });
+    const newRole = role || 'TIER1';
+    if (!(newRole in ROLE_LEVEL)) return res.status(400).json({ error: 'Invalid role' });
+    // Can't create an account at or above your own level (so only a SUPER_ADMIN
+    // can create ADMIN accounts, and nobody mints a peer via the API).
+    if (!canAssignRole(req.user.role, newRole)) {
+      return res.status(403).json({ error: 'You cannot create a user at or above your own role level' });
+    }
 
     let effectivePassword: string | null = null;
     let tempPasswordToReturn: string | null = null;
@@ -1953,9 +2004,9 @@ async function startServer() {
       const result: any = db.prepare(
         `INSERT INTO users (username, password, email, role, display_name, password_changed_at, created_at, must_change_password, status)
          VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'active')`
-      ).run(username, hashed, email || null, role || 'TIER1', display_name || null, mustChange);
+      ).run(username, hashed, email || null, newRole, display_name || null, mustChange);
       recordPasswordChange(Number(result.lastInsertRowid), hashed);
-      writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${role || 'TIER1'})${mustChange ? ' [must change pw]' : ''}`);
+      writeAudit(req.user?.id, 'USER_CREATED', `Created user ${username} (${newRole})${mustChange ? ' [must change pw]' : ''}`);
       const created: any = db.prepare(`SELECT ${userProfileFields} FROM users WHERE id = ?`).get(result.lastInsertRowid);
       // Return the temp password ONCE in the response (it's never stored in plaintext anywhere else)
       if (tempPasswordToReturn) (created as any).temp_password = tempPasswordToReturn;
@@ -2051,8 +2102,15 @@ async function startServer() {
 
   // Admin: unlock a locked account
   app.post('/api/admin/unlock-user/:id', authenticate, requireAdmin, (req: any, res) => {
-    db.prepare('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?').run(req.params.id);
-    writeAudit(req.user.id, 'USER_UNLOCKED', `Admin unlocked user #${req.params.id}`);
+    const targetId = parseInt(req.params.id);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
+    const target: any = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot manage a user at or above your own role level' });
+    }
+    db.prepare('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?').run(targetId);
+    writeAudit(req.user.id, 'USER_UNLOCKED', `Admin unlocked user ${target.username} (#${targetId})`);
     res.json({ ok: true });
   });
 
@@ -2070,8 +2128,11 @@ async function startServer() {
   app.post('/api/admin/users/:id/revoke-sessions', authenticate, requireAdmin, (req: any, res) => {
     const targetId = parseInt(req.params.id);
     if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
-    const target: any = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    const target: any = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
+    if (targetId !== req.user.id && !canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot revoke sessions for a user at or above your own role level' });
+    }
     db.prepare('UPDATE users SET jwt_epoch = COALESCE(jwt_epoch, 0) + 1 WHERE id = ?').run(targetId);
     writeAudit(req.user.id, 'SESSIONS_REVOKED', `Admin revoked all sessions for ${target.username} (#${targetId})`);
     res.json({ ok: true });
@@ -2088,6 +2149,12 @@ async function startServer() {
     const target: any = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
     if (!role || !(role in ROLE_LEVEL)) return res.status(400).json({ error: 'Invalid role' });
+    if (!canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot manage a user at or above your own role level' });
+    }
+    if (!canAssignRole(req.user.role, role)) {
+      return res.status(403).json({ error: 'You cannot grant a role at or above your own level' });
+    }
     const dur = Math.min(240, Math.max(5, parseInt(minutes, 10) || 60));   // 5min–4h
     if ((ROLE_LEVEL[role] ?? -1) <= (ROLE_LEVEL[target.role] ?? -1)) {
       return res.status(400).json({ error: 'temp_role must be higher than base role' });
@@ -2103,8 +2170,11 @@ async function startServer() {
   app.delete('/api/admin/users/:id/temp-role', authenticate, requireAdmin, (req: any, res) => {
     const targetId = parseInt(req.params.id);
     if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid user ID' });
-    const target: any = db.prepare('SELECT username FROM users WHERE id = ?').get(targetId);
+    const target: any = db.prepare('SELECT username, role FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!canAdminister(req.user.role, target.role)) {
+      return res.status(403).json({ error: 'You cannot manage a user at or above your own role level' });
+    }
     db.prepare('UPDATE users SET temp_role = NULL, temp_role_expires_at = NULL WHERE id = ?').run(targetId);
     writeAudit(req.user.id, 'TEMP_ROLE_REVOKED', `Revoked temp role for ${target.username}`);
     res.json({ ok: true });
@@ -2130,6 +2200,16 @@ async function startServer() {
     const cleanIds = ids.map(x => parseInt(x, 10)).filter(n => Number.isFinite(n));
     if (cleanIds.length === 0) return res.status(400).json({ error: 'user_ids required' });
     if (cleanIds.includes(req.user.id)) return res.status(400).json({ error: 'Cannot disable your own account' });
+    // Don't let a lower-privileged admin disable an admin/super-admin in bulk.
+    const protectedRow: any = db.prepare(
+      `SELECT username, role FROM users WHERE id IN (${cleanIds.map(() => '?').join(',')})
+       AND ${ROLE_LEVEL[req.user.role] ?? -1} <= (CASE role
+         WHEN 'SUPER_ADMIN' THEN 5 WHEN 'ADMIN' THEN 4 WHEN 'INCIDENT_LEAD' THEN 3
+         WHEN 'TIER2' THEN 2 WHEN 'TIER1' THEN 1 ELSE 0 END) LIMIT 1`
+    ).get(...cleanIds);
+    if (protectedRow) {
+      return res.status(403).json({ error: `Cannot disable ${protectedRow.username} — at or above your own role level` });
+    }
     const placeholders = cleanIds.map(() => '?').join(',');
     const r = db.prepare(`UPDATE users SET status='disabled', jwt_epoch = COALESCE(jwt_epoch, 0) + 1 WHERE id IN (${placeholders})`).run(...cleanIds);
     writeAudit(req.user.id, 'BULK_USER_DISABLED', `Bulk-disabled ${r.changes} inactive user(s) [step-up verified]`);
@@ -2138,7 +2218,7 @@ async function startServer() {
 
   // ── Permission matrix (Phase 3.1, ISO A.5.15 evidence) ───────────────────
   app.get('/api/admin/permissions', authenticate, requireAdmin, (_req, res) => {
-    res.json({ roles: ['ANALYST','TIER1','TIER2','INCIDENT_LEAD','ADMIN'], matrix: buildPermissionMatrix() });
+    res.json({ roles: ['ANALYST','TIER1','TIER2','INCIDENT_LEAD','ADMIN','SUPER_ADMIN'], matrix: buildPermissionMatrix() });
   });
 
   // ── Security policy management (read/write) ──────────────────────────────
@@ -2159,6 +2239,11 @@ async function startServer() {
   app.patch('/api/admin/security-policies/:name', authenticate, requireAdmin, requireStepUp, (req: any, res) => {
     const name = req.params.name as PolicyName;
     if (!POLICY_ROWS.includes(name)) return res.status(400).json({ error: 'Unknown policy' });
+    // The admin IP allowlist governs who can even reach admin endpoints —
+    // highest blast radius, so it's reserved for SUPER_ADMIN.
+    if (name === 'admin_ip_allowlist' && (ROLE_LEVEL[req.user?.role] ?? -1) < ROLE_LEVEL.SUPER_ADMIN) {
+      return res.status(403).json({ error: 'Editing the admin IP allowlist requires Super Administrator' });
+    }
     const config = req.body?.config;
     if (!config || typeof config !== 'object') return res.status(400).json({ error: 'config object required' });
     db.prepare('UPDATE integrations SET config = ? WHERE name = ?').run(JSON.stringify(config), name);
@@ -2615,7 +2700,10 @@ async function startServer() {
         : Number(wcfg.min_severity ?? 0);
       const belowMinSeverity = severity < minSev;
 
-      // Time window filter (HH:MM 24h) — same treatment: archive instead of drop.
+      // Time window (HH:MM 24h) marks ACTIVE hours. An alert arriving OUTSIDE
+      // active hours is NOT archived — off-hours is a higher-risk window (classic
+      // attacker tradecraft), so it's flagged after_hours and risk-elevated by the
+      // pipeline (priority floor + forced notification). See orchestrator finalize.
       let outsideTimeWindow = false;
       if (wcfg.time_window_start && wcfg.time_window_end) {
         const now  = new Date();
@@ -2623,15 +2711,12 @@ async function startServer() {
         if (hhmm < wcfg.time_window_start || hhmm > wcfg.time_window_end) outsideTimeWindow = true;
       }
 
-      const autoFp = belowMinSeverity || outsideTimeWindow;
-      const fpMethod = belowMinSeverity ? 'severity_filter' : outsideTimeWindow ? 'time_window' : null;
-      const fpReason = belowMinSeverity
-        ? `Severity ${severity} below threshold ${minSev}`
-        : outsideTimeWindow
-          ? `Outside active hours (${wcfg.time_window_start}–${wcfg.time_window_end})`
-          : null;
+      // Only the severity floor still auto-archives at ingest. Time-of-day never does.
+      const autoFp = belowMinSeverity;
+      const fpMethod = belowMinSeverity ? 'severity_filter' : null;
+      const fpReason = belowMinSeverity ? `Severity ${severity} below threshold ${minSev}` : null;
 
-      db.prepare(`INSERT INTO alerts (id, rule_id, description, severity, source_ip, dest_ip, user, hostname, agent_name, full_log) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      db.prepare(`INSERT INTO alerts (id, rule_id, description, severity, source_ip, dest_ip, user, hostname, agent_name, full_log, after_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           id,
           ruleId,
@@ -2643,6 +2728,7 @@ async function startServer() {
           alert.agent?.name  || 'unknown',
           alert.agent?.name  || 'unknown',
           JSON.stringify(alert),
+          outsideTimeWindow ? 1 : 0,
         );
 
       if (autoFp) {
@@ -2653,12 +2739,13 @@ async function startServer() {
 
       io.emit('new_alert', { id });
 
-      // Auto-orchestrate (fire-and-forget) — but skip for auto-FP'd noise
+      // Auto-orchestrate (fire-and-forget) — runs for off-hours alerts too; only
+      // severity-floored noise is skipped.
       if (!autoFp && wcfg.auto_orchestrate !== 'false') {
         setImmediate(() => triggerOrchestration(id));
       }
 
-      res.json({ status: autoFp ? 'archived_fp' : 'ok', id, fp_reason: fpReason });
+      res.json({ status: autoFp ? 'archived_fp' : (outsideTimeWindow ? 'ok_after_hours' : 'ok'), id, fp_reason: fpReason });
     } catch (err) {
       console.error('Ingestion error:', err);
       res.status(500).json({ error: 'Failed to ingest alert' });

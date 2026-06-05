@@ -109,6 +109,20 @@ function aggregateFpScore(args: {
   return { score, breakdown };
 }
 
+// Off-hours risk elevation. An alert that arrived outside active hours
+// (alert.after_hours = 1) is treated as higher-risk: its priority is floored to
+// HIGH so it always surfaces to analysts and crosses notification thresholds,
+// and it is exempted from the heuristic FP "noise" gates (aggregator, low risk
+// score, low priority). Genuine high-confidence FP detections (asset fast-FP,
+// memory match, triage verdict) still apply — a true benign event is benign at
+// any hour. Returns the (possibly elevated) priority.
+const PRIORITY_RANK_ORDER = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+function elevatedPriority(p: string | undefined): string {
+  const cur = (p || 'MEDIUM').toUpperCase();
+  const idx = PRIORITY_RANK_ORDER.indexOf(cur);
+  return idx < PRIORITY_RANK_ORDER.indexOf('HIGH') ? 'HIGH' : cur;
+}
+
 /**
  * Hub-and-Swarm orchestration.
  *
@@ -309,11 +323,20 @@ export async function runHubAndSwarm(
   });
   log(`FP aggregator: ${aggFp.breakdown}`);
 
+  // Off-hours risk elevation — floor priority to HIGH so the alert surfaces and
+  // notifies, and exempt it from the heuristic noise gates below.
+  const afterHours = !!(alert as any).after_hours;
+  if (afterHours && ticket) {
+    const boosted = elevatedPriority(ticket.priority);
+    if (boosted !== ticket.priority) log(`After-hours alert: priority ${ticket.priority ?? '—'} → ${boosted} (off-hours risk elevation)`);
+    ticket.priority = boosted;
+  }
+
   // ── 7. Memory commits ────────────────────────────────────────────────────
   // Priority gate: MEDIUM and LOW → noise (FP archive); only HIGH+ reach analyst
-  const isNoisePriority = !triage?.is_false_positive
+  const isNoisePriority = !triage?.is_false_positive && !afterHours
                        && (ticket?.priority === "LOW" || ticket?.priority === "MEDIUM");
-  const isAggregatedFp  = !triage?.is_false_positive && aggFp.score >= 0.55;
+  const isAggregatedFp  = !triage?.is_false_positive && !afterHours && aggFp.score >= 0.55;
   const finalOutcome = (triage?.is_false_positive || isAggregatedFp || isNoisePriority) ? "FALSE_POSITIVE"
                      : ticket?.priority === "CRITICAL" ? "ESCALATED"
                      : "TRIAGED";
@@ -334,7 +357,7 @@ export async function runHubAndSwarm(
     recall: workerResults.recall ?? { available: true, hits: recallHits },
     ioc_check: workerResults.ioc_check ?? null,
     ticket, responsePlan, validation,
-    ctx, fpShortCircuit: false,
+    ctx, fpShortCircuit: false, afterHours,
     aggregatedFp:    isAggregatedFp,
     aggregatedScore: aggFp.score,
     aggregatedBreakdown: aggFp.breakdown,
@@ -589,11 +612,19 @@ export async function runInvestigation(
   });
   log(`FP aggregator: ${aggFp2.breakdown}`);
 
+  // Off-hours risk elevation (see runHubAndSwarm for rationale).
+  const afterHours = !!(alert as any).after_hours;
+  if (afterHours && ticket) {
+    const boosted = elevatedPriority(ticket.priority);
+    if (boosted !== ticket.priority) log(`After-hours alert: priority ${ticket.priority ?? '—'} → ${boosted} (off-hours risk elevation)`);
+    ticket.priority = boosted;
+  }
+
   // ── 7. Memory commits ─────────────────────────────────────────────────
   // Priority gate: MEDIUM and LOW → noise (FP archive); only HIGH+ reach analyst
-  const isNoisePriority2 = !triage?.is_false_positive
+  const isNoisePriority2 = !triage?.is_false_positive && !afterHours
                         && (ticket?.priority === "LOW" || ticket?.priority === "MEDIUM");
-  const isAggregatedFp2  = !triage?.is_false_positive && aggFp2.score >= 0.55;
+  const isAggregatedFp2  = !triage?.is_false_positive && !afterHours && aggFp2.score >= 0.55;
   const finalOutcome = (triage?.is_false_positive || isAggregatedFp2 || isNoisePriority2) ? "FALSE_POSITIVE"
                      : ticket?.priority === "CRITICAL" ? "ESCALATED"
                      : "TRIAGED";
@@ -614,7 +645,7 @@ export async function runInvestigation(
     recall: workerResults.recall ?? { available: true, hits: recallHits },
     ioc_check: workerResults.ioc_check ?? null,
     ticket, responsePlan, validation,
-    ctx, fpShortCircuit: false,
+    ctx, fpShortCircuit: false, afterHours,
     aggregatedFp:    isAggregatedFp2,
     aggregatedScore: aggFp2.score,
     aggregatedBreakdown: aggFp2.breakdown,
@@ -694,6 +725,7 @@ function composeOutput(args: {
   aggregatedFp?:        boolean;       // confidence aggregator passed threshold
   aggregatedScore?:     number;
   aggregatedBreakdown?: string;
+  afterHours?:          boolean;       // off-hours → exempt from heuristic noise gates
 }): OrchestrationOutput {
   const { analysis, intel, knowledge, correlation, ticket, responsePlan, validation, ctx } = args;
 
@@ -731,9 +763,12 @@ function composeOutput(args: {
   //   6. Priority gate: LOW or MEDIUM → noise (only HIGH+ reaches Investigation)
   const triageRiskScore  = typeof analysis?.risk_score === 'number' ? analysis.risk_score : 100;
   const isAgentFp        = !!analysis?.is_false_positive;
-  const isAggregatedFp   = !args.fpShortCircuit && !isAgentFp && !!args.aggregatedFp;
-  const isLowRiskScore   = !args.fpShortCircuit && !isAgentFp && !isAggregatedFp && triageRiskScore < 40;
-  const isNoisePriority  = !args.fpShortCircuit && !isAgentFp && !isAggregatedFp && !isLowRiskScore
+  // Off-hours alerts are exempt from the three heuristic "noise" gates (4-6):
+  // time-of-day must never downgrade an alert to noise. High-confidence FP
+  // detections (1-3) still apply.
+  const isAggregatedFp   = !args.fpShortCircuit && !isAgentFp && !args.afterHours && !!args.aggregatedFp;
+  const isLowRiskScore   = !args.fpShortCircuit && !isAgentFp && !isAggregatedFp && !args.afterHours && triageRiskScore < 40;
+  const isNoisePriority  = !args.fpShortCircuit && !isAgentFp && !isAggregatedFp && !isLowRiskScore && !args.afterHours
                          && (ticket?.priority === 'LOW' || ticket?.priority === 'MEDIUM');
   const isFp             = args.fpShortCircuit || isAgentFp || isAggregatedFp || isLowRiskScore || isNoisePriority;
 
