@@ -1,0 +1,52 @@
+title AISOC — Tech Stack
+
+Frontend [icon: monitor, color: blue] {
+  REACT [icon: react,    label: "React 19 + TypeScript"]
+  VITE  [icon: zap,      label: "Vite + Tailwind"]
+  WS    [icon: activity, label: "Socket.IO (live)"]
+}
+
+Backend (single Node process) [icon: server, color: orange] {
+  API  [icon: webhook, label: "Express REST API"]
+  AUTH [icon: key,     label: "JWT · bcrypt · RBAC"]
+  RT   [icon: radio,   label: "Socket.IO server"]
+
+  Agents (in-process) [icon: cpu, color: purple] {
+    GRAPH  [icon: git-merge, label: "LangGraph orchestrator"]
+    SWARM  [icon: network,   label: "Hub + parallel workers"]
+    PIPE   [icon: layers,    label: "9-layer FP pipeline"]
+  }
+}
+
+LLMs [icon: brain, color: green] {
+  GEMINI [icon: sparkles, label: "Google Gemini"]
+  OPENAI [icon: bot,      label: "OpenAI"]
+  OLLAMA [icon: box,      label: "Ollama (local + embeddings)"]
+}
+
+Data [icon: database, color: yellow] {
+  DB  [icon: database,    label: "SQLite (WAL)"]
+  MEM [icon: file-search, label: "Memory store + RAG"]
+}
+
+External [icon: globe, color: red] {
+  SIEM   [icon: alert-triangle, label: "Wazuh / SIEM"]
+  NOTIFY [icon: bell,           label: "Telegram · Slack · Email · GLPI"]
+  LDAP   [icon: users,          label: "LDAP / AD"]
+}
+
+SIEM > API: alerts
+REACT > API: REST
+RT > WS: events
+API > AUTH
+API > GRAPH
+AUTH > LDAP
+GRAPH > PIPE
+PIPE > SWARM
+SWARM > GEMINI
+SWARM > OPENAI
+SWARM > OLLAMA
+SWARM > MEM
+MEM > DB
+GRAPH > DB
+GRAPH > NOTIFY

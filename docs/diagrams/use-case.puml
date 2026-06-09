@@ -1,0 +1,128 @@
+@startuml AISOC-UseCase
+title AISOC — Use Case Diagram
+
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ─── Human actors (role hierarchy: each inherits the lower role's cases) ───
+actor "SOC Analyst\n(Tier 1)"      as Analyst
+actor "Tier-2 Analyst"             as Tier2
+actor "Incident Lead"              as Lead
+actor "Administrator"              as Admin
+actor "Super Administrator\n(platform owner)" as Super
+
+Analyst <|-- Tier2
+Tier2   <|-- Lead
+Lead    <|-- Admin
+Admin   <|-- Super
+
+' ─── External / system actors ───
+actor "Wazuh Forwarder"            as Wazuh
+actor "LLM Providers\n(Gemini/OpenAI/Ollama)" as LLM
+actor "Notification Channels\n(Telegram/Slack/Email/GLPI)" as Notify
+actor "LDAP / AD"                  as LDAP
+actor "MISP"                       as MISP
+
+rectangle "Aegis SOC Platform" {
+
+  ' ===== Automated ingest & AI pipeline =====
+  usecase "Ingest Alert"                 as UC_Ingest
+  usecase "Authenticate API Key"         as UC_ApiKey
+  usecase "Run 9-Layer FP Reduction"     as UC_FP
+  usecase "Run AI Investigation\n(multi-agent)" as UC_Invest
+  usecase "Query Threat Intel"           as UC_Intel
+  usecase "Create Incident"              as UC_Incident
+  usecase "Send Notification"            as UC_Notify
+
+  ' ===== Analyst (Tier 1) =====
+  usecase "View Dashboard & Stats"       as UC_Dash
+  usecase "Triage Alerts"                as UC_Triage
+  usecase "Confirm False Positive"       as UC_ConfirmFP
+  usecase "Override / Escalate Alert"    as UC_Escalate
+  usecase "Submit Feedback"              as UC_Feedback
+  usecase "Manage Own Profile"           as UC_Profile
+
+  ' ===== Tier-2 =====
+  usecase "Investigate Incident"         as UC_InvManual
+  usecase "Re-run Agent Phase"           as UC_Rerun
+  usecase "Manage Suppression Rules"     as UC_Supp
+  usecase "Manage Asset Context"         as UC_Assets
+  usecase "Manage Playbooks"             as UC_Playbooks
+  usecase "View Memory & IOCs"           as UC_Memory
+
+  ' ===== Incident Lead =====
+  usecase "Assign / Take Incident"       as UC_Assign
+  usecase "Manage Response Actions"      as UC_Actions
+  usecase "Close / Reclassify Incident"  as UC_Close
+
+  ' ===== Administrator =====
+  usecase "Manage Users & Roles"         as UC_Users
+  usecase "Manage API Keys"              as UC_Keys
+  usecase "Configure LLM Providers"      as UC_LLMCfg
+  usecase "Configure Integrations"       as UC_Integr
+  usecase "Set Security Policies"        as UC_Policies
+  usecase "Run Access Reviews"           as UC_Access
+  usecase "View Audit & Action Logs"     as UC_Audit
+
+  ' ===== Super Administrator (platform owner) =====
+  usecase "Manage Admins\n(mint / promote ADMIN)" as UC_ManageAdmins
+  usecase "Assign SUPER_ADMIN Tier"      as UC_AssignSuper
+  usecase "Edit Admin IP Allowlist"      as UC_IpAllow
+}
+
+' ─── External actor associations ───
+Wazuh  --> UC_Ingest
+Wazuh  --> UC_ApiKey
+UC_Invest --> LLM
+UC_FP     --> LLM
+UC_Intel  --> MISP
+UC_Notify --> Notify
+
+' ─── Ingest pipeline includes/extends ───
+UC_Ingest  ..> UC_ApiKey  : <<include>>
+UC_Ingest  ..> UC_FP      : <<include>>
+UC_FP      ..> UC_Invest  : <<extend>>\n(real threat)
+UC_Invest  ..> UC_Intel   : <<include>>
+UC_Invest  ..> UC_Incident: <<extend>>
+UC_Incident ..> UC_Notify : <<include>>
+
+' ─── Analyst (Tier 1) associations ───
+Analyst --> UC_Dash
+Analyst --> UC_Triage
+Analyst --> UC_ConfirmFP
+Analyst --> UC_Escalate
+Analyst --> UC_Feedback
+Analyst --> UC_Profile
+UC_Feedback ..> UC_FP : <<extend>>\n(reinforce learning)
+
+' ─── Tier-2 associations ───
+Tier2 --> UC_InvManual
+Tier2 --> UC_Rerun
+Tier2 --> UC_Supp
+Tier2 --> UC_Assets
+Tier2 --> UC_Playbooks
+Tier2 --> UC_Memory
+UC_InvManual ..> UC_Invest : <<include>>
+
+' ─── Incident Lead associations ───
+Lead --> UC_Assign
+Lead --> UC_Actions
+Lead --> UC_Close
+
+' ─── Administrator associations ───
+Admin --> UC_Users
+Admin --> UC_Keys
+Admin --> UC_LLMCfg
+Admin --> UC_Integr
+Admin --> UC_Policies
+Admin --> UC_Access
+Admin --> UC_Audit
+UC_Users --> LDAP : <<include>>\n(LDAP auth)
+
+' ─── Super Administrator associations (owner-only, above ADMIN) ───
+Super --> UC_ManageAdmins
+Super --> UC_AssignSuper
+Super --> UC_IpAllow
+
+@enduml

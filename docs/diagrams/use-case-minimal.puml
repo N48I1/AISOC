@@ -1,0 +1,51 @@
+@startuml AISOC-UseCase-Minimal
+title AISOC — Use Case (Overview)
+
+left to right direction
+skinparam packageStyle rectangle
+skinparam actorStyle awesome
+
+' ─── Human actors (role hierarchy) ───
+actor "SOC Analyst"        as Analyst
+actor "Tier-2 Analyst"     as Tier2
+actor "Incident Lead"      as Lead
+actor "Administrator"      as Admin
+actor "Super Admin"        as Super
+
+Analyst <|-- Tier2
+Tier2   <|-- Lead
+Lead    <|-- Admin
+Admin   <|-- Super
+
+' ─── External / system actors ───
+actor "Wazuh"              as Wazuh
+actor "LLM Providers"      as LLM
+actor "Notifications"      as Notify
+
+rectangle "Aegis SOC Platform" {
+  usecase "Ingest Alert"            as UC_Ingest
+  usecase "AI Investigation\n(FP filter + multi-agent)" as UC_Invest
+  usecase "Handle Incident"         as UC_Incident
+
+  usecase "Triage Alerts"           as UC_Triage
+  usecase "Investigate & Tune"      as UC_Tune
+  usecase "Assign / Close Incident" as UC_Assign
+  usecase "Administer Platform"     as UC_Admin
+  usecase "Govern Admins"           as UC_Govern
+}
+
+' ─── Automated pipeline ───
+Wazuh   --> UC_Ingest
+UC_Ingest ..> UC_Invest  : <<include>>
+UC_Invest --> LLM
+UC_Invest ..> UC_Incident : <<extend>>
+UC_Incident --> Notify
+
+' ─── Human actors → key use cases ───
+Analyst --> UC_Triage
+Tier2   --> UC_Tune
+Lead    --> UC_Assign
+Admin   --> UC_Admin
+Super   --> UC_Govern
+
+@enduml
