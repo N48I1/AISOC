@@ -1,0 +1,240 @@
+@startuml AISOC-ClassDiagram
+title AISOC — Domain Class Diagram (data model)
+
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+hide circle
+hide methods
+
+' ─────────────────── Identity & Access ───────────────────
+package "Identity & Access" #EEF3FF {
+  class User {
+    +id : int <<PK>>
+    username : text <<unique>>
+    password : text
+    email : text
+    role : RoleName
+    display_name : text
+    failed_logins : int
+    locked_until : datetime
+    last_login : datetime
+    created_at : datetime
+  }
+  class ApiKey {
+    +id : int <<PK>>
+    name : text
+    key_hash : text <<unique>>
+    key_prefix : text
+    created_by : int <<FK User>>
+    last_used_at : datetime
+    revoked : int
+  }
+  class PasswordHistory {
+    +id : int <<PK>>
+    user_id : int <<FK User>>
+    password_hash : text
+    created_at : datetime
+  }
+  class AuditLog {
+    +id : text <<PK>>
+    user_id : int <<FK User>>
+    action : text
+    details : text
+    timestamp : datetime
+  }
+  class AccessReview {
+    +id : int <<PK>>
+    started_by : int <<FK User>>
+    due_at : datetime
+    completed_at : datetime
+  }
+  class AccessReviewItem {
+    +id : int <<PK>>
+    review_id : int <<FK AccessReview>>
+    user_id : int <<FK User>>
+    role_at_time : text
+    decision : text
+    decided_by : int <<FK User>>
+  }
+  enum RoleName {
+    ANALYST
+    TIER1
+    TIER2
+    INCIDENT_LEAD
+    ADMIN
+    SUPER_ADMIN
+  }
+}
+
+' ─────────────────── Alerts & Incidents ───────────────────
+package "Alerts & Incidents" #FFF3E6 {
+  class Alert {
+    +id : text <<PK>>
+    rule_id : text
+    description : text
+    severity : int
+    source_ip : text
+    hostname : text
+    status : text
+    ai_analysis : json
+    mitre_attack : json
+    timestamp : datetime
+  }
+  class Incident {
+    +id : text <<PK>>
+    title : text
+    severity : text
+    status : text
+    assigned_to : int <<FK User>>
+    analysis : text
+    action_plan : text
+    created_at : datetime
+  }
+  class IncidentAlert {
+    +incident_id : text <<FK Incident>>
+    +alert_id : text <<FK Alert>>
+  }
+  class AgentRun {
+    +id : int <<PK>>
+    alert_id : text <<FK Alert>>
+    ai_analysis : json
+    status : text
+    run_at : datetime
+  }
+  class Feedback {
+    +id : int <<PK>>
+    alert_id : text <<FK Alert>>
+    user_id : int <<FK User>>
+    phase : text
+    is_accurate : bool
+    comment : text
+  }
+  class IncidentTimeline {
+    +id : int <<PK>>
+    incident_id : text <<FK Incident>>
+    event_type : text
+    phase_from : text
+    phase_to : text
+    user_id : int <<FK User>>
+  }
+  class IncidentAction {
+    +id : int <<PK>>
+    incident_id : text <<FK Incident>>
+    action_type : text
+    target : text
+    priority : text
+    status : text
+    source : text
+    executed_by : int <<FK User>>
+  }
+}
+
+' ─────────────────── AI / Agent Memory ───────────────────
+package "AI / Agent Memory" #EFFAF0 {
+  class IncidentInsight {
+    +id : int <<PK>>
+    alert_id : text <<FK Alert>>
+    idempotency_key : text <<unique>>
+    summary : text
+    attack_pattern : text
+    ttp_tags : text
+    embedding : blob
+  }
+  class IncidentReasoning {
+    +id : int <<PK>>
+    alert_id : text <<FK Alert>>
+    trace_id : text
+    agent : text
+    decision : text
+    confidence : real
+  }
+  class WorkingMemory {
+    +id : int <<PK>>
+    alert_id : text <<FK Alert>>
+    trace_id : text
+    step : int
+    thought : text
+  }
+  class IocMemory {
+    +value : text <<PK>>
+    type : text
+    threat_level : text
+    alert_count : int
+    last_seen : datetime
+  }
+  class AssetContext {
+    +value : text <<PK>>
+    type : text
+    role : text
+    fp_default : int
+    source : text
+  }
+  class SuppressionRule {
+    +id : int <<PK>>
+    name : text
+    source_ip_pattern : text
+    rule_id_pattern : text
+    reason : text
+    hit_count : int
+    enabled : int
+  }
+  class AgentSetting {
+    +phase : text <<PK>>
+    model : text
+  }
+}
+
+' ─────────────────── Integrations & Config ───────────────────
+package "Integrations & Config" #F6EEFF {
+  class Integration {
+    +name : text <<PK>>
+    enabled : int
+    config : json
+    auto_send_threshold : text
+  }
+  class ActionLog {
+    +id : int <<PK>>
+    alert_id : text <<FK Alert>>
+    integration : text
+    action : text
+    status : text
+  }
+  class Playbook {
+    +id : int <<PK>>
+    tactic : text
+    title : text
+    steps : text
+    created_by : int <<FK User>>
+  }
+  class LocalLlmConfig {
+    +key : text <<PK>>
+    value : text
+  }
+}
+
+' ─────────────────── Relationships ───────────────────
+User "1" -- "0..*" ApiKey          : creates
+User "1" -- "0..*" PasswordHistory : history
+User "1" -- "0..*" AuditLog        : acts
+User "1" -- "0..*" AccessReview    : starts
+AccessReview "1" -- "0..*" AccessReviewItem : contains
+User "1" -- "0..*" AccessReviewItem : reviewed
+User ..> RoleName                  : role
+
+Incident "1" -- "0..*" IncidentAlert
+Alert    "1" -- "0..*" IncidentAlert
+User "0..1" -- "0..*" Incident       : assigned
+Incident "1" -- "0..*" IncidentTimeline
+Incident "1" -- "0..*" IncidentAction
+User "0..1" -- "0..*" IncidentAction : executes
+
+Alert "1" -- "0..*" AgentRun
+Alert "1" -- "0..*" Feedback
+User  "1" -- "0..*" Feedback
+Alert "1" -- "0..*" IncidentInsight
+Alert "1" -- "0..*" IncidentReasoning
+Alert "1" -- "0..*" WorkingMemory
+Alert "1" -- "0..*" ActionLog
+User  "1" -- "0..*" Playbook         : authors
+
+@enduml

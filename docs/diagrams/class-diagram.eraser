@@ -1,0 +1,235 @@
+title AISOC — Data Model (entity relationships)
+
+// ─────────────── Identity & Access ───────────────
+users [icon: user, color: blue] {
+  id int pk
+  username string
+  password string
+  email string
+  role string
+  display_name string
+  failed_logins int
+  locked_until datetime
+  last_login datetime
+  created_at datetime
+}
+
+api_keys [icon: key, color: blue] {
+  id int pk
+  name string
+  key_hash string
+  key_prefix string
+  created_by int fk
+  last_used_at datetime
+  revoked int
+}
+
+password_history [icon: lock, color: blue] {
+  id int pk
+  user_id int fk
+  password_hash string
+  created_at datetime
+}
+
+audit_logs [icon: file-text, color: blue] {
+  id string pk
+  user_id int fk
+  action string
+  details string
+  timestamp datetime
+}
+
+access_reviews [icon: clipboard, color: blue] {
+  id int pk
+  started_by int fk
+  due_at datetime
+  completed_at datetime
+}
+
+access_review_items [icon: check-square, color: blue] {
+  id int pk
+  review_id int fk
+  user_id int fk
+  role_at_time string
+  decision string
+  decided_by int fk
+}
+
+// ─────────────── Alerts & Incidents ───────────────
+alerts [icon: alert-triangle, color: orange] {
+  id string pk
+  rule_id string
+  description string
+  severity int
+  source_ip string
+  hostname string
+  status string
+  ai_analysis json
+  mitre_attack json
+  timestamp datetime
+}
+
+incidents [icon: flag, color: orange] {
+  id string pk
+  title string
+  severity string
+  status string
+  assigned_to int fk
+  analysis string
+  action_plan string
+  created_at datetime
+}
+
+incident_alerts [icon: link, color: orange] {
+  incident_id string fk
+  alert_id string fk
+}
+
+agent_runs [icon: repeat, color: orange] {
+  id int pk
+  alert_id string fk
+  ai_analysis json
+  status string
+  run_at datetime
+}
+
+feedback [icon: message-circle, color: orange] {
+  id int pk
+  alert_id string fk
+  user_id int fk
+  phase string
+  is_accurate boolean
+  comment string
+}
+
+incident_timeline [icon: clock, color: orange] {
+  id int pk
+  incident_id string fk
+  event_type string
+  phase_from string
+  phase_to string
+  user_id int fk
+}
+
+incident_actions [icon: shield, color: orange] {
+  id int pk
+  incident_id string fk
+  action_type string
+  target string
+  priority string
+  status string
+  source string
+  executed_by int fk
+}
+
+// ─────────────── AI / Agent Memory ───────────────
+incident_insights [icon: file-search, color: green] {
+  id int pk
+  alert_id string fk
+  idempotency_key string
+  summary string
+  attack_pattern string
+  ttp_tags string
+  embedding blob
+}
+
+incident_reasoning [icon: git-branch, color: green] {
+  id int pk
+  alert_id string fk
+  trace_id string
+  agent string
+  decision string
+  confidence real
+}
+
+working_memory [icon: list, color: green] {
+  id int pk
+  alert_id string fk
+  trace_id string
+  step int
+  thought string
+}
+
+ioc_memory [icon: hash, color: green] {
+  value string pk
+  type string
+  threat_level string
+  alert_count int
+  last_seen datetime
+}
+
+asset_context [icon: server, color: green] {
+  value string pk
+  type string
+  role string
+  fp_default int
+  source string
+}
+
+suppression_rules [icon: filter, color: green] {
+  id int pk
+  name string
+  source_ip_pattern string
+  rule_id_pattern string
+  reason string
+  hit_count int
+  enabled int
+}
+
+agent_settings [icon: sliders, color: green] {
+  phase string pk
+  model string
+}
+
+// ─────────────── Integrations & Config ───────────────
+integrations [icon: plug, color: purple] {
+  name string pk
+  enabled int
+  config json
+  auto_send_threshold string
+}
+
+action_logs [icon: activity, color: purple] {
+  id int pk
+  alert_id string fk
+  integration string
+  action string
+  status string
+}
+
+playbooks [icon: book, color: purple] {
+  id int pk
+  tactic string
+  title string
+  steps string
+  created_by int fk
+}
+
+local_llm_config [icon: settings, color: purple] {
+  key string pk
+  value string
+}
+
+// ─────────────── Relationships ───────────────
+users.id < api_keys.created_by
+users.id < password_history.user_id
+users.id < audit_logs.user_id
+users.id < access_reviews.started_by
+access_reviews.id < access_review_items.review_id
+users.id < access_review_items.user_id
+
+users.id < incidents.assigned_to
+incidents.id < incident_alerts.incident_id
+alerts.id < incident_alerts.alert_id
+incidents.id < incident_timeline.incident_id
+incidents.id < incident_actions.incident_id
+users.id < incident_actions.executed_by
+
+alerts.id < agent_runs.alert_id
+alerts.id < feedback.alert_id
+users.id < feedback.user_id
+alerts.id < incident_insights.alert_id
+alerts.id < incident_reasoning.alert_id
+alerts.id < working_memory.alert_id
+alerts.id < action_logs.alert_id
+users.id < playbooks.created_by

@@ -49,23 +49,37 @@ Set via UI (**Integrations → Email**) or environment variables.
 
 For Gmail in the UI, the minimum working setup is:
 
-1. **Gmail Address / SMTP Username**: your Gmail address
-2. **App Password / SMTP Password**: paste the Gmail app password
-3. **Destination Email**: recipient mailbox for alerts
+1. **Email Provider**: `Gmail`
+2. **Mailbox / SMTP Username**: your Gmail address
+3. **App Password / SMTP Password**: paste the Gmail app password
+4. **Destination Email**: recipient mailbox for alerts
 
-`smtp.gmail.com:587` is auto-filled if Gmail is detected, and app-password spaces are normalized automatically.
+For Office 365 / Microsoft 365 in the UI, the minimum working setup is:
+
+1. **Email Provider**: `Office 365 / Microsoft 365`
+2. **Auth Method**: `Microsoft Graph OAuth`
+3. **Azure Tenant ID**: the Microsoft Entra tenant ID
+4. **Azure Client ID**: the App Registration application/client ID
+5. **Azure Client Secret**: a client secret created for the App Registration
+6. **Sender Mailbox**: the mailbox used to send alerts, for example `soc@company.com`
+7. **Destination Email**: recipient mailbox for alerts
+
+For Microsoft 365, create an Azure App Registration and grant **Microsoft Graph → Application permissions → Mail.Send**, then grant admin consent. AISOC sends via Microsoft Graph `POST /users/{sender}/sendMail`, which matches Microsoft's modern OAuth model for service integrations. This avoids relying on tenant-level SMTP AUTH being enabled.
+
+The legacy **SMTP password / app password** method remains available for tenants that explicitly allow SMTP AUTH. In that mode, `smtp.office365.com:587` is auto-filled. Gmail uses `smtp.gmail.com:587`, and Gmail app-password spaces are normalized automatically.
 
 Environment-variable option:
 
 ```env
-SMTP_HOST=smtp.yourorg.com
-SMTP_PORT=587
-SMTP_USER=aisoc@yourorg.com
-SMTP_PASS=your_smtp_password
+SMTP_PROVIDER=office365
+MS365_TENANT_ID=00000000-0000-0000-0000-000000000000
+MS365_CLIENT_ID=00000000-0000-0000-0000-000000000000
+MS365_CLIENT_SECRET=your_client_secret
+MS365_MAILBOX=aisoc@yourorg.com
 ALERT_EMAIL_TO=soc-team@yourorg.com
 ```
 
-If all SMTP variables are set, email integration is auto-enabled at startup.
+If either all SMTP variables or all Microsoft 365 Graph variables are set, email integration is auto-enabled at startup.
 
 ### What Gets Sent
 

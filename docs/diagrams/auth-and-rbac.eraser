@@ -24,10 +24,12 @@ Guards [icon: filter, color: blue] {
 }
 
 Roles [icon: layers, color: purple] {
-  TIER1 [icon: user-check, label: "TIER1"]
-  TIER2 [icon: user-check, label: "TIER2"]
-  LEAD  [icon: users,      label: "INCIDENT_LEAD"]
-  ADM   [icon: shield,     label: "ADMIN"]
+  ANALYST [icon: user,       label: "ANALYST"]
+  TIER1   [icon: user-check, label: "TIER1"]
+  TIER2   [icon: user-check, label: "TIER2"]
+  LEAD    [icon: users,      label: "INCIDENT_LEAD"]
+  ADM     [icon: shield,     label: "ADMIN"]
+  SUPER   [icon: crown,      label: "SUPER_ADMIN\n(platform owner)"]
 }
 
 Admin Ops [icon: shield, color: yellow] {
@@ -54,10 +56,12 @@ LOCK > JWT
 JWT > AUTHN
 AUTHN > RBAC
 AUTHN > ADMIN
+RBAC > ANALYST
 RBAC > TIER1
 RBAC > TIER2
 RBAC > LEAD
 ADMIN > ADM
+ADMIN > SUPER: manage admins · IP allowlist
 ADMIN > USERS
 ADMIN > AI
 ADMIN > SYS

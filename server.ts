@@ -94,33 +94,143 @@ function isGmailAddress(value?: string): boolean {
   return /@gmail\.com$/i.test(extractEmail(value));
 }
 
+function isMicrosoftMailAddress(value?: string): boolean {
+  return /@(outlook|hotmail|live|msn)\.com$/i.test(extractEmail(value));
+}
+
+function normalizeEmailProvider(value?: string): string {
+  const provider = String(value || '').trim().toLowerCase();
+  return ['gmail', 'office365', 'custom'].includes(provider) ? provider : '';
+}
+
+function normalizeEmailAuthMethod(value?: string, provider?: string): string {
+  const method = String(value || '').trim().toLowerCase();
+  if (provider !== 'office365') return 'smtp_password';
+  if (['smtp_password', 'microsoft_graph'].includes(method)) return method;
+  return provider === 'office365' ? 'microsoft_graph' : 'smtp_password';
+}
+
 function normalizeEmailIntegrationConfig(rawCfg: Record<string, string> = {}): Record<string, string> {
   const cfg = rawCfg || {};
   const user = extractEmail(cfg.smtp_user || cfg.from || '');
   const hostFromCfg = (cfg.smtp_host || '').trim();
-  const gmailMode = hostFromCfg.toLowerCase() === 'smtp.gmail.com' || isGmailAddress(user);
+  const hostLower = hostFromCfg.toLowerCase();
+  const configuredProvider = normalizeEmailProvider(cfg.smtp_provider);
+  const inferredProvider = hostLower === 'smtp.gmail.com' || isGmailAddress(user)
+    ? 'gmail'
+    : hostLower === 'smtp.office365.com' || isMicrosoftMailAddress(user)
+      ? 'office365'
+      : '';
+  const provider = configuredProvider || inferredProvider || 'custom';
+  const gmailMode = provider === 'gmail';
+  const office365Mode = provider === 'office365';
+  const authMethod = normalizeEmailAuthMethod(cfg.auth_method, provider);
   const pass = gmailMode ? String(cfg.smtp_pass || '').replace(/\s+/g, '') : String(cfg.smtp_pass || '');
   return {
     ...cfg,
+    smtp_provider: provider,
+    auth_method: authMethod,
     smtp_user: user || String(cfg.smtp_user || ''),
     smtp_pass: pass,
-    smtp_host: hostFromCfg || (gmailMode ? 'smtp.gmail.com' : ''),
-    smtp_port: String(cfg.smtp_port || '').trim() || (gmailMode ? '587' : ''),
+    smtp_host: hostFromCfg || (gmailMode ? 'smtp.gmail.com' : office365Mode ? 'smtp.office365.com' : ''),
+    smtp_port: String(cfg.smtp_port || '').trim() || (gmailMode || office365Mode ? '587' : ''),
     from: String(cfg.from || '').trim() || user,
     to: String(cfg.to || '').trim(),
+    ms_tenant_id: String(cfg.ms_tenant_id || '').trim(),
+    ms_client_id: String(cfg.ms_client_id || '').trim(),
+    ms_client_secret: String(cfg.ms_client_secret || ''),
+    ms_mailbox: extractEmail(cfg.ms_mailbox || user || cfg.from || ''),
   };
 }
 
+async function getMicrosoftGraphAccessToken(cfg: Record<string, string>): Promise<string> {
+  const tenantId = String(cfg.ms_tenant_id || process.env.MS365_TENANT_ID || '').trim();
+  const clientId = String(cfg.ms_client_id || process.env.MS365_CLIENT_ID || '').trim();
+  const clientSecret = String(cfg.ms_client_secret || process.env.MS365_CLIENT_SECRET || '');
+
+  const missing: string[] = [];
+  if (!tenantId) missing.push('ms_tenant_id');
+  if (!clientId) missing.push('ms_client_id');
+  if (!clientSecret) missing.push('ms_client_secret');
+  if (missing.length > 0) {
+    throw new Error(`Microsoft 365 Graph integration missing required fields: ${missing.join(', ')}`);
+  }
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials',
+  });
+  const res = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const data: any = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) {
+    throw new Error(`Microsoft token request failed: ${data.error_description || data.error || res.statusText}`);
+  }
+  return data.access_token;
+}
+
+async function sendMicrosoftGraphMail(subject: string, body: string, cfg: Record<string, string>) {
+  const mailbox = extractEmail(cfg.ms_mailbox || cfg.smtp_user || cfg.from || process.env.SMTP_USER || '');
+  const to = String(cfg.to || process.env.ALERT_EMAIL_TO || '').trim();
+  const missing: string[] = [];
+  if (!mailbox) missing.push('ms_mailbox');
+  if (!to) missing.push('to');
+  if (missing.length > 0) {
+    throw new Error(`Microsoft 365 Graph integration missing required fields: ${missing.join(', ')}`);
+  }
+
+  const accessToken = await getMicrosoftGraphAccessToken(cfg);
+  const res = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: {
+        subject: `[BBS AISOC] ${subject}`,
+        body: { contentType: 'Text', content: body },
+        toRecipients: to.split(',').map(addr => addr.trim()).filter(Boolean).map(address => ({ emailAddress: { address } })),
+      },
+      saveToSentItems: true,
+    }),
+  });
+  if (!res.ok) {
+    const errorBody = await res.text().catch(() => '');
+    throw new Error(`Microsoft Graph sendMail failed (${res.status}): ${errorBody || res.statusText}`);
+  }
+  console.log(`[Email:MicrosoftGraph] Sent: ${subject} → ${to}`);
+}
+
 async function sendIncidentAlert(subject: string, body: string, emailCfg?: Record<string, string>) {
-  const cfg = emailCfg || {};
+  const cfg = normalizeEmailIntegrationConfig(emailCfg || {});
+
+  if (cfg.smtp_provider === 'office365' && cfg.auth_method === 'microsoft_graph') {
+    await sendMicrosoftGraphMail(subject, body, cfg);
+    return;
+  }
 
   const from = cfg.from || process.env.SMTP_USER || '';
   const user = extractEmail(cfg.smtp_user || process.env.SMTP_USER || from);
   const to   = cfg.to || process.env.ALERT_EMAIL_TO;
   const hostFromCfg = (cfg.smtp_host || process.env.SMTP_HOST || '').trim();
-  const gmailMode = hostFromCfg.toLowerCase() === 'smtp.gmail.com' || isGmailAddress(user) || isGmailAddress(from);
-  const host = hostFromCfg || (gmailMode ? 'smtp.gmail.com' : '');
-  const portRaw = cfg.smtp_port || process.env.SMTP_PORT || (gmailMode ? '587' : '587');
+  const hostLower = hostFromCfg.toLowerCase();
+  const configuredProvider = normalizeEmailProvider(cfg.smtp_provider || process.env.SMTP_PROVIDER);
+  const inferredProvider = hostLower === 'smtp.gmail.com' || isGmailAddress(user) || isGmailAddress(from)
+    ? 'gmail'
+    : hostLower === 'smtp.office365.com' || isMicrosoftMailAddress(user) || isMicrosoftMailAddress(from)
+      ? 'office365'
+      : '';
+  const provider = configuredProvider || inferredProvider || 'custom';
+  const gmailMode = provider === 'gmail';
+  const office365Mode = provider === 'office365';
+  const host = hostFromCfg || (gmailMode ? 'smtp.gmail.com' : office365Mode ? 'smtp.office365.com' : '');
+  const portRaw = cfg.smtp_port || process.env.SMTP_PORT || (gmailMode || office365Mode ? '587' : '587');
   const port = Number(portRaw);
   const rawPass = cfg.smtp_pass || process.env.SMTP_PASS || '';
   const pass = gmailMode ? rawPass.replace(/\s+/g, '') : rawPass;
@@ -1008,12 +1118,25 @@ try {
     'INSERT OR IGNORE INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, ?, ?, ?)'
   );
   const smtpConfigured = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
-  seedIntegration.run('email', smtpConfigured ? 1 : 0,
+  const ms365GraphConfigured = !!(
+    process.env.SMTP_PROVIDER === 'office365' &&
+    process.env.MS365_TENANT_ID &&
+    process.env.MS365_CLIENT_ID &&
+    process.env.MS365_CLIENT_SECRET &&
+    (process.env.MS365_MAILBOX || process.env.SMTP_USER)
+  );
+  seedIntegration.run('email', smtpConfigured || ms365GraphConfigured ? 1 : 0,
     JSON.stringify({
       smtp_host: process.env.SMTP_HOST || '',
       smtp_port: process.env.SMTP_PORT || '587',
+      smtp_provider: process.env.SMTP_PROVIDER || '',
+      auth_method: process.env.SMTP_PROVIDER === 'office365' ? 'microsoft_graph' : 'smtp_password',
       smtp_user: process.env.SMTP_USER || '',
       smtp_pass: process.env.SMTP_PASS || '',
+      ms_tenant_id: process.env.MS365_TENANT_ID || '',
+      ms_client_id: process.env.MS365_CLIENT_ID || '',
+      ms_client_secret: process.env.MS365_CLIENT_SECRET || '',
+      ms_mailbox: process.env.MS365_MAILBOX || process.env.SMTP_USER || '',
       from:      process.env.SMTP_USER || '',
       to:        process.env.ALERT_EMAIL_TO || '',
     }), 'HIGH');

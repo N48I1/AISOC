@@ -1,0 +1,49 @@
+title Semantic Memory — RAG Retrieval Loop
+
+Inputs [icon: log-in, color: gray] {
+  ALERT  [icon: alert-triangle, label: "Incoming alert\n(description + log)"]
+  INCID  [icon: flag,           label: "Resolved incident\n(insight to remember)"]
+}
+
+Embedding [icon: sparkles, color: orange] {
+  OLLAMA [icon: box,    label: "Ollama /api/embeddings\n(nomic-embed-text)"]
+  VEC    [icon: hash,   label: "Float32 vector"]
+  DEGRADE [icon: alert-octagon, label: "null → graceful skip\n(Ollama unreachable)"]
+}
+
+Vector Store (SQLite) [icon: database, color: purple] {
+  BLOB   [icon: save,        label: "embedding BLOB\n+ summary · TTPs · outcome"]
+  TABLE  [icon: file-search, label: "insights table"]
+}
+
+Retrieval [icon: search, color: blue] {
+  QEMBED [icon: sparkles,   label: "Embed query"]
+  SCAN   [icon: list,       label: "Load all vectors"]
+  COSINE [icon: git-compare, label: "Cosine similarity"]
+  TOPK   [icon: filter,     label: "Top-k ≥ threshold\n(recallHits)"]
+}
+
+Augment + Generate [icon: brain, color: green] {
+  CTX    [icon: book-open,    label: "Inject as context\n(priorFpInsights · memoryFpHint)"]
+  TRIAGE [icon: brain-circuit, label: "Triage LLM\n(analysis node)"]
+  VERDICT [icon: badge-check, label: "Verdict\n(FP signal / risk)"]
+}
+
+// ── Write path (remember a past incident) ──
+INCID > OLLAMA: commitAsync
+OLLAMA > VEC
+OLLAMA > DEGRADE: no response
+VEC > BLOB: float32ToBlob
+BLOB > TABLE
+
+// ── Read path (retrieve at triage time) ──
+ALERT > QEMBED
+QEMBED > OLLAMA
+QEMBED > SCAN
+TABLE > SCAN: WHERE embedding NOT NULL
+SCAN > COSINE
+COSINE > TOPK
+TOPK > CTX
+CTX > TRIAGE
+ALERT > TRIAGE: raw alert
+TRIAGE > VERDICT

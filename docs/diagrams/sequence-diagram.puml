@@ -1,0 +1,70 @@
+@startuml AISOC-Sequence
+title AISOC — Alert Lifecycle (ingest → AI pipeline → incident)
+
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 200
+autonumber
+
+actor "Wazuh\nForwarder"        as Wazuh
+participant "Express API\n/api/ingest" as API
+database  "SQLite"              as DB
+participant "Orchestrator\n(hub-swarm)" as Orch
+participant "Semantic Memory\n+ IOC + Asset"  as Mem
+participant "Triage LLM\n(analysis node)"     as Triage
+participant "Planner +\nWorkers"   as Workers
+participant "Notifications\n(Telegram/GLPI)"  as Notify
+participant "Socket.IO"         as WS
+actor      "SOC Analyst"        as Analyst
+
+== Ingest & cheap filtering ==
+Wazuh -> API : POST /api/ingest  (X-Api-Key, alert)
+API -> DB : lookup api_keys (sha256 hash)
+alt invalid / revoked / paused key
+  API --> Wazuh : 401 / 403
+end
+alt rate-limited or duplicate (dedup window)
+  API --> Wazuh : 429 / deduplicated
+end
+API -> DB : INSERT INTO alerts
+API --> Wazuh : 200 { status: queued }
+note right of API : Agent run is fire-and-forget\n(response returns immediately)
+
+== AI pipeline (async) ==
+API -> Orch : runHubAndSwarm(alert)
+
+Orch -> Mem : checkSuppressionRules + pre-flight recall
+Mem -> DB : vector search (cosine) + IOC + asset lookup
+Mem --> Orch : recallHits, iocHits, assetCtx (signals)
+
+alt Asset fast-FP (deterministic, no LLM)
+  Orch -> DB : archive as FALSE_POSITIVE
+  Orch --> API : FP result (short-circuit)
+else needs analysis
+  Orch -> Triage : analyze(alert + all signals)
+  Triage -> Triage : risk score, IOCs, FP verdict
+  Triage --> Orch : triage result
+
+  alt triage FP confidence > 0.85
+    Orch -> Mem : commitAsync (embed + store insight)
+    Orch -> DB : archive as FALSE_POSITIVE
+    Orch --> API : FP result (short-circuit)
+  else real threat
+    Orch -> Workers : planner dispatches intel/knowledge/correlation (parallel)
+    Workers -> Triage : LLM calls per worker
+    Workers --> Orch : enrichment results
+    Orch -> Orch : composers (ticketing → response → validation)
+    Orch -> DB : INSERT INTO incidents (+ reasoning, agent_runs)
+    Orch -> Mem : upsertIocs + commitAsync (embed insight)
+    Orch -> Notify : send ticket / alert
+    Orch --> API : incident result
+  end
+end
+
+== Live update & analyst action ==
+Orch -> WS : emit alert/incident update
+WS -> Analyst : push to dashboard (live)
+Analyst -> API : confirm FP / escalate / assign / take
+API -> DB : update alert/incident
+API -> Mem : reinforceFeedback (learning)
+
+@enduml

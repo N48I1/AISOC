@@ -8103,26 +8103,53 @@ const InvestigationTab = ({ alerts, selectedAlert, setSelectedAlert, onAlertActi
 
 // ── Integrations Tab (merge Notifications + Response Controls) ──────────────
 const EMAIL_CONFIG_DEFAULTS: Record<string, string> = {
+  smtp_provider: '',
+  auth_method: '',
   smtp_user: '',
   smtp_pass: '',
   to: '',
   from: '',
   smtp_host: 'smtp.gmail.com',
   smtp_port: '587',
+  ms_tenant_id: '',
+  ms_client_id: '',
+  ms_client_secret: '',
+  ms_mailbox: '',
 };
+
+function inferEmailProvider(cfg: Record<string, string>, user: string): string {
+  const configured = (cfg.smtp_provider || '').trim().toLowerCase();
+  if (['gmail', 'office365', 'custom'].includes(configured)) return configured;
+  const host = (cfg.smtp_host || '').trim().toLowerCase();
+  if (host === 'smtp.gmail.com' || /@gmail\.com$/i.test(user)) return 'gmail';
+  if (host === 'smtp.office365.com' || /@(outlook|hotmail|live|msn)\.com$/i.test(user)) return 'office365';
+  return 'custom';
+}
 
 function normalizeEmailConfig(raw: Record<string, string> = {}): Record<string, string> {
   const cfg = { ...EMAIL_CONFIG_DEFAULTS, ...raw };
   const user = (cfg.smtp_user || cfg.from || '').trim();
-  const gmailMode = /@gmail\.com$/i.test(user) || (cfg.smtp_host || '').trim().toLowerCase() === 'smtp.gmail.com';
+  const provider = inferEmailProvider(cfg, user);
+  const gmailMode = provider === 'gmail';
+  const office365Mode = provider === 'office365';
+  const requestedAuthMethod = (cfg.auth_method || '').trim();
+  const authMethod = office365Mode
+    ? (requestedAuthMethod === 'smtp_password' ? 'smtp_password' : 'microsoft_graph')
+    : 'smtp_password';
   return {
     ...cfg,
+    smtp_provider: provider,
+    auth_method: authMethod,
     smtp_user: user,
     smtp_pass: gmailMode ? (cfg.smtp_pass || '').replace(/\s+/g, '') : (cfg.smtp_pass || ''),
-    smtp_host: (cfg.smtp_host || '').trim() || (gmailMode ? 'smtp.gmail.com' : ''),
-    smtp_port: (cfg.smtp_port || '').trim() || (gmailMode ? '587' : ''),
+    smtp_host: (cfg.smtp_host || '').trim() || (gmailMode ? 'smtp.gmail.com' : office365Mode ? 'smtp.office365.com' : ''),
+    smtp_port: (cfg.smtp_port || '').trim() || (gmailMode || office365Mode ? '587' : ''),
     from: (cfg.from || '').trim() || user,
     to: (cfg.to || '').trim(),
+    ms_tenant_id: (cfg.ms_tenant_id || '').trim(),
+    ms_client_id: (cfg.ms_client_id || '').trim(),
+    ms_client_secret: cfg.ms_client_secret || '',
+    ms_mailbox: (cfg.ms_mailbox || user || cfg.from || '').trim(),
   };
 }
 
@@ -8429,6 +8456,27 @@ const IntegrationsTab = () => {
     reload();
   };
 
+  const handleEmailProviderChange = (provider: string) => {
+    setEditConfig((current: Record<string, string>) => {
+      const next: Record<string, string> = { ...current, smtp_provider: provider };
+      if (provider === 'gmail') {
+        next.auth_method = 'smtp_password';
+        next.smtp_host = 'smtp.gmail.com';
+        next.smtp_port = '587';
+      } else if (provider === 'office365') {
+        next.auth_method = current.auth_method || 'microsoft_graph';
+        next.smtp_host = 'smtp.office365.com';
+        next.smtp_port = '587';
+        next.ms_mailbox = current.ms_mailbox || current.smtp_user || current.from || '';
+      } else {
+        next.auth_method = 'smtp_password';
+        next.smtp_host = current.smtp_host || '';
+        next.smtp_port = current.smtp_port || '587';
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-5 overflow-y-auto h-full">
       <PageHeader eyebrow="External Systems" title="Integrations" description="GLPI ticketing, Telegram alerts, email notifications, and firewall controls." />
@@ -8454,8 +8502,13 @@ const IntegrationsTab = () => {
           {integrations.map(intg => {
             const rawCfg = intg.config as Record<string, string>;
             const cfg = intg.name === 'email' ? getEmailConfigWithDefaults(rawCfg) : rawCfg;
+            const emailProvider = (cfg?.smtp_provider || '').trim();
+            const emailAuthMethod = (cfg?.auth_method || '').trim();
             const emailSender = (cfg?.smtp_user || cfg?.from || '').trim();
-            const isEmailUnconfigured = intg.name === 'email' && !(emailSender && cfg?.smtp_pass && cfg?.to);
+            const isGraphEmail = intg.name === 'email' && emailProvider === 'office365' && emailAuthMethod === 'microsoft_graph';
+            const isEmailUnconfigured = intg.name === 'email' && (isGraphEmail
+              ? !(cfg?.ms_tenant_id && cfg?.ms_client_id && cfg?.ms_client_secret && cfg?.ms_mailbox && cfg?.to)
+              : !(emailSender && cfg?.smtp_pass && cfg?.to));
             const isSlackUnconfigured = intg.name === 'slack' && !cfg?.webhook_url;
             const unconfigured = isEmailUnconfigured || isSlackUnconfigured;
 
@@ -8468,15 +8521,25 @@ const IntegrationsTab = () => {
             const meta = INTG_META[intg.name] || { icon: <ExternalLink size={18} className="text-gray-500" />, desc: '', color: 'bg-gray-100' };
 
             const FIELD_LABELS: Record<string, string> = {
-              smtp_host: 'SMTP Host', smtp_port: 'SMTP Port', smtp_user: 'Gmail Address / SMTP Username',
+              smtp_provider: 'Email Provider',
+              auth_method: 'Auth Method',
+              smtp_host: 'SMTP Host', smtp_port: 'SMTP Port', smtp_user: 'Mailbox / SMTP Username',
               smtp_pass: 'App Password / SMTP Password', from: 'From Address', to: 'Destination Email',
+              ms_tenant_id: 'Azure Tenant ID',
+              ms_client_id: 'Azure Client ID',
+              ms_client_secret: 'Azure Client Secret',
+              ms_mailbox: 'Sender Mailbox',
               bot_token: 'Bot Token', chat_id: 'Chat ID',
               url: 'GLPI URL', app_token: 'App Token', user_token: 'User Token',
               webhook_url: 'Webhook URL',
             };
             const editCfgForCard = intg.name === 'email' ? getEmailConfigWithDefaults(editConfig) : editConfig;
             const editKeys = intg.name === 'email'
-              ? ['smtp_user', 'smtp_pass', 'to', 'from', 'smtp_host', 'smtp_port']
+              ? editCfgForCard.smtp_provider === 'office365' && editCfgForCard.auth_method !== 'smtp_password'
+                ? ['smtp_provider', 'auth_method', 'ms_tenant_id', 'ms_client_id', 'ms_client_secret', 'ms_mailbox', 'to']
+                : editCfgForCard.smtp_provider === 'office365'
+                  ? ['smtp_provider', 'auth_method', 'smtp_user', 'smtp_pass', 'to', 'from', 'smtp_host', 'smtp_port']
+                  : ['smtp_provider', 'smtp_user', 'smtp_pass', 'to', 'from', 'smtp_host', 'smtp_port']
               : Object.keys(editCfgForCard);
 
             return (
@@ -8517,20 +8580,41 @@ const IntegrationsTab = () => {
                             <label className="text-[0.65rem] font-black text-[var(--t4)] uppercase tracking-wider">
                               {FIELD_LABELS[k] || k.replace(/_/g, ' ')}
                             </label>
-                            <input
-                              value={editCfgForCard[k] || ''}
-                              onChange={e => setEditConfig((c: any) => ({ ...c, [k]: e.target.value }))}
-                              type={isSecret ? 'password' : 'text'}
-                              placeholder={isSecret ? '••••••••' : undefined}
-                              className="w-full px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem] outline-none focus:border-[var(--p1)] font-mono"
-                            />
+                            {k === 'smtp_provider' ? (
+                              <select
+                                value={editCfgForCard[k] || 'custom'}
+                                onChange={e => handleEmailProviderChange(e.target.value)}
+                                className="w-full px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem] outline-none focus:border-[var(--p1)] font-mono"
+                              >
+                                <option value="gmail">Gmail</option>
+                                <option value="office365">Office 365 / Microsoft 365</option>
+                                <option value="custom">Custom SMTP</option>
+                              </select>
+                            ) : k === 'auth_method' ? (
+                              <select
+                                value={editCfgForCard[k] || 'microsoft_graph'}
+                                onChange={e => setEditConfig((c: any) => ({ ...c, auth_method: e.target.value }))}
+                                className="w-full px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem] outline-none focus:border-[var(--p1)] font-mono"
+                              >
+                                <option value="microsoft_graph">Microsoft Graph OAuth</option>
+                                <option value="smtp_password">SMTP password / app password</option>
+                              </select>
+                            ) : (
+                              <input
+                                value={editCfgForCard[k] || ''}
+                                onChange={e => setEditConfig((c: any) => ({ ...c, [k]: e.target.value }))}
+                                type={isSecret ? 'password' : 'text'}
+                                placeholder={isSecret ? '••••••••' : undefined}
+                                className="w-full px-2 py-1.5 rounded border border-[var(--b2)] bg-[var(--s0)] text-[0.72rem] outline-none focus:border-[var(--p1)] font-mono"
+                              />
+                            )}
                           </div>
                         );
                       })}
                     </div>
                     {intg.name === 'email' && (
                       <p className="text-[0.62rem] text-[var(--t3)]">
-                        For Gmail, enter your Gmail address, paste the <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="text-[var(--p1)] underline">App Password</a>, set destination email, then Save + Test. Gmail host/port defaults are auto-filled.
+                        For Microsoft 365, use Microsoft Graph OAuth with an Azure app that has Microsoft Graph Mail.Send application permission and admin consent. Gmail and custom SMTP still use mailbox/app-password SMTP.
                       </p>
                     )}
                     {intg.name === 'slack' && (
