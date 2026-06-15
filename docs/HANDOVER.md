@@ -54,6 +54,8 @@ Recommended sessions:
 
 | Session | Audience | Content | Evidence |
 |---|---|---|---|
+| Platform walkthrough (users) | SOC analysts/leads/admins | Roles, tabs, triage/incident/response workflows | **`docs/USER-MANUAL.md`** |
+| Platform walkthrough (devs) | Developers | Architecture, frontend, backend, data layer, agents, **all API endpoints** | **`docs/DEVELOPER-MANUAL.md`** |
 | Architecture walkthrough | Developer/team lead | Tech stack, backend, frontend, database, agents, memory system, Wazuh flow | `SOC_INTELLIGENCE_ARCHITECTURE.md`, `docs/diagrams/`, `docs/features/` |
 | Installation and operations | Sysadmin/devops | Node runtime, install, `.env`, TLS, service start/restart, logs, backups, restore | `README.md`, `ADMIN_COMMANDS.md`, `TROUBLESHOOTING.md`, this file |
 | SOC usage | SOC lead/analysts | Alert triage, false-positive review, escalation, incidents, reports, GLPI/Telegram/email notifications | `docs/features/` |

@@ -4,7 +4,7 @@
 #
 #   (no args)      — diagnose only, print report
 #   --fix          — auto-fix: restart server if down, hard-refresh instructions
-#   --reset-db     — DANGER: delete soc.db and restart fresh (loses all data)
+#   --reset-db     — DANGER: TRUNCATE all PostgreSQL tables and restart fresh (loses all data)
 #   --reset-pass   — reset admin password to admin123
 
 set -euo pipefail
@@ -12,7 +12,18 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-3001}"
 LOG="/tmp/server.log"
-DB="$APP_DIR/soc.db"
+ENV_FILE="$APP_DIR/.env"
+
+# Build the PostgreSQL connection from .env (DATABASE_URL, or the PG* vars).
+get_env() { { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'\r"; } || true; }
+DBURL_V="$(get_env DATABASE_URL)"
+if [ -n "$DBURL_V" ]; then
+  PSQL_CONN="$DBURL_V"
+else
+  PSQL_CONN="postgresql://$(get_env PGUSER):$(get_env PGPASSWORD)@$(get_env PGHOST):$(get_env PGPORT)/$(get_env PGDATABASE)"
+fi
+# Allow env overrides if the user exported them.
+PSQL_CONN="${DATABASE_URL:-$PSQL_CONN}"
 
 RED='\033[0;31m'; YEL='\033[0;33m'; GRN='\033[0;32m'; BLU='\033[0;34m'; NC='\033[0m'
 
@@ -92,34 +103,24 @@ fi
 
 # ── 5. Database ─────────────────────────────────────────────────────────────────
 sep
-echo "5. DATABASE"
-if [ -f "$DB" ]; then
-  DB_SIZE=$(du -sh "$DB" 2>/dev/null | cut -f1)
-  ok "soc.db exists ($DB_SIZE)"
-  DB_CHECK=$(node -e "
-    const Database = require('better-sqlite3');
-    try {
-      const db = new Database('$DB', { readonly: true });
-      const r = db.prepare('PRAGMA integrity_check').get();
-      const alerts = db.prepare('SELECT COUNT(*) as n FROM alerts').get().n;
-      const newAlerts = db.prepare(\"SELECT COUNT(*) as n FROM alerts WHERE status='NEW'\").get().n;
-      console.log('ok|alerts=' + alerts + '|new=' + newAlerts);
-      db.close();
-    } catch(e) { console.log('error|' + e.message); }
-  " 2>/dev/null || echo "error|node failed")
-  if echo "$DB_CHECK" | grep -q "^ok"; then
-    ALERT_COUNT=$(echo "$DB_CHECK" | grep -o 'alerts=[0-9]*' | cut -d= -f2)
-    NEW_COUNT=$(echo "$DB_CHECK" | grep -o 'new=[0-9]*' | cut -d= -f2)
-    ok "DB integrity OK — $ALERT_COUNT alerts ($NEW_COUNT unscanned NEW)"
-    if [ "$NEW_COUNT" -eq 0 ]; then
-      warn "0 unscanned alerts — Noise Filter will look empty (restart server to reseed)"
+echo "5. DATABASE (PostgreSQL)"
+if ! command -v psql >/dev/null 2>&1; then
+  err "psql not found — is PostgreSQL installed? (run scripts/provision-postgres.sh)"
+else
+  ALERT_COUNT=$(psql "$PSQL_CONN" -tAc "SELECT count(*) FROM alerts" 2>&1 || true)
+  if echo "$ALERT_COUNT" | grep -qE '^[0-9]+$'; then
+    NEW_COUNT=$(psql "$PSQL_CONN" -tAc "SELECT count(*) FROM alerts WHERE status='NEW'" 2>/dev/null | tr -d '[:space:]')
+    VEC_COUNT=$(psql "$PSQL_CONN" -tAc "SELECT count(*) FROM incident_insights WHERE embedding IS NOT NULL" 2>/dev/null | tr -d '[:space:]')
+    ok "PostgreSQL reachable — $ALERT_COUNT alerts (${NEW_COUNT:-?} unscanned NEW)"
+    info "pgvector embeddings stored: ${VEC_COUNT:-0}"
+    if [ "${NEW_COUNT:-0}" -eq 0 ] 2>/dev/null; then
+      warn "0 unscanned alerts — Noise Filter will look empty (send test alerts: npx tsx generate-test-alerts.ts)"
     fi
   else
-    err "DB integrity check failed: $DB_CHECK"
+    err "PostgreSQL not reachable: $ALERT_COUNT"
+    info "Check PG*/DATABASE_URL in .env and: sudo systemctl status postgresql"
     info "Run: bash troubleshoot.sh --reset-db  (WARNING: deletes all data)"
   fi
-else
-  err "soc.db not found — will be created on first server start"
 fi
 
 # ── 6. TLS certificates ─────────────────────────────────────────────────────────
@@ -173,27 +174,31 @@ echo "ACTIONS"
 # --reset-pass
 if $RESET_PASS; then
   info "Resetting admin password to 'admin123'..."
-  node -e "
-    const Database = require('better-sqlite3');
-    const bcrypt = require('bcryptjs');
-    const db = new Database('$DB');
-    const hash = bcrypt.hashSync('admin123', 10);
-    const r = db.prepare('UPDATE users SET password = ? WHERE username = ?').run(hash, 'admin');
-    console.log(r.changes > 0 ? 'Password reset OK' : 'User not found');
-    db.close();
-  " && ok "Password reset to admin123" || err "Password reset failed"
+  node -e '
+    require("dotenv").config();
+    const pg = require("pg");
+    const bcrypt = require("bcryptjs");
+    const pool = new pg.Pool();
+    const hash = bcrypt.hashSync("admin123", 10);
+    pool.query("UPDATE users SET password = $1 WHERE username = $2", [hash, "admin"])
+      .then(r => { console.log(r.rowCount > 0 ? "Password reset OK" : "User not found"); return pool.end(); })
+      .catch(e => { console.error(e.message); process.exit(1); });
+  ' && ok "Password reset to admin123" || err "Password reset failed"
 fi
 
 # --reset-db
 if $RESET_DB; then
-  warn "DANGER: Deleting soc.db — all alert history, memory, and user accounts will be lost"
+  warn "DANGER: Truncating all PostgreSQL tables — all alert history, memory, and user accounts will be lost"
   read -rp "  Type YES to confirm: " CONFIRM
   if [ "$CONFIRM" = "YES" ]; then
-    rm -f "$DB"
-    ok "Database deleted"
-    FIX=true
+    if psql "$PSQL_CONN" -c "TRUNCATE users, alerts, incidents, incident_alerts, audit_logs, agent_runs, feedback, action_logs, working_memory, incident_insights, incident_reasoning, incident_timeline, incident_actions, playbooks, ioc_memory, asset_context, suppression_rules, agent_settings, integrations, local_llm_config, llm_providers, api_keys, password_history, access_reviews, access_review_items RESTART IDENTITY CASCADE;"; then
+      ok "Database truncated (users, integrations, playbooks & agent models re-seed on next start)"
+      FIX=true
+    else
+      err "Truncate failed — check the connection and that PostgreSQL is running"
+    fi
   else
-    info "Aborted — database not deleted"
+    info "Aborted — database not changed"
   fi
 fi
 

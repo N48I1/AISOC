@@ -1,5 +1,10 @@
 # Aegis SOC Platform: Project Overview
 
+> 📖 **New here? Read the manual** — split by audience:
+> the **[User Manual](./docs/USER-MANUAL.md)** (operating the platform) and the
+> **[Developer Manual](./docs/DEVELOPER-MANUAL.md)** (running, maintaining, and extending
+> the codebase — incl. a full reference for all backend endpoints). Index: [docs/MANUAL.md](./docs/MANUAL.md).
+
 ## What This Project Is
 
 This repository is a full-stack Security Operations Center (SOC) demo platform named **Aegis SOC Platform**.
