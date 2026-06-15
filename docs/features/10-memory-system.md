@@ -12,7 +12,7 @@ The system has **5 tiers**, each serving a different purpose:
 
 **Purpose:** "Have we seen something like this before?"
 
-The semantic store uses cosine similarity search over embedded incident summaries. After every investigation, a compact text summary is embedded and stored. Future alerts are compared against this history to find similar past incidents.
+The semantic store uses pgvector cosine-similarity search (HNSW-indexed, computed in PostgreSQL) over embedded incident summaries. After every investigation, a compact text summary is embedded and stored. Future alerts are compared against this history to find similar past incidents.
 
 ### How It Works
 
@@ -154,13 +154,9 @@ See [False Positive Reduction](./03-false-positive-reduction.md) for full detail
 
 ## Memory Database
 
-All memory tiers are stored in a separate SQLite database (`memory.db`) from the main application database (`aisoc.db`). This separation means:
+All memory tiers live in the same PostgreSQL database as the rest of the platform (the agents and the API share one connection pool via `db/pool.ts`). Embeddings are stored in a native pgvector `vector(768)` column, so semantic recall is a SQL query rather than an in-process scan.
 
-- Memory can be reset independently of alert/user data
-- Memory DB can grow without affecting core app performance
-- Backup strategies can differ
-
-### Tables in memory.db
+### Memory tables
 
 | Table | Tier | Description |
 |-------|------|-------------|

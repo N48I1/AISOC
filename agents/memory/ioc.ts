@@ -39,48 +39,50 @@ export type IocOutcome = "FALSE_POSITIVE" | "TRIAGED" | "ESCALATED" | "CLOSED" |
  *  - TRIAGED / ESCALATED → tp_count++
  *  - CLOSED / undefined → no FP/TP increment (still bumps alert_count)
  */
-export function upsertIocs(
+export async function upsertIocs(
   iocs: IocBundle,
   _alertId: string,
   threatLevel?: string,
   outcome?: IocOutcome,
-): void {
+): Promise<void> {
   const db = memDb();
   const fpInc = outcome === "FALSE_POSITIVE" ? 1 : 0;
   const tpInc = (outcome === "TRIAGED" || outcome === "ESCALATED") ? 1 : 0;
 
-  const stmt = db.prepare(`
+  const sql = `
     INSERT INTO ioc_memory (value, type, threat_level, alert_count, fp_count, tp_count)
     VALUES (?, ?, ?, 1, ?, ?)
     ON CONFLICT(value) DO UPDATE SET
       last_seen     = CURRENT_TIMESTAMP,
-      alert_count   = alert_count + 1,
+      alert_count   = ioc_memory.alert_count + 1,
       threat_level  = COALESCE(excluded.threat_level, ioc_memory.threat_level),
       fp_count      = ioc_memory.fp_count + ?,
       tp_count      = ioc_memory.tp_count + ?
-  `);
-  const tx = db.transaction(() => {
-    for (const key of Object.keys(TYPE_FOR_KEY) as (keyof IocBundle)[]) {
-      const arr = iocs[key];
-      if (!Array.isArray(arr)) continue;
-      const type = TYPE_FOR_KEY[key];
-      for (const raw of arr) {
-        const value = String(raw).trim();
-        if (!value) continue;
-        stmt.run(value, type, threatLevel ?? null, fpInc, tpInc, fpInc, tpInc);
+  `;
+  try {
+    await db.transaction(async (tx) => {
+      const stmt = tx.prepare(sql);
+      for (const key of Object.keys(TYPE_FOR_KEY) as (keyof IocBundle)[]) {
+        const arr = iocs[key];
+        if (!Array.isArray(arr)) continue;
+        const type = TYPE_FOR_KEY[key];
+        for (const raw of arr) {
+          const value = String(raw).trim();
+          if (!value) continue;
+          await stmt.run(value, type, threatLevel ?? null, fpInc, tpInc, fpInc, tpInc);
+        }
       }
-    }
-  });
-  try { tx(); } catch (err: any) {
+    });
+  } catch (err: any) {
     console.warn("[Memory][ioc] upsert failed:", err?.message);
   }
 }
 
-export function lookupIocs(values: string[]): IocHit[] {
+export async function lookupIocs(values: string[]): Promise<IocHit[]> {
   if (!values.length) return [];
   const db    = memDb();
   const ph    = values.map(() => "?").join(",");
-  const rows  = db.prepare(
+  const rows  = await db.prepare(
     `SELECT value, type, first_seen, last_seen, alert_count, threat_level, notes,
             COALESCE(fp_count, 0) as fp_count, COALESCE(tp_count, 0) as tp_count
      FROM ioc_memory WHERE value IN (${ph})`

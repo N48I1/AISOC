@@ -78,9 +78,9 @@ The list you see on this page is just that table, sorted by `created_at DESC`.
 
 ### "Embeddings via Ollama nomic-embed-text"
 
-At the same moment a row is written, the summary text is sent to your **local Ollama server** (`http://localhost:11434/api/embeddings`) using the `nomic-embed-text` model. Ollama returns a 768-dimension float vector — the *embedding* — which captures the meaning of the text in a way computers can compare. The vector is stored as a BLOB on the same row.
+At the same moment a row is written, the summary text is sent to your **local Ollama server** (`http://localhost:11434/api/embeddings`) using the `nomic-embed-text` model. Ollama returns a 768-dimension float vector — the *embedding* — which captures the meaning of the text in a way computers can compare. The vector is stored in a native pgvector `vector(768)` column on the same row.
 
-**Why bother?** The agents use those embeddings during a *new* investigation. When a fresh alert arrives, the orchestrator's recall phase searches `incident_insights` for past incidents whose embedding has high cosine similarity to the new one — i.e., *"we've seen something like this before."* That's how the system gets smarter over time without any manual tagging.
+**Why bother?** The agents use those embeddings during a *new* investigation. When a fresh alert arrives, the orchestrator's recall phase asks PostgreSQL (via pgvector) for past incidents whose embedding has high cosine similarity to the new one — i.e., *"we've seen something like this before."* That's how the system gets smarter over time without any manual tagging.
 
 Everything runs on your own machine. No data leaves the host.
 

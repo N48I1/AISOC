@@ -12,7 +12,7 @@ Suggested presentation order: **techstack → use-case-minimal → aisoc-overvie
 - Frontend: React 19 + TypeScript, built with Vite. It's a thin client — no AI, no database access. It talks to the backend two ways: REST for actions, Socket.IO for live pushes, so the dashboard updates without refreshing.
 - Backend: one Node.js process running Express. It serves the API, enforces auth, and — important — the AI agents are **inside this same process**, not a separate service. That's why the Agents box is drawn nested inside the Backend box.
 - Three LLM options: Gemini, OpenAI, and Ollama running locally. The local option matters: the platform can run fully air-gapped, alerts never leave the network.
-- Data layer: SQLite plus a memory/RAG store with embeddings.
+- Data layer: PostgreSQL with the pgvector extension — the same database stores relational data and the embedding vectors for semantic recall.
 - Wazuh pushes alerts **to** us — we never poll the SIEM.
 
 **If asked "why a monolith?":** Deliberate for this scale — one deployable, no network hops between API and agents. The agents are modular enough to split out behind a queue later.
@@ -103,10 +103,10 @@ Suggested presentation order: **techstack → use-case-minimal → aisoc-overvie
 
 **Open with:** "This is the retrieval-augmented generation loop — textbook RAG, running fully locally."
 
-- Write path: when an incident is resolved, its summary is embedded by a local Ollama model — nomic-embed-text — and stored as a vector right inside the database. If Ollama is down, it degrades gracefully: skip, never crash.
-- Read path: an incoming alert is embedded the same way, compared by cosine similarity to every stored vector, and the top matches above a threshold come back as recall hits.
+- Write path: when an incident is resolved, its summary is embedded by a local Ollama model — nomic-embed-text — and stored as a native `vector(768)` column right inside PostgreSQL via the pgvector extension. If Ollama is down, it degrades gracefully: the row is stored without an embedding, never crashes.
+- Read path: an incoming alert is embedded the same way, and Postgres finds the nearest past incidents in SQL using pgvector's cosine operator (`embedding <=> query`), backed by an HNSW index — top matches above a threshold come back as recall hits.
 - Those hits are injected into the triage LLM's context: "this looks 92% similar to incident X, which was a false positive."
-- Honest engineering note: it's a linear scan, not a vector index — at thousands of incidents that's milliseconds. The upgrade path to an indexed vector store exists when scale demands it.
+- Engineering note: the similarity search runs server-side as an approximate-nearest-neighbour query over an HNSW index, so it scales to millions of incidents — no brute-force scan in application code.
 
 **Key line:** "Embed, search, augment, generate — and all of it can run air-gapped."
 
@@ -144,7 +144,7 @@ Suggested presentation order: **techstack → use-case-minimal → aisoc-overvie
 
 - Four color groups: Identity & Access, Alerts & Incidents, AI/Agent Memory, Integrations & Config.
 - Alerts and Incidents are many-to-many through a junction table — one campaign can group many alerts into one incident.
-- The AI Memory domain is the differentiator: insights with an **embedding blob** (the RAG store), per-agent reasoning with evidence for and against, IOC reputation, asset context.
+- The AI Memory domain is the differentiator: insights with a **`vector(768)` embedding** (the pgvector RAG store), per-agent reasoning with evidence for and against, IOC reputation, asset context.
 - Governance is in the schema, not bolted on: password history, access reviews, audit logs, hashed API keys.
 
 **If asked why an ER model rather than classes:** The backend is functional TypeScript, not OOP — the persistent entities *are* the domain model, which is the honest UML representation.

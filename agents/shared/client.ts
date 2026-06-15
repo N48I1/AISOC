@@ -1,6 +1,6 @@
 import { ChatOpenAI } from "@langchain/openai";
 import dotenv from "dotenv";
-import type Database from "better-sqlite3";
+import type { DbClient } from "../../db/pool.js";
 import {
   parseModelId,
   resolveProviders,
@@ -13,11 +13,13 @@ dotenv.config();
 
 const APP_URL = process.env.APP_URL || "http://localhost:3000";
 
-// Server.ts wires the SQLite handle in at boot via setProviderDb(). Until it
-// does, fall back to the legacy env-var keys so old deployments don't break.
-let _db: Database.Database | null = null;
+// Server.ts wires the DB handle in at boot via setProviderDb(). Until it does,
+// fall back to the legacy env-var keys so old deployments don't break. The
+// provider snapshot itself lives in llm-providers.ts (refreshed asynchronously);
+// _db here is just the "DB-backed mode is active" flag.
+let _db: DbClient | null = null;
 
-export function setProviderDb(db: Database.Database) { _db = db; }
+export function setProviderDb(db: DbClient) { _db = db; }
 
 const cache = new Map<string, ChatOpenAI>();
 const localClientCache = new Map<string, ChatOpenAI>();
@@ -110,7 +112,7 @@ export function resolveClientsForModel(model: string): ResolvedClient[] {
   if (!_db) return legacyEnvProviders(model);
 
   const parsed = parseModelId(model);
-  const providers = resolveProviders(_db, parsed);
+  const providers = resolveProviders(parsed);
   return providers.map(p => {
     const key = cacheKey(p.id, parsed.bare);
     if (!cache.has(key)) cache.set(key, buildClient(p, parsed.bare));

@@ -83,5 +83,5 @@ export function recentInsights(limit = 50) {
     FROM incident_insights
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(limit);
+  `).all(limit);   // returns Promise<any[]> — callers await
 }

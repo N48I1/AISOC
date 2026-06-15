@@ -1,5 +1,5 @@
 import { memDb } from "./db.js";
-import { embedText, cosineSimilarity, blobToFloat32, float32ToBlob } from "./embeddings.js";
+import { embedText, toVectorLiteral } from "./embeddings.js";
 
 export interface InsightRecord {
   alert_id:        string;
@@ -29,13 +29,14 @@ export interface SemanticStore {
   search(query: string, k?: number, minSimilarity?: number): Promise<InsightHit[]>;
 }
 
-class SqliteSemanticStore implements SemanticStore {
+class PgSemanticStore implements SemanticStore {
   async add(record: InsightRecord & { embedding: Float32Array | null }) {
     const db = memDb();
-    db.prepare(`
-      INSERT OR IGNORE INTO incident_insights
+    await db.prepare(`
+      INSERT INTO incident_insights
         (alert_id, idempotency_key, summary, attack_pattern, threat_actor, outcome, ttp_tags, embedding, triggered_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (idempotency_key) DO NOTHING
     `).run(
       record.alert_id,
       record.idempotency_key,
@@ -44,7 +45,7 @@ class SqliteSemanticStore implements SemanticStore {
       record.threat_actor   ?? null,
       record.outcome        ?? null,
       JSON.stringify(record.ttp_tags ?? []),
-      record.embedding ? float32ToBlob(record.embedding) : null,
+      record.embedding ? toVectorLiteral(record.embedding) : null,
       record.triggered_by   ?? 'triage',
     );
   }
@@ -53,37 +54,34 @@ class SqliteSemanticStore implements SemanticStore {
     const queryVec = await embedText(query);
     if (!queryVec) return [];
 
-    const db   = memDb();
-    const rows = db.prepare(`
-      SELECT alert_id, summary, attack_pattern, threat_actor, outcome, ttp_tags, embedding, created_at
+    const db = memDb();
+    // pgvector cosine distance is `<=>`; cosine similarity = 1 - distance.
+    // The HNSW index on `embedding vector_cosine_ops` makes the ORDER BY/LIMIT
+    // an approximate-nearest-neighbour lookup instead of the old full scan.
+    // $1 (query vector) is referenced three times; $2 = threshold, $3 = k.
+    const rows = await db.prepare(`
+      SELECT alert_id, summary, attack_pattern, threat_actor, outcome, ttp_tags, created_at,
+             1 - (embedding <=> $1) AS similarity
       FROM incident_insights
-      WHERE embedding IS NOT NULL
-      ORDER BY created_at DESC
-      LIMIT 5000
-    `).all() as Array<{
+      WHERE embedding IS NOT NULL AND 1 - (embedding <=> $1) >= $2
+      ORDER BY embedding <=> $1
+      LIMIT $3
+    `).all(toVectorLiteral(queryVec), minSimilarity, k) as Array<{
       alert_id: string; summary: string; attack_pattern: string | null;
       threat_actor: string | null; outcome: string | null; ttp_tags: string;
-      embedding: Buffer; created_at: string;
+      similarity: number; created_at: string;
     }>;
 
-    const scored: InsightHit[] = [];
-    for (const r of rows) {
-      const vec = blobToFloat32(r.embedding);
-      const sim = cosineSimilarity(queryVec, vec);
-      if (sim < minSimilarity) continue;
-      scored.push({
-        alert_id:       r.alert_id,
-        summary:        r.summary,
-        attack_pattern: r.attack_pattern,
-        threat_actor:   r.threat_actor,
-        outcome:        r.outcome,
-        ttp_tags:       safeParseArr(r.ttp_tags),
-        similarity:     sim,
-        created_at:     r.created_at,
-      });
-    }
-    scored.sort((a, b) => b.similarity - a.similarity);
-    return scored.slice(0, k);
+    return rows.map((r) => ({
+      alert_id:       r.alert_id,
+      summary:        r.summary,
+      attack_pattern: r.attack_pattern,
+      threat_actor:   r.threat_actor,
+      outcome:        r.outcome,
+      ttp_tags:       safeParseArr(r.ttp_tags),
+      similarity:     Number(r.similarity),
+      created_at:     r.created_at,
+    }));
   }
 }
 
@@ -92,4 +90,4 @@ function safeParseArr(s: string): string[] {
   catch { return []; }
 }
 
-export const semanticStore: SemanticStore = new SqliteSemanticStore();
+export const semanticStore: SemanticStore = new PgSemanticStore();

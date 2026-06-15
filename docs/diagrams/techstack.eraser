@@ -25,8 +25,8 @@ LLMs [icon: brain, color: green] {
 }
 
 Data [icon: database, color: yellow] {
-  DB  [icon: database,    label: "SQLite (WAL)"]
-  MEM [icon: file-search, label: "Memory store + RAG"]
+  DB  [icon: database,    label: "PostgreSQL"]
+  MEM [icon: file-search, label: "pgvector store + RAG"]
 }
 
 External [icon: globe, color: red] {

@@ -37,16 +37,16 @@ function suppressionConfidence(hitCount: number): number {
  * Returns the first matching rule, or null.
  * Purely deterministic — no LLM, instant.
  */
-export function checkSuppressionRules(alert: any): SuppressionHit | null {
+export async function checkSuppressionRules(alert: any): Promise<SuppressionHit | null> {
   const db = memDb();
-  const rules = db.prepare(
+  const rules = await db.prepare(
     `SELECT * FROM suppression_rules WHERE enabled = 1`
   ).all() as SuppressionRule[];
 
   for (const rule of rules) {
     if (matchesRule(rule, alert)) {
       // Bump hit_count
-      db.prepare(`UPDATE suppression_rules SET hit_count = hit_count + 1 WHERE id = ?`).run(rule.id);
+      await db.prepare(`UPDATE suppression_rules SET hit_count = hit_count + 1 WHERE id = ?`).run(rule.id);
       return {
         rule_id:    rule.id,
         rule_name:  rule.name,
@@ -108,14 +108,14 @@ function matchIp(pattern: string, ip: string): boolean {
 
 // ── CRUD for suppression rules ──────────────────────────────────────────────
 
-export function listSuppressionRules(): SuppressionRule[] {
-  return memDb().prepare(
+export async function listSuppressionRules(): Promise<SuppressionRule[]> {
+  return await memDb().prepare(
     `SELECT * FROM suppression_rules ORDER BY hit_count DESC, created_at DESC`
   ).all() as SuppressionRule[];
 }
 
-export function getSuppressionRule(id: number): SuppressionRule | null {
-  return (memDb().prepare(
+export async function getSuppressionRule(id: number): Promise<SuppressionRule | null> {
+  return (await memDb().prepare(
     `SELECT * FROM suppression_rules WHERE id = ?`
   ).get(id) as SuppressionRule) ?? null;
 }
@@ -133,12 +133,13 @@ export interface UpsertSuppressionParams {
   created_by?:         string;
 }
 
-export function createSuppressionRule(p: UpsertSuppressionParams): number {
-  const result = memDb().prepare(`
+export async function createSuppressionRule(p: UpsertSuppressionParams): Promise<number> {
+  const result = await memDb().prepare(`
     INSERT INTO suppression_rules
       (name, source_ip_pattern, agent_name_pattern, rule_id_pattern, description_pattern,
        min_severity, max_severity, reason, enabled, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    RETURNING id
   `).run(
     p.name,
     p.source_ip_pattern ?? null,
@@ -154,10 +155,10 @@ export function createSuppressionRule(p: UpsertSuppressionParams): number {
   return result.lastInsertRowid as number;
 }
 
-export function updateSuppressionRule(id: number, updates: Partial<UpsertSuppressionParams> & { enabled?: boolean }): boolean {
-  const rule = getSuppressionRule(id);
+export async function updateSuppressionRule(id: number, updates: Partial<UpsertSuppressionParams> & { enabled?: boolean }): Promise<boolean> {
+  const rule = await getSuppressionRule(id);
   if (!rule) return false;
-  memDb().prepare(`
+  await memDb().prepare(`
     UPDATE suppression_rules SET
       name = ?, source_ip_pattern = ?, agent_name_pattern = ?, rule_id_pattern = ?,
       description_pattern = ?, min_severity = ?, max_severity = ?, reason = ?, enabled = ?
@@ -177,6 +178,7 @@ export function updateSuppressionRule(id: number, updates: Partial<UpsertSuppres
   return true;
 }
 
-export function deleteSuppressionRule(id: number): boolean {
-  return memDb().prepare(`DELETE FROM suppression_rules WHERE id = ?`).run(id).changes > 0;
+export async function deleteSuppressionRule(id: number): Promise<boolean> {
+  const r = await memDb().prepare(`DELETE FROM suppression_rules WHERE id = ?`).run(id);
+  return r.changes > 0;
 }

@@ -17,7 +17,7 @@ This document defines how AISOC is transferred from the developer/intern to the 
 - AISOC source code repository.
 - React + Vite frontend.
 - Express + Socket.IO backend in `server.ts`.
-- SQLite database schema and automatic startup migrations.
+- PostgreSQL schema (`db/schema.sql`) applied automatically on startup; pgvector for semantic memory.
 - Multi-agent AI orchestration code in `agents/`.
 - Wazuh ingest API and Wazuh integration guide.
 - Admin, troubleshooting, architecture, feature, and diagram documentation.
@@ -45,7 +45,7 @@ Complete before the first company transfer session.
 - Update `.env.example` if new environment variables are required.
 - Confirm the Wazuh-side integration script exists, is documented, and is copied to the proper handover location.
 - Inventory external accounts and secrets.
-- Prepare a backup of `soc.db` and, if SQLite WAL mode is active, its `soc.db-wal` and `soc.db-shm` files.
+- Prepare a `pg_dump` backup of the PostgreSQL `soc` database (see Database Backup below).
 - Prepare diagrams and speaker notes from `docs/diagrams/` for the architecture walkthrough.
 
 ### Phase 2: Knowledge Transfer Sessions
@@ -73,7 +73,7 @@ The receiving team should operate AISOC while the original developer observes.
 - Run an AI analysis and review fallback behavior if LLM quota is unavailable.
 - Create or confirm an incident.
 - Generate/export an incident report.
-- Back up and restore the SQLite database.
+- Back up and restore the PostgreSQL database (`pg_dump` / `pg_restore`).
 
 Any question asked during this phase should become a documentation fix.
 
@@ -98,9 +98,10 @@ After acceptance:
 | Source code repository | TODO: repo URL | Company | Transfer repository to company org or push final copy to company-owned repo. |
 | Application server | TODO: hostname/IP | Company sysadmin | Document OS, Node version, ports, service command, and log path. |
 | Frontend/backend app | `server.ts`, `src/`, `agents/` | Company dev team | Walk through app startup, API routes, agent orchestration, and frontend flow. |
-| Database | `soc.db` or `$SOC_DB_PATH` | Company | Back up and document restore procedure. Include WAL files if present. |
+| Database | PostgreSQL `soc` DB + `pgvector` (host-native, port 5432) | Company | Back up with `pg_dump` and document restore. Rotate the `aisoc` DB role password. |
 | TLS files | `certs/cert.pem`, `certs/key.pem`, or `$TLS_CERT`/`$TLS_KEY` | Company sysadmin | Transfer securely or reissue under company control. |
 | Runtime env file | `.env` on server | Company sysadmin | Transfer through password manager or encrypted archive. Do not email/chat. |
+| PostgreSQL DB role password | `.env` (`PGPASSWORD`/`DATABASE_URL`) + PG role `aisoc` | Company sysadmin | Set a strong password at provisioning; rotate after handover (`ALTER ROLE aisoc WITH PASSWORD …` + update `.env`). |
 | Wazuh integration script | `/var/ossec/integrations/custom-aisoc` or `custom-aisoc.py` | Company SOC/sysadmin | Verify it exists on Wazuh Manager; copy the final script into company documentation or repo. |
 | Wazuh configuration | `/var/ossec/etc/ossec.conf` | Company SOC/sysadmin | Document `<integration>` block and severity filters. |
 | API keys | AISOC Settings -> API Keys | Company admin | Recreate keys under company ownership and revoke old keys. |
@@ -115,7 +116,7 @@ After acceptance:
 
 ## 4. Architecture Summary
 
-AISOC is a SOC platform made of a React frontend and a single Node.js backend. The backend serves REST APIs, Socket.IO events, authentication, SQLite persistence, alert ingestion, integrations, and AI agent orchestration.
+AISOC is a SOC platform made of a React frontend and a single Node.js backend. The backend serves REST APIs, Socket.IO events, authentication, PostgreSQL persistence (with pgvector), alert ingestion, integrations, and AI agent orchestration.
 
 The AI system uses a Hub-and-Swarm model. It performs deterministic memory recall and IOC checks, runs triage, uses a planner to dispatch relevant specialist agents, and commits results back to memory. See:
 
@@ -152,7 +153,8 @@ Environment variables observed in the code:
 | `ANALYST_SEED_PASSWORD` | Initial analyst password if account is first created | Initial setup only | Rotate or disable seeded account after handover. |
 | `PORT` | HTTP/HTTPS app port | No | Defaults to `3000` in code; existing docs mention `3001`, so verify production. |
 | `APP_URL` | Public app URL for callbacks/self-links | Recommended | Set to the actual company URL. |
-| `SOC_DB_PATH` | SQLite database path | No | Defaults to `soc.db`. Set explicitly in production. |
+| `DATABASE_URL` or `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` | PostgreSQL connection | Yes | Primary datastore (pgvector required). Provision with `scripts/provision-postgres.sh`. |
+| `SOC_DB_PATH` | Legacy SQLite path | No | Only read by the one-time ETL (`npm run db:migrate`). Not used at runtime. |
 | `TLS_CERT` | TLS certificate path | Recommended | Defaults to `certs/cert.pem`. |
 | `TLS_KEY` | TLS private key path | Recommended | Defaults to `certs/key.pem`. |
 | `USE_VITE_MIDDLEWARE` | Enables Vite dev middleware | Dev only | `npm run dev` sets this. Production should serve built `dist/`. |
@@ -196,23 +198,31 @@ TODO: record final production command/service file and log path.
 
 ### Database Backup
 
-SQLite database file:
-
-- Default: `soc.db`
-- Override: `$SOC_DB_PATH`
+The datastore is **PostgreSQL** (with the `pgvector` extension), provisioned natively
+on the host alongside MISP's MariaDB (PG `5432`, MariaDB `3306`). Connection is
+configured via `DATABASE_URL` or the `PG*` variables in `.env`.
 
 Backup procedure:
 
-1. Stop the app, or run a SQLite-safe backup.
-2. If WAL files exist, include `soc.db-wal` and `soc.db-shm` or checkpoint first.
-3. Store backup in company backup system.
-4. Test restore on a clean instance before sign-off.
+1. Take a consistent logical dump (no downtime required):
+   ```bash
+   pg_dump --no-owner --format=custom --dbname="$DATABASE_URL" --file soc-$(date +%F).dump
+   # or, with PG* vars:
+   PGPASSWORD="$PGPASSWORD" pg_dump --no-owner -Fc -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" "$PGDATABASE" -f soc-$(date +%F).dump
+   ```
+2. Store the dump in the company backup system (schedule it via cron/systemd-timer).
+3. Restore onto a clean instance to validate before sign-off:
+   ```bash
+   createdb -O aisoc soc            # if the database doesn't exist
+   pg_restore --no-owner -d soc soc-YYYY-MM-DD.dump
+   ```
+4. The `pgvector` extension must exist in the target DB before restore
+   (`CREATE EXTENSION IF NOT EXISTS vector;`). `db/schema.sql` and the
+   provisioning script both create it.
 
-Suggested checkpoint before file backup:
-
-```bash
-npx tsx -e "import Database from 'better-sqlite3'; const db = new Database(process.env.SOC_DB_PATH || 'soc.db'); db.pragma('wal_checkpoint(TRUNCATE)'); db.close();"
-```
+> One-time migration from the legacy SQLite `soc.db`: `npm run db:migrate`
+> (reads `SOC_DB_PATH`, writes to the configured Postgres). See
+> `scripts/migrate-sqlite-to-pg.ts`.
 
 ### Troubleshooting
 
@@ -224,7 +234,7 @@ Use:
 
 Common issues to verify during handover:
 
-- Wrong Node version or native `better-sqlite3` build mismatch.
+- PostgreSQL unreachable or wrong `PG*`/`DATABASE_URL` credentials, or the `pgvector` extension not installed.
 - Missing `.env` values.
 - Expired or missing TLS certs.
 - Wazuh custom integration script not installed or not executable.
@@ -240,6 +250,7 @@ Common issues to verify during handover:
 | Secret | Location | Rotation Owner | Rotation Deadline | Done |
 |---|---|---|---|---|
 | `JWT_SECRET` | `.env` | Company sysadmin | Before final acceptance | TODO |
+| PostgreSQL `aisoc` role password | `.env` + PG role | Company sysadmin | Before final acceptance | TODO |
 | Admin/SUPER_ADMIN passwords | AISOC users table/UI | Company platform owner | Before final acceptance | TODO |
 | AISOC API keys | AISOC Settings -> API Keys | Company admin | Before final acceptance | TODO |
 | Wazuh integration API key | Wazuh `ossec.conf` + AISOC | SOC/sysadmin | Before final acceptance | TODO |
@@ -258,7 +269,7 @@ Common issues to verify during handover:
 
 - `JWT_SECRET` has a code fallback. Production must set a strong secret in `.env`.
 - Secrets must not be transferred through chat, email, or screenshots.
-- Integration secrets may exist in the SQLite integrations table depending on how settings were saved.
+- Integration secrets may exist in the PostgreSQL `integrations` table (plaintext JSON in the `config` column) depending on how settings were saved.
 - External AI provider keys must be company-owned, not personal/free personal accounts.
 - Any account used by the original developer must be disabled or converted to a company-owned account after transfer.
 - Wazuh API keys should be regenerated after the company takes ownership.
@@ -267,7 +278,7 @@ Common issues to verify during handover:
 ## 9. Known Limitations And Risks
 
 - The project is primarily a monolithic Node.js app; scaling beyond one node requires additional design.
-- SQLite is suitable for a single-node deployment but needs careful backup discipline.
+- PostgreSQL supports concurrent access and standard backup/replication tooling; size the host and connection pool (`PGPOOL_MAX`) for production load.
 - Some documentation and branding may still need alignment across files.
 - `.env.example` may not list every runtime variable; Section 6 should be used until `.env.example` is updated.
 - External LLM provider availability and quota can affect analysis quality.

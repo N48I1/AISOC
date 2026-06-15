@@ -138,7 +138,7 @@ package "AI / Agent Memory" #EFFAF0 {
     summary : text
     attack_pattern : text
     ttp_tags : text
-    embedding : blob
+    embedding : vector(768)
   }
   class IncidentReasoning {
     +id : int <<PK>>

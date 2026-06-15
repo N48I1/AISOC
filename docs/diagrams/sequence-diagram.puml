@@ -7,7 +7,7 @@ autonumber
 
 actor "Wazuh\nForwarder"        as Wazuh
 participant "Express API\n/api/ingest" as API
-database  "SQLite"              as DB
+database  "PostgreSQL\n+ pgvector"    as DB
 participant "Orchestrator\n(hub-swarm)" as Orch
 participant "Semantic Memory\n+ IOC + Asset"  as Mem
 participant "Triage LLM\n(analysis node)"     as Triage

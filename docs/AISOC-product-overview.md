@@ -150,8 +150,8 @@ When off, alerts queue at status `NEW` for manual scanning via the "Scan All" bu
                        │                         │
                        ▼                         ▼
               ┌─────────────────┐       ┌─────────────────┐
-              │  SQLite (WAL)   │       │  Ollama         │
-              │  + JSON columns │       │  (embeddings)   │
+              │ PostgreSQL      │       │  Ollama         │
+              │ +pgvector +JSON │       │  (embeddings)   │
               └─────────────────┘       └─────────────────┘
                        │
                        ▼
@@ -171,14 +171,14 @@ When off, alerts queue at status `NEW` for manual scanning via the "Scan All" bu
 **Backend**
 - Node.js + Express + Socket.IO
 - TypeScript (strict mode)
-- SQLite via `better-sqlite3` with WAL mode
+- PostgreSQL via `node-postgres` (`pg`), behind a thin async data-access adapter (`db/pool.ts`)
 - LangChain + LangGraph for agent orchestration
 - Zod for structured LLM output validation
 
 **AI / ML**
 - OpenRouter for cloud LLMs (GPT-OSS 120B, Llama 3.3, Gemma, Nemotron, etc.)
 - Local Ollama support (nomic-embed-text for embeddings, Qwen/Mistral for fallback inference)
-- Cosine similarity over BLOB-stored embeddings for semantic recall
+- pgvector `vector(768)` embeddings with an HNSW index for SQL-side cosine-similarity semantic recall
 
 **Frontend**
 - React 18 + TypeScript

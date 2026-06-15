@@ -29,7 +29,7 @@ The system has 7 configurable LLM agent phases plus 2 deterministic workers and 
 ### Non-LLM Workers (not configurable)
 | Phase | Agent Name | Description |
 |-------|-----------|-------------|
-| `recall` | Semantic Recall | Cosine similarity search on vector store |
+| `recall` | Semantic Recall | pgvector cosine-similarity search (HNSW) |
 | `ioc_check` | IOC History Check | Lookup in ioc_memory table |
 
 ### Planner

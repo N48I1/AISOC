@@ -65,13 +65,13 @@ export interface ReasoningRow extends AgentReasoning {
  *
  * Failures are non-fatal — observability data must never break the pipeline.
  */
-export function recordReasoning(args: {
+export async function recordReasoning(args: {
   alertId:  string;
   traceId:  string;
   agent:    string;
   step:     number;
   reasoning: Partial<AgentReasoning> | null | undefined;
-}): void {
+}): Promise<void> {
   const r = args.reasoning;
   if (!r || typeof r !== "object") return;
   if (!r.decision && !(r.evidence_for?.length) && !(r.evidence_against?.length)) {
@@ -80,7 +80,7 @@ export function recordReasoning(args: {
   }
 
   try {
-    memDb().prepare(`
+    await memDb().prepare(`
       INSERT INTO incident_reasoning
         (alert_id, trace_id, agent, step, decision, evidence_for, evidence_against,
          rejected_hypotheses, confidence)
@@ -102,9 +102,9 @@ export function recordReasoning(args: {
 }
 
 /** Fetch the full reasoning trace for one alert, ordered by step ascending. */
-export function listReasoningForAlert(alertId: string): ReasoningRow[] {
+export async function listReasoningForAlert(alertId: string): Promise<ReasoningRow[]> {
   try {
-    const rows = memDb().prepare(`
+    const rows = await memDb().prepare(`
       SELECT id, alert_id, trace_id, agent, step, decision,
              evidence_for, evidence_against, rejected_hypotheses, confidence, created_at
       FROM incident_reasoning
@@ -125,11 +125,11 @@ export function listReasoningForAlert(alertId: string): ReasoningRow[] {
  * Returns at most `limitPerAlert` rows per alert, prioritising the triage agent
  * since that's the verdict-bearing node.
  */
-export function listReasoningForAlerts(alertIds: string[], limitPerAlert = 2): Record<string, ReasoningRow[]> {
+export async function listReasoningForAlerts(alertIds: string[], limitPerAlert = 2): Promise<Record<string, ReasoningRow[]>> {
   if (!alertIds.length) return {};
   try {
     const ph = alertIds.map(() => "?").join(",");
-    const rows = memDb().prepare(`
+    const rows = await memDb().prepare(`
       SELECT id, alert_id, trace_id, agent, step, decision,
              evidence_for, evidence_against, rejected_hypotheses, confidence, created_at
       FROM incident_reasoning
@@ -166,7 +166,7 @@ export async function fetchPriorReasoning(
   try {
     const hits = await semanticStore.search(description.slice(0, 1500), k, threshold);
     if (!hits.length) return [];
-    const grouped = listReasoningForAlerts(hits.map(h => h.alert_id), 2);
+    const grouped = await listReasoningForAlerts(hits.map(h => h.alert_id), 2);
     return hits
       .map(h => ({
         alert_id:   h.alert_id,

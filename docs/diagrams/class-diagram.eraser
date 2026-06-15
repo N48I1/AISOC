@@ -130,7 +130,7 @@ incident_insights [icon: file-search, color: green] {
   summary string
   attack_pattern string
   ttp_tags string
-  embedding blob
+  embedding vector
 }
 
 incident_reasoning [icon: git-branch, color: green] {

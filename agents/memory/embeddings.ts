@@ -43,22 +43,12 @@ export async function embedText(text: string): Promise<Float32Array | null> {
   });
 }
 
-export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na  += a[i] * a[i];
-    nb  += b[i] * b[i];
-  }
-  const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom === 0 ? 0 : dot / denom;
-}
-
-export function blobToFloat32(buf: Buffer): Float32Array {
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-}
-
-export function float32ToBlob(arr: Float32Array): Buffer {
-  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
+/**
+ * Serialise an embedding into pgvector's text input format, e.g. "[0.12,-0.03,…]".
+ * Postgres coerces this string to the column's `vector(768)` type on insert, and
+ * pgvector computes cosine distance in SQL — so the old in-JS cosine scan and the
+ * raw-Float32 BLOB (de)serialisers are no longer needed.
+ */
+export function toVectorLiteral(arr: Float32Array): string {
+  return '[' + Array.from(arr).join(',') + ']';
 }

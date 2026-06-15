@@ -14,7 +14,7 @@ export async function iocCheckNode(state: any) {
     return { ioc_check: { hits: [], lookups: 0, confidence: 0 }, agentLogs: logs };
   }
 
-  const hits = lookupIocs(values);
+  const hits = await lookupIocs(values);
 
   if (hits.length === 0) {
     logs.push(`[IOC-Check] ${values.length} IOC(s) checked — none previously seen.`);

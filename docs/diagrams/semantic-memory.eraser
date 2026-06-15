@@ -7,20 +7,20 @@ Inputs [icon: log-in, color: gray] {
 
 Embedding [icon: sparkles, color: orange] {
   OLLAMA [icon: box,    label: "Ollama /api/embeddings\n(nomic-embed-text)"]
-  VEC    [icon: hash,   label: "Float32 vector"]
+  VEC    [icon: hash,   label: "Float32 vector (768-d)"]
   DEGRADE [icon: alert-octagon, label: "null → graceful skip\n(Ollama unreachable)"]
 }
 
-Vector Store (SQLite) [icon: database, color: purple] {
-  BLOB   [icon: save,        label: "embedding BLOB\n+ summary · TTPs · outcome"]
-  TABLE  [icon: file-search, label: "insights table"]
+Vector Store (PostgreSQL + pgvector) [icon: database, color: purple] {
+  COL    [icon: save,        label: "embedding vector(768)\n+ summary · TTPs · outcome"]
+  TABLE  [icon: file-search, label: "incident_insights table"]
+  HNSW   [icon: list-tree,   label: "HNSW index\n(vector_cosine_ops)"]
 }
 
 Retrieval [icon: search, color: blue] {
-  QEMBED [icon: sparkles,   label: "Embed query"]
-  SCAN   [icon: list,       label: "Load all vectors"]
-  COSINE [icon: git-compare, label: "Cosine similarity"]
-  TOPK   [icon: filter,     label: "Top-k ≥ threshold\n(recallHits)"]
+  QEMBED [icon: sparkles,    label: "Embed query"]
+  ANN    [icon: git-compare, label: "pgvector ANN in SQL\nORDER BY embedding <=> q"]
+  TOPK   [icon: filter,      label: "Top-k ≥ threshold\n1 - (embedding <=> q)\n(recallHits)"]
 }
 
 Augment + Generate [icon: brain, color: green] {
@@ -33,16 +33,16 @@ Augment + Generate [icon: brain, color: green] {
 INCID > OLLAMA: commitAsync
 OLLAMA > VEC
 OLLAMA > DEGRADE: no response
-VEC > BLOB: float32ToBlob
-BLOB > TABLE
+VEC > COL: toVectorLiteral '[…]'
+COL > TABLE
+TABLE > HNSW: indexed
 
 // ── Read path (retrieve at triage time) ──
 ALERT > QEMBED
 QEMBED > OLLAMA
-QEMBED > SCAN
-TABLE > SCAN: WHERE embedding NOT NULL
-SCAN > COSINE
-COSINE > TOPK
+QEMBED > ANN: query vector
+HNSW > ANN: nearest-neighbour
+ANN > TOPK
 TOPK > CTX
 CTX > TRIAGE
 ALERT > TRIAGE: raw alert

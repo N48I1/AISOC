@@ -43,7 +43,7 @@ src/App.tsx  →  POST /api/ai/orchestrate  { alertId }
         │
         ▼
 server.ts
-  1. Fetches the alert row from SQLite (alerts table)
+  1. Fetches the alert row from PostgreSQL (alerts table)
   2. Fetches up to 50 recent alerts from the same DB (for context)
   3. Sets alert.status = 'ANALYZING' → broadcasts via Socket.IO
   4. Calls runOrchestration(alert, recentAlerts)
@@ -79,7 +79,7 @@ Returns { analysis: { ... } }  into LangGraph state
 The next 6 agents receive this state and continue
         │
         ▼
-server.ts saves final result to SQLite, broadcasts via Socket.IO
+server.ts saves final result to PostgreSQL, broadcasts via Socket.IO
         │
         ▼
 src/App.tsx receives the update, renders the analysis card
@@ -96,7 +96,7 @@ export async function alertAnalysisNode(state: any, model: string): Promise<{ an
 ```
 
 **Input — `state` object:**
-- `state.alert` — the full alert row from SQLite (includes `id`, `timestamp`, `severity`, `source_ip`, `agent_name`, `rule_id`, `description`, `data` as a JSON column)
+- `state.alert` — the full alert row from PostgreSQL (includes `id`, `timestamp`, `severity`, `source_ip`, `agent_name`, `rule_id`, `description`, `data` as a JSON column)
 - `state.recentAlerts` — up to 50 other alerts from the DB, used to detect repeated patterns
 
 **What it does, step by step:**
@@ -308,7 +308,7 @@ export const DEFAULT_AGENT_MODELS = {
 };
 ```
 
-This can be overridden per-alert by the admin via the agent settings stored in SQLite (`agent_settings` table). The override is resolved by `resolveModelForPhase("analysis", assignments)` before the node is called.
+This can be overridden per-alert by the admin via the agent settings stored in PostgreSQL (`agent_settings` table). The override is resolved by `resolveModelForPhase("analysis", assignments)` before the node is called.
 
 ---
 
@@ -330,7 +330,7 @@ const aiAnalysis = {
 };
 ```
 
-This JSON blob is saved to `alerts.ai_analysis` in SQLite. The triage agent's output specifically also controls:
+This JSON blob is saved to `alerts.ai_analysis` in PostgreSQL. The triage agent's output specifically also controls:
 - `alerts.status` → `"FALSE_POSITIVE"` if `is_false_positive === true`, otherwise `"TRIAGED"`
 - `aiData.iocs` → the IOC collection shown in the Indicators section of the UI
 

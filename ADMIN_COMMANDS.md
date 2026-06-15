@@ -53,41 +53,39 @@ NODE_OPTIONS="--max-old-space-size=4096" npx tsc --noEmit
 
 ## Database — Inspect
 
+The datastore is **PostgreSQL** (`pgvector`). Set a connection string once, then use
+`psql` (which prints result tables natively); JS-heavy recipes use `node-postgres`
+(`new pg.Pool()` reads the `PG*` vars from `.env`).
+
+```bash
+export DATABASE_URL="postgres://aisoc:<password>@127.0.0.1:5432/soc"   # or rely on PG* in .env
+```
+
 ### List all alerts (id, severity, status, description snippet, has AI)
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-const rows = db.prepare('SELECT id, severity, status, SUBSTR(description,1,60) as desc, ai_analysis IS NOT NULL as has_ai FROM alerts ORDER BY timestamp DESC').all();
-console.table(rows);
-db.close();
-"
+psql "$DATABASE_URL" -c "SELECT id, severity, status, SUBSTR(description,1,60) AS descr, (ai_analysis IS NOT NULL) AS has_ai FROM alerts ORDER BY timestamp DESC;"
 ```
 
 ### Dump full AI analysis for one alert
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-const row = db.prepare('SELECT ai_analysis FROM alerts WHERE id = ?').get('ALERT_ID') as any;
-const data = JSON.parse(row.ai_analysis);
-console.log('quota_exhausted:', data.quota_exhausted);
-console.log('fallback_phases:', data.fallback_phases);
-console.log('summary:', data.summary);
-console.log('iocs:', JSON.stringify(data.iocs));
-console.log('ticket:', data.ticket);
-console.log('validation:', data.validation);
-db.close();
-"
+psql "$DATABASE_URL" -x -c "SELECT
+  ai_analysis::jsonb->>'quota_exhausted'  AS quota_exhausted,
+  ai_analysis::jsonb->'fallback_phases'   AS fallback_phases,
+  ai_analysis::jsonb->>'summary'          AS summary,
+  ai_analysis::jsonb->'iocs'              AS iocs,
+  ai_analysis::jsonb->'ticket'            AS ticket,
+  ai_analysis::jsonb->'validation'        AS validation
+FROM alerts WHERE id = 'ALERT_ID';"
 ```
-> Replace `ALERT_ID` with the actual alert ID (e.g. `uglaxu0wi`).
+> Replace `ALERT_ID` with the actual alert ID (e.g. `uglaxu0wi`). `-x` prints expanded (column-per-line) output.
 
 ### Dump AI quality for ALL alerts
 ```bash
 npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-const rows = db.prepare('SELECT id, severity, status, description, ai_analysis FROM alerts ORDER BY timestamp DESC').all() as any[];
+import 'dotenv/config';
+import pg from 'pg';
+const pool = new pg.Pool();
+const { rows } = await pool.query('SELECT id, severity, status, description, ai_analysis FROM alerts ORDER BY timestamp DESC');
 for (const row of rows) {
   let ai: any = {};
   try { ai = JSON.parse(row.ai_analysis || '{}'); } catch {}
@@ -100,28 +98,18 @@ for (const row of rows) {
   console.log('Summary:', ai.summary?.slice(0, 120));
   console.log('quota_exhausted:', ai.quota_exhausted);
 }
-db.close();
+await pool.end();
 "
 ```
 
 ### Check current agent model assignments
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-console.table(db.prepare('SELECT phase, model FROM agent_settings').all());
-db.close();
-"
+psql "$DATABASE_URL" -c "SELECT phase, model FROM agent_settings;"
 ```
 
 ### List all users
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-console.table(db.prepare('SELECT id, username, role, created_at FROM users').all());
-db.close();
-"
+psql "$DATABASE_URL" -c "SELECT id, username, role, created_at FROM users;"
 ```
 
 ---
@@ -130,57 +118,36 @@ db.close();
 
 ### Reset all alerts to NEW (clears stale AI data for fresh re-analysis)
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-const res = db.prepare(\"UPDATE alerts SET status = 'NEW', ai_analysis = NULL, mitre_attack = NULL, remediation_steps = NULL\").run();
-console.log('Reset', res.changes, 'alerts to NEW');
-db.close();
-"
+psql "$DATABASE_URL" -c "UPDATE alerts SET status='NEW', ai_analysis=NULL, mitre_attack=NULL, remediation_steps=NULL;"
 ```
 
 ### Reset a single alert to NEW
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-db.prepare(\"UPDATE alerts SET status = 'NEW', ai_analysis = NULL, mitre_attack = NULL, remediation_steps = NULL WHERE id = ?\").run('ALERT_ID');
-console.log('Done');
-db.close();
-"
+psql "$DATABASE_URL" -c "UPDATE alerts SET status='NEW', ai_analysis=NULL, mitre_attack=NULL, remediation_steps=NULL WHERE id='ALERT_ID';"
 ```
 
 ### Update agent model assignment directly in DB
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-db.prepare('UPDATE agent_settings SET model = ? WHERE phase = ?').run('MODEL_ID', 'PHASE');
-console.table(db.prepare('SELECT phase, model FROM agent_settings').all());
-db.close();
-"
+psql "$DATABASE_URL" -c "UPDATE agent_settings SET model='MODEL_ID' WHERE phase='PHASE'; SELECT phase, model FROM agent_settings;"
 ```
 > Replace `MODEL_ID` (e.g. `openai/gpt-oss-120b:free`) and `PHASE` (e.g. `analysis`).
 
 ### Bulk-update all agent models to working defaults
 ```bash
-npx tsx -e "
-import Database from 'better-sqlite3';
-const db = new Database('soc.db');
-const updates = [
-  ['analysis',    'openai/gpt-oss-120b:free'],
-  ['intel',       'nvidia/nemotron-3-super-120b-a12b:free'],
-  ['knowledge',   'qwen/qwen3-coder:free'],
-  ['correlation', 'openai/gpt-oss-20b:free'],
-  ['ticketing',   'openai/gpt-oss-120b:free'],
-  ['response',    'nvidia/nemotron-3-super-120b-a12b:free'],
-  ['validation',  'qwen/qwen3-coder:free'],
-];
-const stmt = db.prepare('UPDATE agent_settings SET model = ? WHERE phase = ?');
-for (const [phase, model] of updates) stmt.run(model, phase);
-console.table(db.prepare('SELECT phase, model FROM agent_settings').all());
-db.close();
-"
+psql "$DATABASE_URL" <<'SQL'
+UPDATE agent_settings SET model = v.model
+FROM (VALUES
+  ('analysis',    'openai/gpt-oss-120b:free'),
+  ('intel',       'nvidia/nemotron-3-super-120b-a12b:free'),
+  ('knowledge',   'qwen/qwen3-coder:free'),
+  ('correlation', 'openai/gpt-oss-20b:free'),
+  ('ticketing',   'openai/gpt-oss-120b:free'),
+  ('response',    'nvidia/nemotron-3-super-120b-a12b:free'),
+  ('validation',  'qwen/qwen3-coder:free')
+) AS v(phase, model)
+WHERE agent_settings.phase = v.phase;
+SELECT phase, model FROM agent_settings;
+SQL
 ```
 
 ---

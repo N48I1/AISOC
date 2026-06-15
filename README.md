@@ -8,14 +8,14 @@ It combines:
 
 - A React + Vite frontend for analysts
 - An Express + Socket.IO backend
-- A local SQLite database for alerts, users, and incidents
+- A PostgreSQL database (with the pgvector extension) for alerts, users, incidents, and semantic memory
 - A multi-agent **Hub-and-Swarm** orchestration pipeline built with specialized workers
 - Utility scripts for ingesting sample Wazuh-style alerts
 
 The main use case is:
 
 1. Ingest Wazuh-like alerts into the backend
-2. Store them in SQLite
+2. Store them in PostgreSQL
 3. Stream updates to the frontend in real time
 4. Run AI analysis across dynamic agent phases (Triage, Investigation, Composition)
 5. Present triage, MITRE mapping, remediation, ticketing, and report generation in the UI
@@ -63,7 +63,7 @@ For detailed documentation, see: **[SOC_INTELLIGENCE_ARCHITECTURE.md](./SOC_INTE
 - Frontend fetches alerts after login
 - Any alert with status `NEW` is automatically sent to `/api/ai/orchestrate`
 - The server runs the full agent workflow
-- Updated results are written back to SQLite
+- Updated results are written back to PostgreSQL
 - The server emits `alert_updated`
 
 ### Analyst workflow
@@ -93,7 +93,10 @@ From the UI, an analyst can:
 - `tsconfig.json`: TypeScript config
 - `index.html`: Vite HTML shell
 - `.env.example`: sample environment variables
-- `soc.db`: SQLite database
+- `db/schema.sql`: PostgreSQL schema (applied automatically on startup)
+- `db/pool.ts`: PostgreSQL pool + async data-access adapter
+- `scripts/migrate-sqlite-to-pg.ts`, `scripts/provision-postgres.sh`: ETL + provisioning
+- `soc.db`: legacy SQLite file (only read by the one-time ETL; not used at runtime)
 
 ### Frontend source
 
@@ -108,7 +111,7 @@ From the UI, an analyst can:
 - `node_modules/`: installed dependencies
 - `.git/`: git metadata
 - `.claude/settings.local.json`: local tool permission config
-- `soc.db-wal`, `soc.db-shm`: SQLite WAL artifacts
+- `soc.db-wal`, `soc.db-shm`: legacy SQLite WAL artifacts (not used with PostgreSQL)
 
 ## API Endpoints
 
@@ -168,7 +171,7 @@ Core runtime libraries from `package.json`:
 - `vite`
 - `express`
 - `socket.io`, `socket.io-client`
-- `better-sqlite3`
+- `pg` (node-postgres) — primary datastore driver (`better-sqlite3` retained as a devDependency only for the one-time SQLite→Postgres ETL)
 - `jsonwebtoken`
 - `bcryptjs`
 - `dotenv`
@@ -191,7 +194,7 @@ These are important if you continue developing this project:
 - `index.html` still uses the title `My Google AI Studio App`.
 - `metadata.json` says "Black Box SOC" while the UI branding says "AEGIS SOC PLATFORM".
 - `src/App.tsx` is very large and mixes many concerns into one file.
-- The local `better-sqlite3` install is compiled for Node 20, while the default shell Node is 18 in this environment. That matters for local runtime commands unless Node 20 is used.
+- The datastore is PostgreSQL via `pg` (pure-JS driver, no native build step). Provision it with `scripts/provision-postgres.sh` and configure `PG*`/`DATABASE_URL` in `.env`; the legacy `better-sqlite3` is only needed when running the one-time ETL.
 
 ## Run Notes
 

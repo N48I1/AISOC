@@ -150,7 +150,7 @@ export async function runHubAndSwarm(
   const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
 
   // ── 0. Suppression rules — collect as signal, do NOT exit early ─────────────
-  const suppressionHit = checkSuppressionRules(alert);
+  const suppressionHit = await checkSuppressionRules(alert);
   if (suppressionHit) {
     log(`Suppression signal: "${suppressionHit.rule_name}" matched (confidence=${(suppressionHit.confidence * 100).toFixed(0)}%) — continuing through full intelligence pipeline`);
   }
@@ -161,10 +161,10 @@ export async function runHubAndSwarm(
   const [recallHits, iocPreflightValues, assetCtx, priorReasoning] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
-    Promise.resolve(lookupAssetContext(assetValues)),
+    lookupAssetContext(assetValues),
     fetchPriorReasoning(queryText, 3, 0.7).catch(() => []),
   ]);
-  const iocPreflight = lookupIocs(iocPreflightValues);
+  const iocPreflight = await lookupIocs(iocPreflightValues);
 
   if (recallHits.length > 0)     log(`Recall: ${recallHits.length} similar past incident(s)`);
   if (iocPreflight.length > 0)   log(`IOC pre-flight: ${iocPreflight.length} known IOC(s)`);
@@ -176,7 +176,7 @@ export async function runHubAndSwarm(
   const fastFp = assetFastFp(alert, assetCtx);
   if (fastFp.isFp) {
     log(`Asset fast-FP: ${fastFp.reason}`);
-    upsertIocs({}, alert.id, "Low", "FALSE_POSITIVE");
+    await upsertIocs({}, alert.id, "Low", "FALSE_POSITIVE");
     commitAsync({
       alertId: alert.id, idempotencyKey: traceId,
       alertDescription: alert.description ?? "",
@@ -230,7 +230,7 @@ export async function runHubAndSwarm(
                       : hasMemorySignal      ? 'memoryFP'
                       :                        'triage';
     log(`Confirmed false positive — short-circuiting orchestration. (triggered_by=${triggeredBy})`);
-    upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
+    await upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
     commitAsync({
       alertId: alert.id, idempotencyKey: traceId,
       alertDescription: alert.description ?? "",
@@ -340,7 +340,7 @@ export async function runHubAndSwarm(
   const finalOutcome = (triage?.is_false_positive || isAggregatedFp || isNoisePriority) ? "FALSE_POSITIVE"
                      : ticket?.priority === "CRITICAL" ? "ESCALATED"
                      : "TRIAGED";
-  upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
+  await upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
   commitAsync({
     alertId: alert.id, idempotencyKey: traceId,
     alertDescription: alert.description ?? "",
@@ -388,7 +388,7 @@ export async function runFpScan(
   const modelFor = (phase: any) => resolveModelForPhase(phase, opts.modelAssignments);
 
   // ── 0. Suppression rules — signal only, no early exit ─────────────────
-  const suppressionHit = checkSuppressionRules(alert);
+  const suppressionHit = await checkSuppressionRules(alert);
   if (suppressionHit) {
     log(`Suppression signal: "${suppressionHit.rule_name}" matched (confidence=${(suppressionHit.confidence * 100).toFixed(0)}%) — continuing through full pipeline`);
   }
@@ -400,11 +400,11 @@ export async function runFpScan(
   const [recallHits, iocPreflightValues, assetCtx, corrRes, priorReasoning] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
-    Promise.resolve(lookupAssetContext(assetValues)),
+    lookupAssetContext(assetValues),
     correlationNode({ alert, recentAlerts }, modelFor("correlation"), ctx).catch(() => null),
     fetchPriorReasoning(queryText, 3, 0.7).catch(() => []),
   ]);
-  const iocPreflight = lookupIocs(iocPreflightValues);
+  const iocPreflight = await lookupIocs(iocPreflightValues);
   ctx.agentLogs.push(...(corrRes?.agentLogs ?? []));
   if (corrRes?.correlation) {
     recordReasoning({ alertId: alert.id, traceId, agent: "correlation", step: 1, reasoning: corrRes.correlation.reasoning });
@@ -460,7 +460,7 @@ export async function runFpScan(
                       : hasMemorySignal      ? 'memoryFP'
                       :                        'triage';
     log(`FP scan verdict: FALSE POSITIVE (confidence=${(triage.false_positive_confidence * 100).toFixed(0)}%, method=${triggeredBy})`);
-    upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
+    await upsertIocs(triage.iocs ?? {}, alert.id, "Low", "FALSE_POSITIVE");
     commitAsync({
       alertId: alert.id, idempotencyKey: traceId,
       alertDescription: alert.description ?? "",
@@ -529,9 +529,9 @@ export async function runInvestigation(
   const [recallHits, iocPreflightValues, assetCtx] = await Promise.all([
     semanticStore.search(queryText, 5, 0.65).catch(() => []),
     Promise.resolve(extractRawIocValues(alert)),
-    Promise.resolve(lookupAssetContext(assetValues)),
+    lookupAssetContext(assetValues),
   ]);
-  const iocPreflight = lookupIocs(iocPreflightValues);
+  const iocPreflight = await lookupIocs(iocPreflightValues);
 
   // ── 4. Planner ────────────────────────────────────────────────────────
   const plan = await planner({
@@ -628,7 +628,7 @@ export async function runInvestigation(
   const finalOutcome = (triage?.is_false_positive || isAggregatedFp2 || isNoisePriority2) ? "FALSE_POSITIVE"
                      : ticket?.priority === "CRITICAL" ? "ESCALATED"
                      : "TRIAGED";
-  upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
+  await upsertIocs(triage?.iocs ?? {}, alert.id, ticket?.priority, finalOutcome as any);
   commitAsync({
     alertId: alert.id, idempotencyKey: traceId,
     alertDescription: alert.description ?? "",

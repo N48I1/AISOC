@@ -393,7 +393,7 @@ AISOC_HEARTBEAT_URL=https://<aisoc-ip>:3001/api/heartbeat
 If the script is configured but the pill still says Offline immediately after enabling, check:
 - The browser was hard-refreshed (the header polls every 30 s, but the bundle must be current)
 - `last_heartbeat_at` is non-null: `SELECT MAX(last_heartbeat_at) FROM api_keys`
-- The timestamp the API returns ends with `Z` (server normalizes SQLite's space-separated format to ISO+Z to avoid browser timezone mis-parsing)
+- The timestamp the API returns ends with `Z` (server normalizes Postgres' space-separated timestamp format to ISO+Z to avoid browser timezone mis-parsing)
 
 ---
 

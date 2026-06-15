@@ -1,15 +1,15 @@
 import { memDb } from "./db.js";
 
-export function writeWorkingMemory(
+export async function writeWorkingMemory(
   alertId: string,
   traceId: string,
   step:    number,
   thought: string,
   action:  string,
   resultSummary: string,
-): void {
+): Promise<void> {
   try {
-    memDb().prepare(`
+    await memDb().prepare(`
       INSERT INTO working_memory (alert_id, trace_id, step, thought, action, result_summary)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(alertId, traceId, step, thought.slice(0, 2000), action.slice(0, 200), resultSummary.slice(0, 4000));

@@ -71,13 +71,13 @@ Default credentials: **`admin`** / **`admin123`**
 If those don't work, reset via Node:
 ```bash
 node -e "
-const Database = require('better-sqlite3');
+require('dotenv').config();
+const pg = require('pg');
 const bcrypt = require('bcryptjs');
-const db = new Database('soc.db');
+const pool = new pg.Pool();
 const hash = bcrypt.hashSync('admin123', 10);
-db.prepare('UPDATE users SET password = ? WHERE username = ?').run(hash, 'admin');
-console.log('Password reset to admin123');
-db.close();
+pool.query('UPDATE users SET password = $1 WHERE username = $2', [hash, 'admin'])
+  .then(() => { console.log('Password reset to admin123'); return pool.end(); });
 "
 ```
 
@@ -94,13 +94,7 @@ npm run dev > /tmp/server.log 2>&1 &
 
 To manually check what's in the DB:
 ```bash
-node -e "
-const Database = require('better-sqlite3');
-const db = new Database('soc.db', { readonly: true });
-const r = db.prepare('SELECT status, COUNT(*) as n FROM alerts GROUP BY status').all();
-console.table(r);
-db.close();
-"
+psql "$DATABASE_URL" -c "SELECT status, COUNT(*) AS n FROM alerts GROUP BY status;"
 ```
 
 ---
@@ -133,25 +127,17 @@ curl -s http://localhost:11434/api/tags | python3 -m json.tool | grep name
 
 ### "Database errors / migration failed"
 
-The SQLite DB is `soc.db` in the project root. Migrations run automatically on startup.
+The database is PostgreSQL (database `soc`). The schema (`db/schema.sql`) is applied automatically on startup; connection comes from the `PG*`/`DATABASE_URL` vars in `.env`.
 
-Check for corruption:
+Check connectivity:
 ```bash
-node -e "
-const Database = require('better-sqlite3');
-try {
-  const db = new Database('soc.db');
-  db.prepare('PRAGMA integrity_check').get();
-  console.log('DB OK');
-  db.close();
-} catch(e) { console.error('DB ERROR:', e.message); }
-"
+psql "$DATABASE_URL" -c "SELECT 'DB OK';" || echo "DB connection failed — check PG* vars in .env and that PostgreSQL is running (sudo systemctl status postgresql)"
 ```
 
-If corrupted, delete and let it rebuild (all demo data re-seeds):
+To wipe all data (core config — users, integrations, playbooks, agent models — re-seeds on the next start; demo alerts can be re-sent with `npx tsx generate-test-alerts.ts`):
 ```bash
 # WARNING: deletes all alert history, memory, and user accounts
-rm soc.db
+psql "$DATABASE_URL" -c "TRUNCATE users, alerts, incidents, incident_alerts, audit_logs, agent_runs, feedback, action_logs, working_memory, incident_insights, incident_reasoning, incident_timeline, incident_actions, playbooks, ioc_memory, asset_context, suppression_rules, agent_settings, integrations, local_llm_config, llm_providers, api_keys, password_history, access_reviews, access_review_items RESTART IDENTITY CASCADE;"
 npm run dev > /tmp/server.log 2>&1 &
 ```
 
@@ -193,13 +179,13 @@ sudo ufw allow 3001/tcp
 tail -f /tmp/server.log
 
 # Show all alert statuses
-node -e "const db=require('better-sqlite3')('soc.db',{readonly:true});console.table(db.prepare('SELECT status,count(*)n FROM alerts GROUP BY status').all());db.close()"
+psql "$DATABASE_URL" -c "SELECT status, count(*) n FROM alerts GROUP BY status;"
 
 # Show asset_context table
-node -e "const db=require('better-sqlite3')('soc.db',{readonly:true});console.table(db.prepare('SELECT * FROM asset_context').all());db.close()"
+psql "$DATABASE_URL" -c "SELECT * FROM asset_context;"
 
 # Show IOC memory (top 10 by fp_count)
-node -e "const db=require('better-sqlite3')('soc.db',{readonly:true});console.table(db.prepare('SELECT value,type,alert_count,fp_count,tp_count FROM ioc_memory ORDER BY fp_count DESC LIMIT 10').all());db.close()"
+psql "$DATABASE_URL" -c "SELECT value,type,alert_count,fp_count,tp_count FROM ioc_memory ORDER BY fp_count DESC LIMIT 10;"
 
 # Kill server
 kill -9 \$(pgrep -f "tsx.*server") 2>/dev/null
@@ -215,7 +201,7 @@ kill -9 \$(pgrep -f "tsx.*server") 2>/dev/null; sleep 1; npm run dev > /tmp/serv
 | File | Purpose |
 |---|---|
 | `server.ts` | Main backend (Express + Socket.IO + DB init) |
-| `soc.db` | SQLite database (all alerts, memory, users) |
+| PostgreSQL `soc` db | Primary datastore — all alerts, memory, users (pgvector embeddings). `soc.db` remains only as the legacy ETL source. |
 | `.env` | Environment variables (API keys, port, TLS paths) |
 | `certs/cert.pem` | TLS certificate |
 | `certs/key.pem` | TLS private key |

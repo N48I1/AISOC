@@ -39,7 +39,7 @@ Memory [icon: database, color: purple] {
 }
 
 Storage [icon: database, color: yellow] {
-  DB    [icon: database,  label: "SQLite (WAL)"]
+  DB    [icon: database,  label: "PostgreSQL + pgvector"]
   EMBED [icon: sparkles,  label: "Ollama embeddings"]
 }
 

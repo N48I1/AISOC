@@ -4,7 +4,7 @@
 // endpoint at runtime, and the agent fallback chain walks every enabled
 // provider whose kind matches the requested model.
 
-import type Database from 'better-sqlite3';
+import type { DbClient } from '../../db/pool.js';
 
 export type ProviderKind = 'openrouter' | 'openai' | 'anthropic' | 'gemini' | 'custom';
 
@@ -70,10 +70,12 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderKind, Array<{ id: string; la
   custom: [],
 };
 
-export function ensureLlmProvidersTable(db: Database.Database): void {
-  db.exec(`
+export async function ensureLlmProvidersTable(db: DbClient): Promise<void> {
+  // db/schema.sql already creates this table on a fresh install; this stays as
+  // an idempotent safety net (and to keep the registry self-contained).
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS llm_providers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       name TEXT NOT NULL,
       kind TEXT NOT NULL,
       base_url TEXT NOT NULL,
@@ -81,9 +83,9 @@ export function ensureLlmProvidersTable(db: Database.Database): void {
       enabled INTEGER DEFAULT 1,
       priority INTEGER DEFAULT 100,
       headers_json TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      last_test_at DATETIME,
+      created_at TIMESTAMP DEFAULT now(),
+      updated_at TIMESTAMP DEFAULT now(),
+      last_test_at TIMESTAMP,
       last_test_ok INTEGER,
       last_test_error TEXT
     );
@@ -95,9 +97,9 @@ export function ensureLlmProvidersTable(db: Database.Database): void {
 // on first boot. Idempotent — only runs when the table is empty AND at least
 // one of the env vars is set. Lets existing deployments upgrade without
 // re-entering keys.
-export function seedProvidersFromEnv(db: Database.Database): void {
-  const count: any = db.prepare('SELECT COUNT(*) AS c FROM llm_providers').get();
-  if (count?.c > 0) return;
+export async function seedProvidersFromEnv(db: DbClient): Promise<void> {
+  const count: any = await db.prepare('SELECT COUNT(*) AS c FROM llm_providers').get();
+  if (Number(count?.c) > 0) return;
 
   const env = (k: string) => (process.env[k] || '').trim();
   const candidates: Array<{ name: string; key: string }> = [
@@ -111,26 +113,33 @@ export function seedProvidersFromEnv(db: Database.Database): void {
   let priority = 10;
   for (const c of candidates) {
     if (!c.key) continue;
-    ins.run(c.name, 'openrouter', PROVIDER_KIND_DEFAULTS.openrouter.base_url, c.key, priority);
+    await ins.run(c.name, 'openrouter', PROVIDER_KIND_DEFAULTS.openrouter.base_url, c.key, priority);
     priority += 10;
   }
 }
 
-let _cache: { at: number; rows: LlmProvider[] } | null = null;
-const CACHE_TTL_MS = 30_000;
+// In-memory snapshot of the registry. The hot LLM path (resolveProviders, called
+// from resolveClientsForModel on every model invocation) reads this synchronously
+// so model resolution never has to await a query. It is refreshed asynchronously
+// at boot and after any provider mutation.
+let _cache: LlmProvider[] = [];
 
-export function invalidateProviderCache(): void { _cache = null; }
+export function invalidateProviderCache(): void { _cache = []; }
 
-export function listProviders(db: Database.Database, opts: { includeDisabled?: boolean } = {}): LlmProvider[] {
-  if (!_cache || Date.now() - _cache.at > CACHE_TTL_MS) {
-    const rows = db.prepare('SELECT * FROM llm_providers ORDER BY priority ASC, id ASC').all() as LlmProvider[];
-    _cache = { at: Date.now(), rows };
-  }
-  return opts.includeDisabled ? _cache.rows : _cache.rows.filter(r => r.enabled === 1);
+/** Replace the in-memory provider snapshot. Call at boot and after mutations. */
+export async function refreshProviderCache(db: DbClient): Promise<LlmProvider[]> {
+  const rows = await db.prepare('SELECT * FROM llm_providers ORDER BY priority ASC, id ASC').all() as LlmProvider[];
+  _cache = rows;
+  return rows;
 }
 
-export function getProvider(db: Database.Database, id: number): LlmProvider | null {
-  const row = db.prepare('SELECT * FROM llm_providers WHERE id = ?').get(id) as LlmProvider | undefined;
+export async function listProviders(db: DbClient, opts: { includeDisabled?: boolean } = {}): Promise<LlmProvider[]> {
+  const rows = await refreshProviderCache(db);   // keep the snapshot warm
+  return opts.includeDisabled ? rows : rows.filter(r => r.enabled === 1);
+}
+
+export async function getProvider(db: DbClient, id: number): Promise<LlmProvider | null> {
+  const row = await db.prepare('SELECT * FROM llm_providers WHERE id = ?').get(id) as LlmProvider | undefined;
   return row || null;
 }
 
@@ -177,8 +186,8 @@ export function parseModelId(model: string): ParsedModel {
 // Walk enabled providers in priority order. If pinned by id, only that
 // provider is returned. If pinned by kind, only matching kinds. Otherwise
 // any enabled provider is acceptable.
-export function resolveProviders(db: Database.Database, parsed: ParsedModel): LlmProvider[] {
-  const all = listProviders(db);
+export function resolveProviders(parsed: ParsedModel): LlmProvider[] {
+  const all = _cache.filter(r => r.enabled === 1);
   if (parsed.pinProviderId) return all.filter(p => p.id === parsed.pinProviderId);
   if (parsed.pinKind)       return all.filter(p => p.kind === parsed.pinKind);
   return all;

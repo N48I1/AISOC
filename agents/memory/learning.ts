@@ -20,9 +20,9 @@ export interface FpSuggestion {
  *  - suggest:       fp_ratio >= 0.85 AND total >= 5
  *  - auto_register: fp_ratio >= 0.95 AND total >= 10
  */
-export function scanForFpSuggestions(): FpSuggestion[] {
+export async function scanForFpSuggestions(): Promise<FpSuggestion[]> {
   const db = memDb();
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT value, type,
            COALESCE(fp_count, 0) as fp_count,
            COALESCE(tp_count, 0) as tp_count
@@ -39,7 +39,7 @@ export function scanForFpSuggestions(): FpSuggestion[] {
     if (fp_ratio < 0.85) continue;
 
     // Check if already in asset_context
-    const existing = db.prepare(
+    const existing = await db.prepare(
       `SELECT value FROM asset_context WHERE value = ?`
     ).get(r.value);
 
@@ -65,14 +65,14 @@ export function scanForFpSuggestions(): FpSuggestion[] {
  * Process auto-learning: auto-register IOCs that cross the threshold.
  * Returns the list of newly registered assets.
  */
-export function processAutoLearning(): Array<{ value: string; type: string; fp_ratio: number }> {
-  const suggestions = scanForFpSuggestions();
+export async function processAutoLearning(): Promise<Array<{ value: string; type: string; fp_ratio: number }>> {
+  const suggestions = await scanForFpSuggestions();
   const registered: Array<{ value: string; type: string; fp_ratio: number }> = [];
 
   for (const s of suggestions) {
     if (s.suggestion !== 'auto_register' || s.already_registered) continue;
 
-    upsertAssetContext({
+    await upsertAssetContext({
       value: s.value,
       type: s.type === 'ip' ? 'ip' : s.type === 'domain' ? 'domain' : s.type === 'user' ? 'user' : 'host',
       role: 'production',   // conservative default; analyst can re-classify
@@ -120,10 +120,10 @@ function inferIocType(v: string): 'ip' | 'domain' | 'hash' | 'url' | 'user' | 'f
  * type column gets a heuristic default; a later real triage run will overwrite
  * it on next sighting.
  */
-export function reinforceFeedback(
+export async function reinforceFeedback(
   alertIocValues: string[],
   verdict: 'FALSE_POSITIVE' | 'TRUE_POSITIVE',
-): void {
+): Promise<void> {
   const db = memDb();
   if (!alertIocValues.length) return;
 
@@ -143,17 +143,17 @@ export function reinforceFeedback(
   for (const v of alertIocValues) {
     const value = v.trim();
     if (!value) continue;
-    stmt.run(value, inferIocType(value), fpInc, tpInc, fpInc, tpInc);
+    await stmt.run(value, inferIocType(value), fpInc, tpInc, fpInc, tpInc);
   }
 
   // If TP verdict on a previously auto-learned asset, remove fp_default
   if (verdict === 'TRUE_POSITIVE') {
     for (const v of alertIocValues) {
-      const asset = db.prepare(
+      const asset = await db.prepare(
         `SELECT value, source FROM asset_context WHERE value = ? AND source = 'auto-learned'`
       ).get(v.trim()) as any;
       if (asset) {
-        db.prepare(`UPDATE asset_context SET fp_default = 0, description = description || ' [REVOKED by TP feedback]' WHERE value = ?`).run(v.trim());
+        await db.prepare(`UPDATE asset_context SET fp_default = 0, description = description || ' [REVOKED by TP feedback]' WHERE value = ?`).run(v.trim());
         console.log(`[AutoLearn] Revoked fp_default for ${v} — analyst confirmed TRUE POSITIVE`);
       }
     }

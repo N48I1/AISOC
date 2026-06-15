@@ -3,7 +3,7 @@
 // at runtime without redeploys. Maps to ISO 27001 A.5.17 (auth info) and
 // NIST 800-63B password guidance.
 
-import type Database from 'better-sqlite3';
+import type { DbClient } from '../../db/pool.js';
 
 export interface PasswordPolicy {
   min_length: number;
@@ -61,11 +61,11 @@ export const DEFAULT_AUDIT_RETENTION: AuditRetention = {
   archive_path: './audit-archive',
 };
 
-type AnyDb = Database.Database;
+type AnyDb = DbClient;
 
-function readJsonConfig<T>(db: AnyDb, name: string, fallback: T): T {
+async function readJsonConfig<T>(db: AnyDb, name: string, fallback: T): Promise<T> {
   try {
-    const row: any = db.prepare('SELECT config FROM integrations WHERE name = ?').get(name);
+    const row: any = await db.prepare('SELECT config FROM integrations WHERE name = ?').get(name);
     if (!row?.config) return fallback;
     const parsed = JSON.parse(row.config);
     return { ...fallback, ...parsed } as T;
@@ -74,18 +74,18 @@ function readJsonConfig<T>(db: AnyDb, name: string, fallback: T): T {
   }
 }
 
-export function ensurePolicyRows(db: AnyDb): void {
-  const seed = (name: string, cfg: object) => {
-    const exists = db.prepare('SELECT 1 FROM integrations WHERE name = ?').get(name);
+export async function ensurePolicyRows(db: AnyDb): Promise<void> {
+  const seed = async (name: string, cfg: object) => {
+    const exists = await db.prepare('SELECT 1 FROM integrations WHERE name = ?').get(name);
     if (!exists) {
-      db.prepare('INSERT INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, 1, ?, ?)')
+      await db.prepare('INSERT INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, 1, ?, ?)')
         .run(name, JSON.stringify(cfg), 'LOW');
     }
   };
-  seed('password_policy',    DEFAULT_PASSWORD_POLICY);
-  seed('lockout_policy',     DEFAULT_LOCKOUT_POLICY);
-  seed('admin_ip_allowlist', DEFAULT_ADMIN_IP_ALLOWLIST);
-  seed('audit_retention',    DEFAULT_AUDIT_RETENTION);
+  await seed('password_policy',    DEFAULT_PASSWORD_POLICY);
+  await seed('lockout_policy',     DEFAULT_LOCKOUT_POLICY);
+  await seed('admin_ip_allowlist', DEFAULT_ADMIN_IP_ALLOWLIST);
+  await seed('audit_retention',    DEFAULT_AUDIT_RETENTION);
 }
 
 let _passwordCache: { at: number; v: PasswordPolicy } | null = null;
@@ -95,30 +95,30 @@ let _retentionCache:{ at: number; v: AuditRetention } | null = null;
 
 const TTL_MS = 30_000;
 
-export function loadPasswordPolicy(db: AnyDb): PasswordPolicy {
+export async function loadPasswordPolicy(db: AnyDb): Promise<PasswordPolicy> {
   if (_passwordCache && Date.now() - _passwordCache.at < TTL_MS) return _passwordCache.v;
-  const v = readJsonConfig(db, 'password_policy', DEFAULT_PASSWORD_POLICY);
+  const v = await readJsonConfig(db, 'password_policy', DEFAULT_PASSWORD_POLICY);
   _passwordCache = { at: Date.now(), v };
   return v;
 }
 
-export function loadLockoutPolicy(db: AnyDb): LockoutPolicy {
+export async function loadLockoutPolicy(db: AnyDb): Promise<LockoutPolicy> {
   if (_lockoutCache && Date.now() - _lockoutCache.at < TTL_MS) return _lockoutCache.v;
-  const v = readJsonConfig(db, 'lockout_policy', DEFAULT_LOCKOUT_POLICY);
+  const v = await readJsonConfig(db, 'lockout_policy', DEFAULT_LOCKOUT_POLICY);
   _lockoutCache = { at: Date.now(), v };
   return v;
 }
 
-export function loadAdminIpAllowlist(db: AnyDb): AdminIpAllowlist {
+export async function loadAdminIpAllowlist(db: AnyDb): Promise<AdminIpAllowlist> {
   if (_ipCache && Date.now() - _ipCache.at < TTL_MS) return _ipCache.v;
-  const v = readJsonConfig(db, 'admin_ip_allowlist', DEFAULT_ADMIN_IP_ALLOWLIST);
+  const v = await readJsonConfig(db, 'admin_ip_allowlist', DEFAULT_ADMIN_IP_ALLOWLIST);
   _ipCache = { at: Date.now(), v };
   return v;
 }
 
-export function loadAuditRetention(db: AnyDb): AuditRetention {
+export async function loadAuditRetention(db: AnyDb): Promise<AuditRetention> {
   if (_retentionCache && Date.now() - _retentionCache.at < TTL_MS) return _retentionCache.v;
-  const v = readJsonConfig(db, 'audit_retention', DEFAULT_AUDIT_RETENTION);
+  const v = await readJsonConfig(db, 'audit_retention', DEFAULT_AUDIT_RETENTION);
   _retentionCache = { at: Date.now(), v };
   return v;
 }

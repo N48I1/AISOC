@@ -10,7 +10,7 @@ The Aegis SOC Platform is designed to bridge the gap between high-volume securit
 ## 2. Technical Stack
 - **Frontend:** React 19, Vite, Tailwind CSS, Lucide React (Icons), Framer Motion (Animations).
 - **Backend:** Node.js (Express), Socket.io (Real-time updates), JWT (Authentication).
-- **Database:** SQLite (Better-SQLite3) with WAL mode for high-concurrency ingestion.
+- **Database:** PostgreSQL with the pgvector extension (native `vector(768)` embeddings for semantic memory), accessed via node-postgres behind a thin async data-access adapter.
 - **AI Orchestration:** LangGraph (Stateful graphs), LangChain (LLM abstraction).
 - **External Integrations:** OpenRouter (LLM Gateway), MISP (Threat Intel Enrichment).
 
@@ -77,7 +77,7 @@ The platform supports multi-model strategies. Users can assign different LLMs (e
 
 ## 5. Security & Ingestion Logic
 - **Wazuh Integration:** Designed to accept the standard Wazuh alert schema.
-- **Data Integrity:** All AI-generated data is stored in a JSONB format within SQLite, preserving the relationship between raw logs and AI interpretations.
+- **Data Integrity:** All AI-generated data is stored as JSON within PostgreSQL, preserving the relationship between raw logs and AI interpretations.
 - **Authentication:** Role-based access control (RBAC) ensures only authorized analysts can approve response actions.
 
 ---
