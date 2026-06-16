@@ -34,6 +34,14 @@ types.setTypeParser(1114, (v) => v);
 types.setTypeParser(1184, (v) => v);
 types.setTypeParser(1082, (v) => v);
 
+// node-postgres returns bigint (int8) and numeric as strings by default — but
+// SQLite returned plain numbers, and the app does arithmetic on COUNT(*)/SUM(...)
+// aggregates (counts, stats). Parse them back to numbers so e.g. summing
+// `pending_actions` adds instead of string-concatenating ("0"+"3"+"3" → "033").
+// All bigint/numeric values here are small aggregates, so precision is not a concern.
+types.setTypeParser(20,   (v) => (v === null ? null : Number(v)));     // int8 / bigint
+types.setTypeParser(1700, (v) => (v === null ? null : parseFloat(v))); // numeric
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function buildPoolConfig(): pg.PoolConfig {

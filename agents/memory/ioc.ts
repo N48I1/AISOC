@@ -39,6 +39,30 @@ export type IocOutcome = "FALSE_POSITIVE" | "TRIAGED" | "ESCALATED" | "CLOSED" |
  *  - TRIAGED / ESCALATED → tp_count++
  *  - CLOSED / undefined → no FP/TP increment (still bumps alert_count)
  */
+/**
+ * True for IP addresses that are never useful as threat indicators and just
+ * pollute the IOC reputation store: loopback (127.0.0.0/8, ::1), unspecified
+ * (0.0.0.0/8, ::), link-local (169.254.0.0/16, fe80::/10) and broadcast.
+ *
+ * NOTE: RFC1918 private ranges (10/8, 172.16/12, 192.168/16) and IPv6 ULA are
+ * intentionally KEPT — internal hosts can be the actual threat (lateral
+ * movement, compromised assets), and on this platform attackers are often
+ * internal IPs. Filtering those would drop real indicators.
+ */
+export function isNonRoutableIp(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (v === "::1" || v === "::") return true;          // IPv6 loopback / unspecified
+  if (v.startsWith("fe80:")) return true;              // IPv6 link-local
+  if (v === "255.255.255.255") return true;            // broadcast
+  const m = v.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;                                // not IPv4 → leave to type-specific handling
+  const a = +m[1], b = +m[2];
+  if (a === 127) return true;                          // 127.0.0.0/8 loopback
+  if (a === 0)   return true;                          // 0.0.0.0/8 unspecified
+  if (a === 169 && b === 254) return true;             // 169.254.0.0/16 link-local
+  return false;
+}
+
 export async function upsertIocs(
   iocs: IocBundle,
   _alertId: string,
@@ -69,6 +93,7 @@ export async function upsertIocs(
         for (const raw of arr) {
           const value = String(raw).trim();
           if (!value) continue;
+          if (type === "ip" && isNonRoutableIp(value)) continue;   // skip loopback/local noise
           await stmt.run(value, type, threatLevel ?? null, fpInc, tpInc, fpInc, tpInc);
         }
       }
@@ -103,14 +128,15 @@ export async function lookupIocs(values: string[]): Promise<IocHit[]> {
 /** Flatten an alert + analysis into raw IOC values (for pre-flight lookup). */
 export function extractRawIocValues(alert: any, analysisIocs?: IocBundle): string[] {
   const set = new Set<string>();
-  if (alert?.source_ip)  set.add(String(alert.source_ip).trim());
-  if (alert?.dest_ip)    set.add(String(alert.dest_ip).trim());
-  if (alert?.user)       set.add(String(alert.user).trim());
+  const addIp = (v: any) => { const s = String(v ?? "").trim(); if (s && !isNonRoutableIp(s)) set.add(s); };
+  addIp(alert?.source_ip);
+  addIp(alert?.dest_ip);
+  if (alert?.user) set.add(String(alert.user).trim());
   if (analysisIocs) {
     for (const arr of [analysisIocs.ips, analysisIocs.domains, analysisIocs.hashes, analysisIocs.files, analysisIocs.urls, analysisIocs.users]) {
       if (Array.isArray(arr)) for (const v of arr) {
         const s = String(v).trim();
-        if (s) set.add(s);
+        if (s && !isNonRoutableIp(s)) set.add(s);
       }
     }
   }

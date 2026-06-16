@@ -3,7 +3,7 @@ import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogO
 import { motion, AnimatePresence } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, getIncidentReasoning, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, type ReasoningRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, getLlmProviders, createLlmProvider, updateLlmProvider, deleteLlmProvider, testLlmProvider, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook, type LlmProvidersResponse, type LlmProviderRow } from './services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, type ReasoningRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, getLlmProviders, createLlmProvider, updateLlmProvider, deleteLlmProvider, testLlmProvider, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook, type LlmProvidersResponse, type LlmProviderRow } from './services/aiService';
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from './types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from './types';
 import PageHeader from './components/ui/PageHeader';
@@ -7314,6 +7314,21 @@ const NoiseFilterTab = ({ alerts, setActiveTab, autoFilter, setAutoFilter }: { a
         </button>
       </div>
 
+      {/* Data-governance advisory — NIST 800-53 AC-4 (info-flow) / SC-7 (boundary) & AI RMF.
+          Auto-investigation auto-sends alert data to the LLM and can auto-archive FPs pre-review. */}
+      <div className="bg-amber-50/70 border border-amber-300/60 rounded-xl p-3 flex items-start gap-2.5">
+        <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+        <p className="text-[0.68rem] leading-relaxed text-[var(--t5)]">
+          <span className="font-bold text-amber-700">Compliance note.</span> While enabled, every incoming
+          alert is sent automatically to the configured LLM provider. With a <span className="font-semibold">cloud
+          provider</span>, alert content (IPs, hostnames, usernames, log excerpts) leaves your network on each
+          alert — use a <span className="font-semibold">local Ollama</span> model (Settings → AI Models) for
+          air-gapped, data-resident operation. Alerts may also be <span className="font-semibold">auto-classified
+          as false positives and archived before an analyst reviews them</span> (auditable and reversible in the
+          FP Archive). Response actions are <span className="font-semibold">never</span> auto-executed.
+        </p>
+      </div>
+
       {/* Stats */}
       {fpData && (
         <div className="grid grid-cols-4 gap-4">
@@ -8782,7 +8797,7 @@ const IntegrationsTab = () => {
               <div className="flex items-center justify-between py-2 border-t border-[var(--b2)]">
                 <div>
                   <p className="text-[0.82rem] font-bold text-[var(--t6)]">Auto-orchestrate new alerts</p>
-                  <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">Immediately run AI agents on every alert received via API.</p>
+                  <p className="text-[0.68rem] text-[var(--t3)] mt-0.5">Immediately run AI agents on every alert received via API. Sends alert data to the configured LLM provider automatically — prefer a local Ollama model for air-gapped operation (NIST AC-4/SC-7).</p>
                 </div>
                 <button
                   onClick={() => setIngestCfg(c => ({ ...c, auto_orchestrate: c.auto_orchestrate === 'false' ? 'true' : 'false' }))}
@@ -10073,6 +10088,7 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
   const [detailTab, setDetailTab]     = useState<'overview'|'observables'|'tasks'|'reasoning'|'timeline'|'report'>('overview');
   const [reasoning, setReasoning]     = useState<ReasoningRow[]>([]);
   const [loadingReasoning, setLoadingReasoning] = useState(false);
+  const [reinvestigating, setReinvestigating]   = useState(false);
   const [myOnly, setMyOnly]           = useState(false);
 
   const [showReassign, setShowReassign] = useState(false);
@@ -10133,6 +10149,28 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
       .catch(() => setReasoning([]))
       .finally(() => setLoadingReasoning(false));
   }, [detailTab, activeId]);
+
+  // Re-run the agents on this incident's alert to capture (missing) reasoning.
+  const handleRunInvestigation = async () => {
+    if (!activeId || reinvestigating) return;
+    setReinvestigating(true);
+    try {
+      const r = await reinvestigateIncident(activeId);
+      const d = await getIncidentReasoning(activeId);
+      setReasoning(d.reasoning || []);
+      fetchDetail(activeId);
+      toast(
+        r.reasoning_steps
+          ? `Investigation complete — ${r.reasoning_steps} reasoning step(s) recorded`
+          : 'Investigation ran but produced no reasoning — check the LLM provider/quota',
+        r.reasoning_steps ? 'success' : 'error',
+      );
+    } catch (e: any) {
+      toast(e?.message || 'Re-investigation failed', 'error');
+    } finally {
+      setReinvestigating(false);
+    }
+  };
 
   const filteredList = React.useMemo(() => {
     let out = list;
@@ -10646,13 +10684,23 @@ const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialIncidentId 
                           <p className="text-[0.72rem] text-[var(--t3)]">Loading reasoning trace…</p>
                         </div>
                       ) : reasoning.length === 0 ? (
-                        <div className="p-10 text-center space-y-2">
+                        <div className="p-10 text-center space-y-3">
                           <Activity size={28} className="inline text-[var(--t3)] opacity-50" />
                           <p className="text-[0.85rem] font-bold text-[var(--t6)]">No reasoning recorded yet</p>
                           <p className="text-[0.7rem] text-[var(--t3)] max-w-md mx-auto">
-                            New investigations capture per-agent reasoning automatically.
-                            Incidents from before this feature was deployed will be empty.
+                            This incident's alerts were escalated without a full agent investigation
+                            (e.g. auto-escalated or imported), so there's nothing to show. Run the agents
+                            now to capture per-agent reasoning for this incident.
                           </p>
+                          <button
+                            onClick={handleRunInvestigation}
+                            disabled={reinvestigating}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 text-white text-[0.72rem] font-bold hover:bg-violet-700 disabled:opacity-60"
+                          >
+                            {reinvestigating
+                              ? <><RefreshCw size={13} className="animate-spin" /> Running investigation…</>
+                              : <><Activity size={13} /> Run Investigation</>}
+                          </button>
                         </div>
                       ) : (
                         <div className="px-5 py-5 grid grid-cols-1 sm:grid-cols-4 gap-4">

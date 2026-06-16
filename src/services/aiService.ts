@@ -713,6 +713,15 @@ export async function getIncidentReasoning(incidentId: string): Promise<{
   return res.json();
 }
 
+// Re-run the agent pipeline on an incident's representative alert to (re)capture
+// per-agent reasoning. Returns how many reasoning steps were recorded.
+export async function reinvestigateIncident(id: string): Promise<{ ok: boolean; alert_id?: string; reasoning_steps?: number; error?: string }> {
+  const res = await fetch(`/api/incidents/${id}/reinvestigate`, { method: 'POST', headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Re-investigation failed');
+  return data;
+}
+
 export async function getAlertReasoning(alertId: string): Promise<{
   alert_id: string;
   count:    number;

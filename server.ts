@@ -2738,7 +2738,7 @@ async function startServer() {
         SUM(CASE WHEN triggered_by = 'composer' THEN 1 ELSE 0 END) as composer_fp
       FROM incident_insights
       WHERE outcome = 'FALSE_POSITIVE'
-        AND created_at >= DATE('now', '-30 days')
+        AND created_at >= current_date - interval '30 days'
       GROUP BY DATE(created_at)
       ORDER BY day ASC
     `).all();
@@ -2747,7 +2747,7 @@ async function startServer() {
     const alertRows = await db.prepare(`
       SELECT DATE(timestamp) as day, COUNT(*) as total
       FROM alerts
-      WHERE timestamp >= DATE('now', '-30 days')
+      WHERE timestamp >= current_date - interval '30 days'
       GROUP BY DATE(timestamp)
       ORDER BY day ASC
     `).all() as Array<{ day: string; total: number }>;
@@ -2770,7 +2770,7 @@ async function startServer() {
       FROM alerts
       WHERE source_ip IS NOT NULL AND source_ip != ''
       GROUP BY source_ip
-      HAVING total_alerts >= 2
+      HAVING COUNT(*) >= 2
       ORDER BY fp_count DESC
       LIMIT 20
     `).all() as Array<{ source: string; source_type: string; total_alerts: number; fp_count: number }>;
@@ -2782,7 +2782,7 @@ async function startServer() {
       FROM alerts
       WHERE agent_name IS NOT NULL AND agent_name != ''
       GROUP BY agent_name
-      HAVING total_alerts >= 2
+      HAVING COUNT(*) >= 2
       ORDER BY fp_count DESC
       LIMIT 20
     `).all() as Array<{ source: string; source_type: string; total_alerts: number; fp_count: number }>;
@@ -3068,9 +3068,47 @@ async function startServer() {
     note?:       string;
     create_glpi?: boolean;
     user_id:     number | null;
-  }): Promise<{ id: string; glpi_ticket_id: string | null }> {
+    forceNew?:   boolean;   // bypass dedup and always open a fresh incident
+  }): Promise<{ id: string; glpi_ticket_id: string | null; grouped?: boolean }> {
     const alert: any = await db.prepare('SELECT * FROM alerts WHERE id = ?').get(args.alertId);
     if (!alert) throw new Error('Alert not found');
+
+    // ── Deduplication / correlation ──────────────────────────────────────────
+    // A noisy detection (e.g. a bot POST-flood firing the same Wazuh rule from the
+    // same source dozens of times) used to produce one incident per alert. Instead,
+    // group those alerts into a single still-active "campaign" incident via the
+    // incident_alerts junction (many alerts → one incident). Match on same rule +
+    // same source within a recent window; resolved/closed incidents don't absorb
+    // new alerts (a fresh wave after closure opens a new incident).
+    // Only auto-group when there's a concrete rule + source to match on; without
+    // both we open a fresh incident rather than risk merging unrelated events.
+    if (!args.forceNew && alert.rule_id && alert.source_ip) {
+      const dupe: any = await db.prepare(`
+        SELECT i.id
+        FROM incidents i
+        JOIN incident_alerts ia ON ia.incident_id = i.id
+        JOIN alerts a ON a.id = ia.alert_id
+        WHERE i.status NOT IN ('RESOLVED', 'CLOSED', 'RECLASSIFIED_FP')
+          AND a.rule_id   = ?
+          AND a.source_ip = ?
+          AND i.created_at >= now() - interval '24 hours'
+        ORDER BY i.created_at DESC
+        LIMIT 1
+      `).get(alert.rule_id, alert.source_ip);
+      if (dupe?.id) {
+        await db.prepare('INSERT INTO incident_alerts (incident_id, alert_id) VALUES (?, ?) ON CONFLICT DO NOTHING').run(dupe.id, args.alertId);
+        await db.prepare("UPDATE alerts SET status = 'ESCALATED', escalated_at = now() WHERE id = ?").run(args.alertId);
+        await db.prepare('UPDATE incidents SET updated_at = now() WHERE id = ?').run(dupe.id);
+        await db.prepare(
+          `INSERT INTO incident_timeline (incident_id, event_type, user_id, note)
+           VALUES (?, 'alert_grouped', ?, ?)`
+        ).run(dupe.id, args.user_id ?? null,
+          `Grouped alert ${args.alertId} (rule ${alert.rule_id ?? '—'} · source ${alert.source_ip ?? '—'}) into this incident — same campaign`);
+        io.emit('alert_updated', { id: args.alertId, status: 'ESCALATED' });
+        io.emit('incident_updated', { id: dupe.id });
+        return { id: dupe.id, glpi_ticket_id: null, grouped: true };
+      }
+    }
 
     let priority = args.severity;
     let actionPlan: string | null = null;
@@ -3167,8 +3205,8 @@ async function startServer() {
         create_glpi: !!create_glpi,
         user_id:     req.user?.id ?? null,
       });
-      writeAudit(req.user?.id, 'INCIDENT_CREATED', `Incident ${r.id} from alert ${alert_id}`);
-      res.json({ ok: true, id: r.id, glpi_ticket_id: r.glpi_ticket_id });
+      writeAudit(req.user?.id, r.grouped ? 'INCIDENT_ALERT_GROUPED' : 'INCIDENT_CREATED', `${r.grouped ? 'Grouped alert into' : 'Incident'} ${r.id} from alert ${alert_id}`);
+      res.json({ ok: true, id: r.id, glpi_ticket_id: r.glpi_ticket_id, grouped: !!r.grouped });
     } catch (err: any) {
       console.error('[Incident create] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Failed to create incident' });
@@ -3300,6 +3338,36 @@ async function startServer() {
     } catch (err: any) {
       console.warn(`[Reasoning] incident fetch failed for ${id}:`, err?.message);
       res.status(500).json({ error: err?.message || 'reasoning fetch failed' });
+    }
+  });
+
+  // Re-run the agent pipeline on an incident's representative alert to (re)capture
+  // per-agent reasoning. Used when an incident was created by escalation/backfill
+  // without ever running a full investigation, so its Reasoning timeline is empty.
+  // The run records reasoning + ai_analysis; the alert is re-asserted ESCALATED so a
+  // re-investigation can never silently un-escalate an alert that belongs to an incident.
+  app.post('/api/incidents/:id/reinvestigate', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const inc: any = await db.prepare('SELECT id FROM incidents WHERE id = ?').get(id);
+      if (!inc) return res.status(404).json({ error: 'Incident not found' });
+      const alert: any = await db.prepare(
+        `SELECT a.* FROM incident_alerts ia JOIN alerts a ON a.id = ia.alert_id
+         WHERE ia.incident_id = ? ORDER BY a.timestamp DESC LIMIT 1`
+      ).get(id);
+      if (!alert) return res.status(400).json({ error: 'Incident has no linked alert to investigate' });
+
+      await triggerOrchestration(alert.id);   // runs all agents → records reasoning + ai_analysis
+      await db.prepare("UPDATE alerts SET status = 'ESCALATED' WHERE id = ?").run(alert.id);
+      io.emit('alert_updated', { id: alert.id, status: 'ESCALATED' });
+      io.emit('incident_updated', { id });
+
+      const steps = (await db.prepare('SELECT count(*) c FROM incident_reasoning WHERE alert_id = ?').get(alert.id) as any).c;
+      writeAudit(req.user?.id, 'INCIDENT_REINVESTIGATED', `Re-ran agents on alert ${alert.id} for incident ${id} (${steps} reasoning step(s))`);
+      res.json({ ok: true, alert_id: alert.id, reasoning_steps: Number(steps) });
+    } catch (err: any) {
+      console.error('[Reinvestigate] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Re-investigation failed' });
     }
   });
 
@@ -3700,9 +3768,9 @@ async function startServer() {
       const fb = await applyFeedbackToMemory(id, 'TRUE_POSITIVE', 'alert-escalate');
       writeAudit(
         req.user?.id, 'ALERT_ESCALATED',
-        `Alert ${id} escalated → incident ${r.id} — reinforced ${fb.iocs.length} IOC(s) as TP`,
+        `Alert ${id} escalated → ${r.grouped ? 'grouped into existing incident' : 'incident'} ${r.id} — reinforced ${fb.iocs.length} IOC(s) as TP`,
       );
-      res.json({ ok: true, status: 'ESCALATED', incident_id: r.id, feedback: fb });
+      res.json({ ok: true, status: 'ESCALATED', incident_id: r.id, grouped: !!r.grouped, feedback: fb });
     } catch (err: any) {
       console.error('[Legacy escalate] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Escalation failed' });
@@ -3758,7 +3826,7 @@ async function startServer() {
         `Alert ${id} FP overridden → incident ${inc.id} — reinforced ${fb.iocs.length} IOC(s) as TP, auto-registered ${fb.auto_registered}`,
       );
       io.emit('alert_updated', { id, status: 'ESCALATED' });
-      res.json({ ok: true, status: 'ESCALATED', incident_id: inc.id, feedback: fb });
+      res.json({ ok: true, status: 'ESCALATED', incident_id: inc.id, grouped: !!inc.grouped, feedback: fb });
     } catch (err: any) {
       console.error('[Override FP] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Override failed' });

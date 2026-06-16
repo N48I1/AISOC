@@ -14,7 +14,7 @@ as an analyst/admin, see the [User Manual](./USER-MANUAL.md).
 7. [Data layer (PostgreSQL + pgvector)](#7-data-layer-postgresql--pgvector)
 8. [The agent system](#8-the-agent-system)
 9. [Real-time (Socket.IO)](#9-real-time-socketio)
-10. [API reference — all 128 endpoints](#10-api-reference--all-128-endpoints)
+10. [API reference — all 129 endpoints](#10-api-reference--all-129-endpoints)
 11. [Local development setup](#11-local-development-setup)
 12. [Build & deployment](#12-build--deployment)
 13. [Extending the app](#13-extending-the-app)
@@ -69,7 +69,7 @@ See [`docs/diagrams/sequence-diagram.puml`](./diagrams/sequence-diagram.puml) an
 ## 3. Repository layout
 
 ```
-server.ts                  Backend entrypoint: bootstrap, auth, all 128 routes, Socket.IO, Vite glue
+server.ts                  Backend entrypoint: bootstrap, auth, all 129 routes, Socket.IO, Vite glue
 agents.ts                  Public agent API: runOrchestration / runFpScan / runInvestigation / runPhase
 agents/
   orchestrator.ts          Hub-and-swarm: runHubAndSwarm / runFpScan / runInvestigation, FP aggregation
@@ -253,7 +253,7 @@ The server pushes these events to all connected clients (`io.emit(...)` in `serv
 The frontend subscribes (at least to `new_alert` and `alert_updated`) and refreshes the
 relevant view. There is no client→server custom event; clients act via the REST API.
 
-## 10. API reference — all 128 endpoints
+## 10. API reference — all 129 endpoints
 
 Base path `/api`. **Guard legend:** `auth` = valid JWT; `admin` = `authenticate +
 requireAdmin`; `step-up` = also `requireStepUp` (`X-Step-Up-Token`); `api-key` = `X-Api-Key`
@@ -322,6 +322,7 @@ in `server.ts`.
 | POST | `/api/incidents/:id/timeline` | auth | Add a timeline note |
 | GET | `/api/incidents/:id/reasoning` | auth | Reasoning across the incident's alerts |
 | POST | `/api/incidents/:id/reclassify-fp` | auth | Reclassify the incident as a false positive |
+| POST | `/api/incidents/:id/reinvestigate` | auth | Re-run the agents on the incident's representative alert to (re)capture reasoning |
 | POST | `/api/incidents/:id/actions` | auth | Add a response action |
 | PATCH | `/api/incidents/:id/actions/:actionId` | auth | Approve / execute / annotate an action |
 | DELETE | `/api/incidents/:id/actions/:actionId` | auth | Remove an action |

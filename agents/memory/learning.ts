@@ -1,5 +1,6 @@
 import { memDb } from "./db.js";
 import { upsertAssetContext } from "./assets.js";
+import { isNonRoutableIp } from "./ioc.js";
 
 export interface FpSuggestion {
   value:       string;
@@ -143,6 +144,7 @@ export async function reinforceFeedback(
   for (const v of alertIocValues) {
     const value = v.trim();
     if (!value) continue;
+    if (isNonRoutableIp(value)) continue;   // skip loopback/local — not a threat indicator
     await stmt.run(value, inferIocType(value), fpInc, tpInc, fpInc, tpInc);
   }
 

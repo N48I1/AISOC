@@ -1,7 +1,8 @@
 # AISOC — ISO 27001:2022 & NIST 800-53 r5 Compliance Mapping
 
 This document maps the security controls implemented in the AISOC platform to
-**ISO/IEC 27001:2022 Annex A** and **NIST SP 800-53 Revision 5** control IDs.
+**ISO/IEC 27001:2022 Annex A** and **NIST SP 800-53 Revision 5** control IDs (plus the
+**NIST AI Risk Management Framework** for the AI-specific controls in §9).
 It is intended as evidence packaging for auditors and as a quick orientation
 for new operators.
 
@@ -304,7 +305,49 @@ All ticks are idempotent and log a single audit row per action.
 
 ---
 
-## 9. Out of scope (documented gaps)
+## 9. AI data governance & automated decisions
+
+The platform uses LLM agents to triage and investigate alerts. The controls below
+document where automation makes decisions, what data crosses a trust boundary, and how a
+human stays in command — mapped to NIST SP 800-53 r5, the **NIST AI Risk Management
+Framework (AI 100-1)**, and ISO/IEC 27001:2022.
+
+### 9.1 Human-in-the-loop for response actions
+
+| | |
+|---|---|
+| **ISO 27001** | A.5.25 — Assessment & decision on information security events |
+| **NIST 800-53** | AC-3 — Access enforcement (execution gate) |
+| **NIST AI RMF** | MANAGE 2.x — Human oversight of AI-influenced actions |
+| **What we do** | AI-proposed containment actions (block IP, isolate host, disable user, …) are created with status `pending` and **must be explicitly approved by a human** (`approved`) before execution (`executed`). Nothing destructive is ever auto-executed; the approval gate is a column in the data model, not a UI convention. Execution is restricted to `INCIDENT_LEAD`+. |
+| **Where** | `incident_actions` (status `pending`→`approved`→`executed`, `created_by`/`executed_by`/`executed_at`); `/api/incidents/:id/actions*`. |
+| **Evidence** | Action rows are fully attributable; `INCIDENT_ACTION_*` audit events. |
+
+### 9.2 Automated AI investigation & cross-boundary data flow
+
+| | |
+|---|---|
+| **ISO 27001** | A.5.14 (information transfer), A.8.12 (data-leakage prevention), A.5.23 (cloud services) |
+| **NIST 800-53** | AC-4 (information-flow enforcement), SC-7 (boundary protection), SI-12 (information handling) |
+| **NIST AI RMF** | MAP 3 / MEASURE 2 — Document data flows & third-party exposure |
+| **What we do** | When **auto-orchestrate** is enabled, every incoming alert's content (which may contain IPs, hostnames, usernames, and log excerpts) is sent automatically to the configured LLM provider for analysis. With an **external** provider this crosses the organisation's trust boundary on each alert; a **local Ollama** option keeps all inference *and* embeddings on-prem (air-gapped). The UI surfaces a data-governance advisory directly on the *Auto-Investigate on Arrival* toggle and on the Wazuh *Auto-orchestrate* setting. |
+| **Where** | `server.ts` ingest path `auto_orchestrate` (~L2159) → `triggerOrchestration`; provider registry `llm_providers`; local-LLM config `local_llm_config`; advisory in `src/App.tsx` (NoiseFilterTab + Wazuh settings). |
+| **Evidence** | `agent_runs` rows record each automated run; the provider registry and integration config show whether an external or local model is active. |
+
+### 9.3 Transparency of automated false-positive archival
+
+| | |
+|---|---|
+| **ISO 27001** | A.5.25 (event assessment), A.8.16 (monitoring activities) |
+| **NIST 800-53** | SI-4 (system monitoring), AU-2 (auditable events) |
+| **NIST AI RMF** | MANAGE 2.x / GOVERN 1.2 — Documented limitations & oversight of AI decisions |
+| **What we do** | The pipeline may auto-classify an alert as a false positive and archive it **before a human reviews it**. FPs are **never deleted** — they are retained in an auditable FP Archive, attributable to the deciding method (`fp_method`, `fp_confidence`, `fp_reason`, `filtered_at`), and an analyst can **override** the verdict to return the alert to the queue. Real-threat verdicts always surface to humans. |
+| **Where** | `alerts` (`status='FALSE_POSITIVE'`, `fp_method`/`fp_confidence`/`fp_reason`/`filtered_at`); `/api/alerts/fp-archive`; override at `/api/alerts/:id/override-fp`. |
+| **Evidence** | FP archive rows + override trail; `/api/analytics/detection-effectiveness` (per-method confirm/override rates). |
+
+---
+
+## 10. Out of scope (documented gaps)
 
 The following controls are intentionally not implemented in the current build
 and should be addressed in a future iteration:
@@ -320,7 +363,7 @@ and should be addressed in a future iteration:
 
 ---
 
-## 10. Quick checklist for an auditor
+## 11. Quick checklist for an auditor
 
 1. Pull `GET /api/admin/permissions` — verify the role / permission matrix matches the documented RACI.
 2. Pull `GET /api/admin/reports/user-roster.csv` — verify every account has a justified role, `last_login` populated, no orphaned `INCIDENT_LEAD` / `ADMIN` accounts.
