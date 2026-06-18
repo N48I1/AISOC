@@ -13,6 +13,10 @@ The AISOC manual is split by audience:
   reference for all 128 API endpoints**, local setup, deployment, and how to extend each
   layer.
 
+- ⚡ **[Commands & Troubleshooting Runbook](./COMMANDS.md)** — the quick command reference:
+  starting the app, starting/checking the dependent services (PostgreSQL, Ollama, MISP),
+  `troubleshoot.sh`, logs, and PostgreSQL backup/restore.
+
 For deeper dives, both manuals link out to the [feature docs](./features/),
 [diagrams](./diagrams/), [`MIGRATION-POSTGRES.md`](./MIGRATION-POSTGRES.md), and
 [`HANDOVER.md`](./HANDOVER.md). See the **Documentation Map** at the end of either manual.
