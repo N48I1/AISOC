@@ -824,8 +824,8 @@ async function getLockoutPolicy(): Promise<LockoutPolicy> { return await loadLoc
 async function startServer() {
   const app = express();
 
-  const certPath = process.env.TLS_CERT || path.join(__dirname, 'certs', 'cert.pem');
-  const keyPath  = process.env.TLS_KEY  || path.join(__dirname, 'certs', 'key.pem');
+  const certPath = process.env.TLS_CERT || path.join(__dirname, '..', 'certs', 'cert.pem');
+  const keyPath  = process.env.TLS_KEY  || path.join(__dirname, '..', 'certs', 'key.pem');
   const hasCerts = fs.existsSync(certPath) && fs.existsSync(keyPath);
 
   const httpServer = hasCerts
@@ -1681,7 +1681,7 @@ async function startServer() {
         counts[t] = r?.c ?? 0;
       } catch { counts[t] = -1; }
     }
-    const dbPath = path.join(__dirname, 'aisoc.db');
+    const dbPath = path.join(__dirname, '..', 'aisoc.db');
     let dbSize = 0;
     try { dbSize = fs.statSync(dbPath).size; } catch { /* ignore */ }
     const lastHb: any = await db.prepare('SELECT MAX(last_heartbeat_at) AS hb FROM api_keys').get();
@@ -4257,12 +4257,12 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distIndex = path.join(__dirname, 'dist', 'index.html');
+    const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
     if (!fs.existsSync(distIndex)) {
       throw new Error('dist/index.html not found. Run `npm run build` before starting the server.');
     }
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
+    app.use(express.static(path.join(__dirname, '..', 'dist')));
+    app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '..', 'dist', 'index.html')));
   }
 
   const PORT = Number(process.env.PORT) || 3000;

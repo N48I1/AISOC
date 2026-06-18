@@ -246,7 +246,6 @@ else
   echo -e "  ${YEL}Next steps:${NC}"
   echo "  1. bash troubleshoot.sh --fix       (restart server)"
   echo "  2. Open https://soar.bbs.lan:$PORT and Ctrl+Shift+R"
-  echo "  3. Login: admin / admin123"
-  echo "  4. See TROUBLESHOOTING.md for details"
+  echo "  3. See docs/TROUBLESHOOTING.md for details"
 fi
 echo ""
