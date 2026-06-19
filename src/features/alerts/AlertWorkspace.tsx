@@ -944,7 +944,7 @@ type RiskSeriesPoint = {
   risk: number;
   activeHighCritical: number;
   solvedHighCritical: number;
-  totalAlerts: number;
+  newAlerts: number;
 };
 
 type RiskChartGranularity = 'hours' | 'days' | 'months' | 'years';
@@ -958,12 +958,12 @@ const PipelineRiskTimeSeries = ({
   granularity: RiskChartGranularity;
   setGranularity: (value: RiskChartGranularity) => void;
 }) => {
-  const last = points[points.length - 1] || { risk: 0, activeHighCritical: 0, solvedHighCritical: 0, totalAlerts: 0 };
+  const last = points[points.length - 1] || { risk: 0, activeHighCritical: 0, solvedHighCritical: 0, newAlerts: 0 };
   const series = [
     { key: 'risk' as const, label: 'Risk score', color: '#d93025', value: `${Math.round(last.risk)}/100` },
     { key: 'activeHighCritical' as const, label: 'Active high/critical', color: '#f97316', value: String(last.activeHighCritical) },
     { key: 'solvedHighCritical' as const, label: 'Solved high/critical', color: '#1e8e3e', value: String(last.solvedHighCritical) },
-    { key: 'totalAlerts' as const, label: 'Total alerts', color: '#004a99', value: String(last.totalAlerts) },
+    { key: 'newAlerts' as const, label: 'New alerts', color: '#004a99', value: String(last.newAlerts) },
   ];
 
   return (
@@ -1039,7 +1039,7 @@ const PipelineRiskTimeSeries = ({
             <Line yAxisId="risk" type="monotone" dataKey="risk" name="Risk score" stroke="#d93025" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
             <Line yAxisId="count" type="monotone" dataKey="activeHighCritical" name="Active high/critical" stroke="#f97316" strokeWidth={2.4} dot={false} />
             <Line yAxisId="count" type="monotone" dataKey="solvedHighCritical" name="Solved high/critical" stroke="#1e8e3e" strokeWidth={2.4} dot={false} />
-            <Line yAxisId="count" type="monotone" dataKey="totalAlerts" name="Total alerts" stroke="#004a99" strokeWidth={2.4} dot={false} />
+            <Line yAxisId="count" type="monotone" dataKey="newAlerts" name="New alerts" stroke="#004a99" strokeWidth={2.4} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

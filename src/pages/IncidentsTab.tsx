@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shield, AlertTriangle, AlertOctagon, Activity, FileText, Search, User, CheckCircle, XCircle, X,
   Clock, ChevronRight, Filter, Plus, UserPlus, Eye, ThumbsUp, ThumbsDown, BookOpen, Send, Zap,
-  RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2,
+  RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, Terminal,
 } from 'lucide-react';
 import {
   getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, createIncident,
@@ -15,6 +15,7 @@ import {
   type Incident, type IncidentPhase, type IncidentAction, type IncidentActionStatus, type Alert,
 } from '../types';
 import PageHeader from '../components/ui/PageHeader';
+import { parseMitreTags } from '../features/alerts/alertUtils';
 import { useToast } from '../lib/toast';
 import { useAuth } from '../contexts/AuthContext';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -167,6 +168,108 @@ function extractObservables(analysisJson: string | null, alerts?: Alert[]): { ty
 
 const OBSERVABLE_ICONS: Record<string, any> = {
   ip: Globe, domain: Globe, hostname: Laptop, username: User, hash: Hash, url: Link2, filename: FileText,
+};
+
+// Wazuh severity level → badge color (Wazuh rule levels are 0–15).
+const sevLevelColor = (sev: number): string =>
+  sev >= 12 ? 'bg-red-100 text-red-700 border-red-200'
+  : sev >= 7 ? 'bg-orange-100 text-orange-700 border-orange-200'
+  : sev >= 4 ? 'bg-amber-100 text-amber-700 border-amber-200'
+  :            'bg-green-100 text-green-700 border-green-200';
+
+// Wazuh's ingest fills missing fields with placeholders ("unknown", null, …).
+// Treat those as "no value" so we can drop the row instead of showing junk.
+const NO_VALUE = new Set(['unknown', 'n/a', 'na', 'none', 'null', '-', '—']);
+const cleanVal = (v?: string | null): string | null => {
+  if (v == null) return null;
+  const t = String(v).trim();
+  return !t || NO_VALUE.has(t.toLowerCase()) ? null : t;
+};
+
+// ── Wazuh alert card — the raw event rendered as a clean field/value table ────
+const WazuhAlertCard: React.FC<{ alert: Alert; index: number; total: number }> = ({ alert, index, total }) => {
+  const [showRaw, setShowRaw] = useState(false);
+  const mitre = parseMitreTags(alert);
+
+  // Pretty-print the raw Wazuh log when it's JSON; otherwise show it verbatim.
+  const rawLog = (() => {
+    if (!alert.full_log || !alert.full_log.trim()) return null;
+    try { return JSON.stringify(JSON.parse(alert.full_log), null, 2); } catch { return alert.full_log; }
+  })();
+
+  const ruleId = cleanVal(alert.rule_id);
+  const srcIp  = cleanVal(alert.source_ip);
+  const dstIp  = cleanVal(alert.dest_ip);
+  const host   = cleanVal(alert.hostname);
+  const usr    = cleanVal(alert.user);
+  const agent  = cleanVal(alert.agent_name);
+  const desc   = cleanVal(alert.description);
+  const status = cleanVal(alert.status);
+
+  // Only push rows that actually carry a value — empty/"unknown" fields are omitted.
+  const mono = (v: string) => <span className="font-mono text-[0.72rem] text-[var(--t6)]">{v}</span>;
+  const rows: Array<{ label: string; node: React.ReactNode }> = [];
+  rows.push({ label: 'Event ID', node: <code className="font-mono text-[0.7rem] text-[var(--p1)] font-bold">#{alert.id.slice(0, 12).toUpperCase()}</code> });
+  if (ruleId) rows.push({ label: 'Wazuh Rule', node: <span className="font-mono text-[0.72rem] text-[var(--t7)] font-bold">{ruleId}</span> });
+  rows.push({ label: 'Severity', node: <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase border ${sevLevelColor(alert.severity)}`}>level {alert.severity}</span> });
+  if (desc)   rows.push({ label: 'Description',     node: <span className="text-[var(--t6)]">{desc}</span> });
+  if (srcIp)  rows.push({ label: 'Source IP',       node: mono(srcIp) });
+  if (dstIp)  rows.push({ label: 'Destination IP',  node: mono(dstIp) });
+  if (host)   rows.push({ label: 'Host',            node: mono(host) });
+  if (usr)    rows.push({ label: 'User',            node: mono(usr) });
+  if (agent)  rows.push({ label: 'Wazuh Agent',     node: mono(agent) });
+  if (alert.timestamp) rows.push({ label: 'Detected', node: <span className="text-[var(--t6)]">{new Date(alert.timestamp).toLocaleString()}</span> });
+  if (status) rows.push({ label: 'Status', node: <span className="font-mono text-[0.66rem] uppercase tracking-wide text-[var(--t5)]">{status}</span> });
+  if (mitre.length) {
+    rows.push({
+      label: 'MITRE ATT&CK',
+      node: (
+        <div className="flex gap-1 flex-wrap">
+          {mitre.slice(0, 14).map((t, i) => (
+            <span key={i} className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[0.58rem] font-mono border border-violet-200">{t}</span>
+          ))}
+        </div>
+      ),
+    });
+  }
+
+  return (
+    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+        <Shield size={13} className="text-[var(--p1)]" />
+        <p className="text-[0.72rem] font-black text-[var(--t7)]">
+          Wazuh Alert{total > 1 ? ` — ${index + 1} of ${total}` : ''}
+        </p>
+        {ruleId && <code className="font-mono text-[0.58rem] text-[var(--t3)]">rule {ruleId}</code>}
+        {rawLog && (
+          <button onClick={() => setShowRaw(s => !s)}
+            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--p1)] bg-blue-50 hover:bg-blue-100 text-[0.62rem] font-bold text-[var(--p1)] transition-colors">
+            <Terminal size={12} />
+            {showRaw ? 'Hide' : 'View'} Raw JSON
+            <ChevronRight size={12} className={`transition-transform ${showRaw ? 'rotate-90' : ''}`} />
+          </button>
+        )}
+      </div>
+      <table className="w-full text-[0.72rem]">
+        <tbody className="divide-y divide-[var(--b1)]">
+          {rows.map((r, i) => (
+            <tr key={i} className="hover:bg-[var(--s1)] transition-colors">
+              <td className="px-4 py-2 w-40 align-top bg-[var(--s1)]/40">
+                <span className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">{r.label}</span>
+              </td>
+              <td className="px-4 py-2 align-top break-all">{r.node}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rawLog && showRaw && (
+        <div className="border-t border-[var(--b1)] p-3">
+          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Raw Wazuh Alert (JSON)</p>
+          <pre className="text-[0.7rem] bg-slate-950 text-emerald-400 p-5 rounded-xl overflow-x-auto font-mono leading-relaxed max-h-96 overflow-y-auto">{rawLog}</pre>
+        </div>
+      )}
+    </div>
+  );
 };
 
 const PhaseStepper = ({ current }: { current: string }) => {
@@ -350,14 +453,16 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   useEffect(() => { fetchList(); }, [fetchList]);
   useEffect(() => { listAnalysts().then(setAnalysts).catch(() => {}); }, []);
 
-  // Deep-link from the Response Actions page: open the requested incident once on mount.
+  // Deep-link from the Response Actions page or a clicked notification: open the
+  // requested incident. Runs on mount and whenever a new incident id is requested
+  // (so it also works when the Incidents tab is already open).
   useEffect(() => {
     if (initialIncidentId) {
       setActiveId(initialIncidentId);
       clearInitialIncidentId?.();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialIncidentId]);
 
   const fetchDetail = useCallback((id: string) => {
     setLoadingDetail(true);
@@ -602,19 +707,104 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     </div>
                   </div>
 
-                  {/* AI Summary */}
-                  {(ai.summary || ai.ticket_summary) && (
+                  {/* Wazuh alert(s) — raw event fields, the source of truth */}
+                  {(detail.alerts && detail.alerts.length > 0) ? (
+                    <div className="space-y-3">
+                      {detail.alerts.map((a, i) => (
+                        <WazuhAlertCard key={a.id} alert={a} index={i} total={detail.alerts!.length} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-6 text-center text-[var(--t3)] text-[0.72rem]">
+                      No Wazuh alerts linked to this incident.
+                    </div>
+                  )}
+
+                  {/* AI Conclusion — the detailed verdict, not just a one-liner */}
+                  {(ai.summary || ai.ticket_summary || detail.reason || ai.business_impact || ai.recommended_action) && (
                     <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
                       <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
                         <Activity size={13} className="text-violet-600" />
-                        <p className="text-[0.72rem] font-black text-[var(--t7)]">AI Analysis Summary</p>
+                        <p className="text-[0.72rem] font-black text-[var(--t7)]">AI Analysis &amp; Conclusion</p>
+                        {ai.confidence != null && (
+                          <span className="ml-auto text-[0.55rem] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full uppercase tracking-widest">
+                            {Math.round(ai.confidence * 100)}% confidence
+                          </span>
+                        )}
                       </div>
-                      <div className="p-4 text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">
-                        {ai.summary}
+                      <div className="p-4 space-y-4 text-[0.78rem] text-[var(--t6)] leading-relaxed">
+                        {/* Why it became an incident */}
+                        {detail.reason && (
+                          <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                            <p className="text-[0.55rem] font-black text-orange-800 uppercase tracking-widest mb-1">Why this was escalated</p>
+                            <p className="text-orange-900 text-[0.74rem] whitespace-pre-line">{detail.reason}</p>
+                          </div>
+                        )}
+
+                        {/* Full narrative conclusion */}
+                        {(ai.summary || ai.ticket_summary) && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Conclusion</p>
+                            <p className="whitespace-pre-line">{ai.summary || ai.ticket_summary}</p>
+                          </div>
+                        )}
+
+                        {/* Verdict chips */}
+                        {(ai.attack_category || ai.kill_chain_stage || ai.risk_score != null || ai.fp_confidence != null) && (
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            {[
+                              { label: 'Verdict / Category', value: ai.attack_category },
+                              { label: 'Kill Chain Stage',   value: ai.kill_chain_stage },
+                              { label: 'Risk Score',         value: ai.risk_score != null ? String(ai.risk_score) : null },
+                              { label: 'FP Likelihood',      value: ai.fp_confidence != null ? `${Math.round(ai.fp_confidence * 100)}%` : null },
+                            ].filter(x => x.value).map((item, idx) => (
+                              <div key={idx} className="bg-[var(--s1)] rounded-lg p-2.5 border border-[var(--b2)]">
+                                <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">{item.label}</p>
+                                <p className="font-mono text-[0.7rem] text-[var(--t7)] font-bold truncate">{item.value}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Recommended action */}
                         {ai.recommended_action && (
-                          <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                             <p className="text-[0.55rem] font-black text-blue-800 uppercase tracking-widest mb-0.5">Recommended Next Step</p>
-                            <p className="font-mono font-bold text-blue-900 text-[0.72rem]">{ai.recommended_action}</p>
+                            <p className="font-mono font-bold text-blue-900 text-[0.72rem] whitespace-pre-line">{ai.recommended_action}</p>
+                          </div>
+                        )}
+
+                        {/* Business impact */}
+                        {ai.business_impact && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Business Impact</p>
+                            <p className="whitespace-pre-line">{typeof ai.business_impact === 'string' ? ai.business_impact : JSON.stringify(ai.business_impact)}</p>
+                          </div>
+                        )}
+
+                        {/* Affected systems */}
+                        {ai.affected_systems && (Array.isArray(ai.affected_systems) ? ai.affected_systems.length > 0 : true) && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Affected Systems</p>
+                            {Array.isArray(ai.affected_systems) ? (
+                              <div className="flex gap-1.5 flex-wrap">
+                                {ai.affected_systems.map((s: any, i: number) => (
+                                  <span key={i} className="px-2 py-1 rounded-lg bg-[var(--s1)] text-[var(--t6)] text-[0.66rem] font-mono border border-[var(--b2)]">{String(s)}</span>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="whitespace-pre-line">{String(ai.affected_systems)}</p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Correlation narrative */}
+                        {ai.correlation_summary && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">
+                              Correlation{ai.correlation ? ` — ${ai.correlation}` : ''}
+                            </p>
+                            <p className="whitespace-pre-line">{ai.correlation_summary}</p>
                           </div>
                         )}
                       </div>
@@ -659,27 +849,6 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     </div>
                   )}
 
-                  {/* Linked Alerts */}
-                  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                    <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
-                      <AlertTriangle size={13} className="text-orange-500" />
-                      <p className="text-[0.72rem] font-black text-[var(--t7)]">Linked Alerts ({detail.alerts?.length || 0})</p>
-                    </div>
-                    {(detail.alerts || []).length === 0 ? (
-                      <div className="p-6 text-center text-[var(--t3)] text-[0.72rem]">No alerts linked to this incident.</div>
-                    ) : (
-                      <div className="divide-y divide-[var(--b1)]">
-                        {(detail.alerts || []).map(a => (
-                          <div key={a.id} className="px-4 py-3 flex items-center gap-3 hover:bg-[var(--s1)] transition-colors">
-                            <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black uppercase shrink-0 ${a.severity >= 12 ? 'bg-red-100 text-red-700 border border-red-200' : a.severity >= 7 ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>sev {a.severity}</span>
-                            <code className="font-mono text-[0.6rem] text-[var(--p1)] bg-[var(--s1)] px-1.5 py-0.5 rounded shrink-0">#{a.id.slice(0, 8).toUpperCase()}</code>
-                            <span className="text-[0.72rem] text-[var(--t6)] flex-1 truncate">{a.description}</span>
-                            <span className="text-[0.6rem] text-[var(--t3)] font-mono shrink-0">{a.source_ip || '—'}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
 

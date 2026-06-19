@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, createContext
 import { Shield, AlertTriangle, AlertOctagon, Activity, FileText, Settings, LogOut, Search, Bell, User, CheckCircle, XCircle, Clock, ChevronRight, BarChart3, Terminal, Filter, Plus, X, UserPlus, Eye, ThumbsUp, ThumbsDown, ChevronDown, BookOpen, Trash2, Send, Zap, Mail, ExternalLink, ToggleLeft, ToggleRight, RefreshCw, PanelLeftOpen, PanelLeftClose, Database, Copy, Key, Webhook, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, ChevronUp, Lock, Palette, MapPin, Edit3, Camera } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, type ReasoningRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, getLlmProviders, createLlmProvider, updateLlmProvider, deleteLlmProvider, testLlmProvider, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook, type LlmProvidersResponse, type LlmProviderRow } from '../services/aiService';
+import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentModel, getAlertRuns, saveAlertRun, getIntegrations, updateIntegration, testIntegration, getActionLogs, getReports, getReportSummary, getLocalLLMConfig, updateLocalLLMConfig, testLocalLLM, getLocalLLMModels, getAgentStats, getRiskSeries, getFpReduction, getFpOverTime, getNoisySources, getSuppressionRules, createSuppressionRule, updateSuppressionRule, deleteSuppressionRule, getAssets, upsertAsset, deleteAsset, getFpSuggestions, acceptFpSuggestion, fpScan, fpScanBatch, investigateAlert, escalateAlert, confirmFp, overrideFp, getFpArchive, getPipelineFunnel, getDetectionEffectiveness, getSourceDistribution, listApiKeys, createApiKey, revokeApiKey, updateApiKey, getInsights, getIocs, getPlaybooks, createPlaybook, updatePlaybook, deletePlaybook, listAnalysts, getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, createIncident, assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote, reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction, reorderIncidentActions, updateIncident, getResponseActions, type ResponseActionRow, type ReasoningRow, testLdapConnection, getIntegration, createUser, updateUser, adminResetPassword, getAuditLogs, getAuditLogActions, auditLogsExportUrl, getFailedLogins, estimatePasswordStrength, verifyPassword, getLlmProviders, createLlmProvider, updateLlmProvider, deleteLlmProvider, testLlmProvider, type AgentModelConfig, type AgentPhase, type AgentStat, type LocalModel, type Insight, type IocRow, type Playbook, type LlmProvidersResponse, type LlmProviderRow } from '../services/aiService';
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from '../types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from '../types';
 import PageHeader from '../components/ui/PageHeader';
@@ -75,6 +75,7 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
   const [incidentCounts, setIncidentCounts] = useState<DashboardIncidentCounts>(() => toDashboardIncidentCounts());
   const [refreshing, setRefreshing] = useState(false);
   const [riskGranularity, setRiskGranularity] = useState<RiskChartGranularity>('days');
+  const [riskSeries, setRiskSeries] = useState<RiskSeriesPoint[]>([]);
 
   const handleRefresh = () => {
     if (!onRefreshAlerts || refreshing) return;
@@ -95,6 +96,13 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
       .then(data => setIncidentCounts(toDashboardIncidentCounts(data?.counts)))
       .catch(() => setIncidentCounts(toDashboardIncidentCounts()));
   }, [token]);
+
+  // Risk & pipeline series comes from the server (aggregated over the full alerts
+  // table) so it reflects real history, not just the page of alerts loaded client-side.
+  useEffect(() => {
+    if (!token) return;
+    getRiskSeries(riskGranularity).then(setRiskSeries).catch(() => setRiskSeries([]));
+  }, [token, riskGranularity]);
 
   const analyzed = alerts.filter(a => !!a.ai_analysis || ['TRIAGED','FALSE_POSITIVE','ESCALATED','CLOSED','FP_CONFIRMED','FILTERED'].includes(a.status)).length;
   const topThreats = [...alerts]
@@ -133,98 +141,11 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     closedIncidents: incidentCounts.CLOSED,
   });
 
-  const riskSeriesConfig: Record<RiskChartGranularity, { count: number; label: (d: Date) => string; key: (d: Date) => string; shift: (d: Date, offset: number) => void; end: (d: Date) => void }> = {
-    hours: {
-      count: 24,
-      label: d => d.toLocaleTimeString([], { hour: '2-digit' }),
-      key: d => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${d.getHours()}`,
-      shift: (d, offset) => d.setHours(d.getHours() + offset),
-      end: d => d.setMinutes(59, 59, 999),
-    },
-    days: {
-      count: 30,
-      label: d => d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
-      key: d => d.toISOString().split('T')[0],
-      shift: (d, offset) => d.setDate(d.getDate() + offset),
-      end: d => d.setHours(23, 59, 59, 999),
-    },
-    months: {
-      count: 12,
-      label: d => d.toLocaleDateString([], { month: 'short', year: '2-digit' }),
-      key: d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
-      shift: (d, offset) => d.setMonth(d.getMonth() + offset),
-      end: d => {
-        d.setTime(new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).getTime());
-      },
-    },
-    years: {
-      count: 5,
-      label: d => String(d.getFullYear()),
-      key: d => String(d.getFullYear()),
-      shift: (d, offset) => d.setFullYear(d.getFullYear() + offset),
-      end: d => {
-        d.setMonth(11, 31);
-        d.setHours(23, 59, 59, 999);
-      },
-    },
-  };
-  const riskSeriesConf = riskSeriesConfig[riskGranularity];
-  const riskSeriesPointsBase: RiskSeriesPoint[] = Array.from({ length: riskSeriesConf.count }, (_, idx) => {
-    const d = new Date();
-    riskSeriesConf.shift(d, -(riskSeriesConf.count - 1 - idx));
-    riskSeriesConf.end(d);
-    const day = riskSeriesConf.key(d);
-    const label = riskSeriesConf.label(d);
-
-    const alertsSoFar = alerts.filter(alert => {
-      const ts = new Date(alert.timestamp.replace(' ', 'T')).getTime();
-      return Number.isFinite(ts) && ts <= d.getTime();
-    });
-    const activeSoFar = alertsSoFar.filter(alert => {
-      if (!resolvedStatuses.has(alert.status)) return true;
-      const closedRaw = (alert as any).closed_at || (alert as any).filtered_at || (alert as any).updated_at;
-      if (!closedRaw) return false;
-      const closedTs = new Date(String(closedRaw).replace(' ', 'T')).getTime();
-      return Number.isFinite(closedTs) && closedTs > d.getTime();
-    });
-    const activeCrit = activeSoFar.filter(a => a.severity >= 13).length;
-    const activeHi = activeSoFar.filter(a => a.severity >= 10 && a.severity < 13).length;
-    const activeMed = activeSoFar.filter(a => a.severity >= 7 && a.severity < 10).length;
-    const escalated = activeSoFar.filter(a => a.status === 'ESCALATED' || a.status === 'INCIDENT').length;
-    const riskPressure = activeSoFar.reduce((sum, alert) => {
-      const risk = getAlertRiskScore(alert);
-      if (risk == null) return sum;
-      if (risk >= 80) return sum + 2;
-      if (risk >= 60) return sum + 1;
-      return sum;
-    }, 0);
-    const solvedHighCritical = alerts.filter(alert => {
-      if (!resolvedStatuses.has(alert.status) || alert.severity < 10) return false;
-      const closedRaw = (alert as any).closed_at || (alert as any).filtered_at || (alert as any).updated_at || alert.timestamp;
-      const closedTs = new Date(String(closedRaw).replace(' ', 'T')).getTime();
-      return Number.isFinite(closedTs) && closedTs <= d.getTime();
-    }).length;
-
-    return {
-      day,
-      label,
-      risk: computeDashboardRiskScore({
-        activeCritical: activeCrit,
-        activeHigh: activeHi,
-        activeMedium: activeMed,
-        openIncidentCount: escalated,
-        aiRiskPressure: riskPressure,
-        containedIncidents: 0,
-        resolvedIncidents: 0,
-        closedIncidents: 0,
-      }),
-      activeHighCritical: activeCrit + activeHi,
-      solvedHighCritical,
-      totalAlerts: alertsSoFar.length,
-    };
-  });
-  const riskSeriesPoints: RiskSeriesPoint[] = riskSeriesPointsBase.map((point, idx) =>
-    idx === riskSeriesPointsBase.length - 1 ? { ...point, risk: globalRiskScore } : point
+  // Series is aggregated server-side over the full alerts table (see
+  // GET /api/stats/risk-series). We only overlay the live global risk on the
+  // most-recent bucket so "now" matches the GlobalRiskDonut exactly.
+  const riskSeriesPoints: RiskSeriesPoint[] = riskSeries.map((point, idx) =>
+    idx === riskSeries.length - 1 ? { ...point, risk: globalRiskScore } : point
   );
 
   return (

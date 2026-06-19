@@ -15,6 +15,7 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { rateLimit } from 'express-rate-limit';
 import nodemailer from 'nodemailer';
+import { buildIncidentEmail, buildTestEmail, type EmailContent } from './email-templates.js';
 import { createGlpiTicket }   from './agents/shared/glpi.js';
 import { sendTelegramMessage } from './agents/shared/telegram.js';
 import { findLdapUser, ldapAuthenticate, type LdapConfig } from './agents/shared/ldap.js';
@@ -175,7 +176,7 @@ async function getMicrosoftGraphAccessToken(cfg: Record<string, string>): Promis
   return data.access_token;
 }
 
-async function sendMicrosoftGraphMail(subject: string, body: string, cfg: Record<string, string>) {
+async function sendMicrosoftGraphMail(subject: string, content: EmailContent | { html?: string; text: string }, cfg: Record<string, string>) {
   const mailbox = extractEmail(cfg.ms_mailbox || cfg.smtp_user || cfg.from || process.env.SMTP_USER || '');
   const to = String(cfg.to || process.env.ALERT_EMAIL_TO || '').trim();
   const missing: string[] = [];
@@ -195,7 +196,9 @@ async function sendMicrosoftGraphMail(subject: string, body: string, cfg: Record
     body: JSON.stringify({
       message: {
         subject: `[BBS AISOC] ${subject}`,
-        body: { contentType: 'Text', content: body },
+        body: content.html
+          ? { contentType: 'HTML', content: content.html }
+          : { contentType: 'Text', content: content.text },
         toRecipients: to.split(',').map(addr => addr.trim()).filter(Boolean).map(address => ({ emailAddress: { address } })),
       },
       saveToSentItems: true,
@@ -208,11 +211,11 @@ async function sendMicrosoftGraphMail(subject: string, body: string, cfg: Record
   console.log(`[Email:MicrosoftGraph] Sent: ${subject} → ${to}`);
 }
 
-async function sendIncidentAlert(subject: string, body: string, emailCfg?: Record<string, string>) {
+async function sendIncidentAlert(subject: string, content: EmailContent | { html?: string; text: string }, emailCfg?: Record<string, string>) {
   const cfg = normalizeEmailIntegrationConfig(emailCfg || {});
 
   if (cfg.smtp_provider === 'office365' && cfg.auth_method === 'microsoft_graph') {
-    await sendMicrosoftGraphMail(subject, body, cfg);
+    await sendMicrosoftGraphMail(subject, content, cfg);
     return;
   }
 
@@ -257,7 +260,8 @@ async function sendIncidentAlert(subject: string, body: string, emailCfg?: Recor
     from: extractEmail(from) || user,
     to,
     subject: `[BBS AISOC] ${subject}`,
-    text:    body,
+    text:    content.text,
+    ...(content.html ? { html: content.html } : {}),
   });
   console.log(`[Email] Sent: ${subject} → ${to}`);
 }
@@ -653,10 +657,9 @@ async function dispatchActions(params: {
 
     if (intg.name === 'email') {
       try {
-        const subject = ticket.title || `Alert ${alertId}`;
-        const body    = ticket.report_body || `Alert ${alertId}: ${ticket.title}`;
-        await sendIncidentAlert(subject, body, cfg);
-        await logAction.run(alertId, 'email', 'send_email', 'success', subject.slice(0, 120), null);
+        const email = buildIncidentEmail({ alertId, ticket, sourceIp, destIp, agentName, mitreTags });
+        await sendIncidentAlert(email.subject, { html: email.html, text: email.text }, cfg);
+        await logAction.run(alertId, 'email', 'send_email', 'success', email.subject.slice(0, 120), null);
       } catch (err: any) {
         await logAction.run(alertId, 'email', 'send_email', 'failed', ticket.title?.slice(0, 120) || '', err?.message?.slice(0, 200));
       }
@@ -1229,6 +1232,75 @@ async function startServer() {
       result.push({ day, count: found?.count ?? 0 });
     }
     res.json(result);
+  });
+
+  // Risk & pipeline time series for the dashboard chart. Aggregates the FULL
+  // alerts table into evenly-spaced buckets (so it reflects real history, not
+  // just the page of alerts the client happens to have loaded). For each bucket
+  // we reconstruct the state "as of" the bucket end from current status + the
+  // resolution timestamp (COALESCE(closed_at, filtered_at)). Risk uses the same
+  // severity/escalation weighting as the dashboard's live score; the AI-pressure
+  // and incident-mitigation terms are omitted for history (the frontend overlays
+  // the live global risk on the latest bucket).
+  app.get('/api/stats/risk-series', authenticate, async (req: any, res) => {
+    const GRANULARITIES: Record<string, { unit: string; count: number; label: string }> = {
+      hours:  { unit: 'hour',  count: 24, label: 'HH24:00' },
+      days:   { unit: 'day',   count: 30, label: 'Mon DD' },
+      months: { unit: 'month', count: 12, label: 'Mon YY' },
+      years:  { unit: 'year',  count: 5,  label: 'YYYY' },
+    };
+    const cfg = GRANULARITIES[String(req.query.granularity || 'days')];
+    if (!cfg) return res.status(400).json({ error: 'Invalid granularity (hours|days|months|years)' });
+
+    // status set treated as "resolved / no longer active"
+    const RESOLVED = `('FALSE_POSITIVE','FP_CONFIRMED','FILTERED','CLOSED')`;
+    // active as of a bucket end `bend`: created before it, and either not resolved
+    // or resolved at/after it
+    const ACTIVE = `(a.status NOT IN ${RESOLVED} OR COALESCE(a.closed_at, a.filtered_at) >= b.bend)`;
+
+    try {
+      const rows = await db.prepare(`
+        WITH buckets AS (
+          SELECT gs AS bstart, gs + interval '1 ${cfg.unit}' AS bend
+          FROM generate_series(
+            date_trunc('${cfg.unit}', now()) - interval '${cfg.count - 1} ${cfg.unit}',
+            date_trunc('${cfg.unit}', now()),
+            interval '1 ${cfg.unit}'
+          ) gs
+        )
+        SELECT
+          to_char(b.bstart, 'YYYY-MM-DD"T"HH24:MI:SS')                                        AS day,
+          to_char(b.bstart, '${cfg.label}')                                                   AS label,
+          count(a.id) FILTER (WHERE a.timestamp >= b.bstart AND a.timestamp < b.bend)          AS new_alerts,
+          count(a.id) FILTER (WHERE a.severity >= 13 AND ${ACTIVE})                            AS active_crit,
+          count(a.id) FILTER (WHERE a.severity >= 10 AND a.severity < 13 AND ${ACTIVE})        AS active_high,
+          count(a.id) FILTER (WHERE a.severity >= 7  AND a.severity < 10 AND ${ACTIVE})        AS active_med,
+          count(a.id) FILTER (WHERE a.status IN ('ESCALATED','INCIDENT') AND ${ACTIVE})        AS escalated,
+          count(a.id) FILTER (WHERE a.severity >= 10 AND a.status IN ${RESOLVED}
+                                    AND COALESCE(a.closed_at, a.filtered_at) < b.bend)         AS solved_hc
+        FROM buckets b
+        LEFT JOIN alerts a ON a.timestamp < b.bend
+        GROUP BY b.bstart
+        ORDER BY b.bstart ASC
+      `).all() as any[];
+
+      const points = rows.map(r => {
+        const crit = Number(r.active_crit), high = Number(r.active_high), med = Number(r.active_med), esc = Number(r.escalated);
+        const raw = crit * 5 + high * 2 + med + esc * 2;
+        return {
+          day:                r.day,
+          label:              r.label,
+          risk:               Math.max(0, Math.min(100, Math.round(raw))),
+          activeHighCritical: crit + high,
+          solvedHighCritical: Number(r.solved_hc),
+          newAlerts:          Number(r.new_alerts),
+        };
+      });
+      res.json(points);
+    } catch (err: any) {
+      console.error('[risk-series]', err?.message);
+      res.status(500).json({ error: 'Failed to build risk series' });
+    }
   });
 
   // ── Incidents — see canonical routes lower in this file (Incident Management section)
@@ -3189,7 +3261,7 @@ async function startServer() {
     }
 
     io.emit('alert_updated', { id: args.alertId, status: 'ESCALATED' });
-    io.emit('incident_created', { id: incId });
+    io.emit('incident_created', { id: incId, title, severity: priority || 'HIGH', alertId: args.alertId });
     return { id: incId, glpi_ticket_id: glpiTicketId };
   }
 
@@ -3282,7 +3354,8 @@ async function startServer() {
     if (!inc) return res.status(404).json({ error: 'Incident not found' });
 
     inc.alerts = await db.prepare(`
-      SELECT a.id, a.timestamp, a.rule_id, a.description, a.severity, a.source_ip, a.dest_ip, a.agent_name, a.status, a.ai_analysis
+      SELECT a.id, a.timestamp, a.rule_id, a.description, a.severity, a.source_ip, a.dest_ip,
+             a."user", a.hostname, a.agent_name, a.status, a.ai_analysis, a.mitre_attack, a.full_log
       FROM alerts a
       INNER JOIN incident_alerts ia ON ia.alert_id = a.id
       WHERE ia.incident_id = ?
@@ -4117,7 +4190,8 @@ async function startServer() {
 
     if (name === 'email') {
       try {
-        await sendIncidentAlert('Test from BBS AISOC', 'This is a test notification from the BBS AISOC platform. If you received this, email integration is working correctly.', cfg);
+        const testEmail = buildTestEmail();
+        await sendIncidentAlert(testEmail.subject, { html: testEmail.html, text: testEmail.text }, cfg);
         await logAction.run(null, 'email', 'test', 'success', 'Test email', null);
         return res.json({ ok: true });
       } catch (err: any) {

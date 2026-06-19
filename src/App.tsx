@@ -14,7 +14,7 @@ import { ConfirmModal } from './components/ConfirmModal';
 import { severityChipColor, timeAgo } from './lib/format';
 import { IncidentsTab } from './pages/IncidentsTab';
 import { DarkModeProvider } from './contexts/DarkModeContext';
-import { NotificationContext, type NotificationItem, type NotificationContextValue } from './contexts/NotificationContext';
+import { NotificationContext, type NotificationItem, type NotificationContextValue, type NotificationLink } from './contexts/NotificationContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { DashboardTab } from './pages/DashboardTab';
@@ -78,17 +78,28 @@ export default function App() {
   const markAllRead = useCallback(() => setNotifications(prev => prev.map(n => n.read ? n : { ...n, read: true })), []);
   const clearAllNotifications = useCallback(() => setNotifications([]), []);
   const removeNotification = useCallback((id: string) => setNotifications(prev => prev.filter(n => n.id !== id)), []);
+  // Deep-link a clicked notification to its subject: incidents → Incidents tab,
+  // alerts → Investigation tab.
+  const navigateNotification = useCallback((link: NotificationLink) => {
+    if (link.type === 'incident') {
+      setSelectedIncidentId(link.id);
+      setActiveTab('incidents');
+    } else if (link.type === 'alert') {
+      setSelectedAlertId(link.id);
+      setActiveTab('investigation');
+    }
+  }, []);
   const notificationCtx = React.useMemo<NotificationContextValue>(
-    () => ({ notifications, unreadCount, markAllRead, clearAll: clearAllNotifications, remove: removeNotification }),
-    [notifications, unreadCount, markAllRead, clearAllNotifications, removeNotification],
+    () => ({ notifications, unreadCount, markAllRead, clearAll: clearAllNotifications, remove: removeNotification, navigate: navigateNotification }),
+    [notifications, unreadCount, markAllRead, clearAllNotifications, removeNotification, navigateNotification],
   );
 
-  const showToast = useCallback((msg: string, type: ToastItem['type'] = 'success') => {
+  const showToast = useCallback((msg: string, type: ToastItem['type'] = 'success', link?: NotificationLink) => {
     const id = Math.random().toString(36).slice(2);
-    setToasts(prev => [...prev, { id, message: msg, type }]);
+    setToasts(prev => [...prev, { id, message: msg, type, link }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
     // Also persist to notification history (cap 50, newest first)
-    setNotifications(prev => [{ id, message: msg, type, timestamp: Date.now(), read: false }, ...prev].slice(0, 50));
+    setNotifications(prev => [{ id, message: msg, type, timestamp: Date.now(), read: false, link }, ...prev].slice(0, 50));
   }, []);
 
   const selectedAlert = alerts.find((alert) => alert.id === selectedAlertId) || null;
@@ -144,7 +155,7 @@ export default function App() {
         });
       // Toast on arrival (auto path will show ANALYZING/TRIAGED/FP toasts via alert_updated)
       if (autoFilterRef.current) {
-        showToast(`📥 New alert ALERT-${String(data.id).slice(0, 8).toUpperCase()} — auto-investigating…`, 'info');
+        showToast(`📥 New alert ALERT-${String(data.id).slice(0, 8).toUpperCase()} — auto-investigating…`, 'info', { type: 'alert', id: String(data.id) });
       }
     });
 
@@ -155,19 +166,28 @@ export default function App() {
 
       if (next && prev && prev !== next) {
         const shortId = `ALERT-${String(data.id).slice(0, 8).toUpperCase()}`;
+        const alertLink: NotificationLink = { type: 'alert', id: String(data.id) };
         if (next === 'FALSE_POSITIVE' || next === 'FP_CONFIRMED' || next === 'FILTERED') {
-          showToast(`✅ ${shortId} — auto-archived as FP`, 'success');
+          showToast(`✅ ${shortId} — auto-archived as FP`, 'success', alertLink);
         } else if (next === 'TRIAGED' || next === 'ESCALATED' || next === 'INCIDENT') {
           let priority = '';
           try {
             const ai = typeof data.ai_analysis === 'string' ? JSON.parse(data.ai_analysis) : data.ai_analysis;
             priority = ai?.ticket?.priority || ai?.phaseData?.ticket?.priority || '';
           } catch {}
-          showToast(`🚨 ${shortId} — ${priority ? priority + ' incident' : 'incident detected'}`, 'error');
+          showToast(`🚨 ${shortId} — ${priority ? priority + ' incident' : 'incident detected'}`, 'error', alertLink);
         }
       }
 
       setAlerts(prevAlerts => Array.isArray(prevAlerts) ? prevAlerts.map(a => a.id === data.id ? { ...a, ...data } : a) : prevAlerts);
+    });
+
+    // A real incident row was created (manual escalation / POST /api/incidents).
+    // Notify with a deep-link straight into the Incidents tab.
+    newSocket.on('incident_created', (data) => {
+      const sev = String(data?.severity || '').toUpperCase();
+      const title = data?.title ? String(data.title) : `Incident ${String(data?.id || '').slice(0, 8).toUpperCase()}`;
+      showToast(`🚨 ${sev ? sev + ' incident' : 'New incident'}: ${title}`, 'error', data?.id ? { type: 'incident', id: String(data.id) } : undefined);
     });
 
     return () => {
@@ -216,7 +236,7 @@ export default function App() {
               setSelectedIncidentId={setSelectedIncidentId}
             />
           </AuthProvider>
-          <ToastContainer toasts={toasts} />
+          <ToastContainer toasts={toasts} onNavigate={navigateNotification} />
         </NotificationContext.Provider>
       </ToastContext.Provider>
     </DarkModeProvider>

@@ -120,7 +120,49 @@ or `troubleshoot.sh --fix`. Started in a plain terminal, logs print to that term
 
 ---
 
-## 6. Backups & recovery (PostgreSQL)
+## 6. Access the database (psql CLI)
+
+```bash
+# Load the connection vars from .env — psql then connects with no args and no password prompt.
+set -a; . <(grep -E '^PG(HOST|PORT|USER|PASSWORD|DATABASE)=' .env); set +a
+psql                      # interactive shell → prompt becomes  soc=>
+# long form (will prompt for the password):  psql -h 127.0.0.1 -U aisoc -d soc
+```
+
+Inside the shell — backslash meta-commands:
+
+```
+\dt          list tables             \d alerts    describe a table (columns, indexes)
+\dt+         tables with sizes        \du          list roles/users
+\x           toggle wide-row view     \timing      toggle query timing
+\h SELECT    SQL syntax help          \?           all meta-commands        \q   quit
+```
+
+Run queries (end each statement with `;`):
+
+```sql
+SELECT count(*) FROM alerts;
+SELECT id, username, role, email FROM users;          -- never select the password column
+SELECT status, count(*) FROM alerts GROUP BY status;
+```
+
+One-off queries without entering the shell:
+
+```bash
+psql -c  "SELECT count(*) FROM alerts;"      # run and exit
+psql -tAc "SELECT count(*) FROM alerts;"     # tuples-only, unaligned → just the value (for scripts)
+psql -f   query.sql                          # run a .sql file
+```
+
+> **Safety:** read-only `SELECT`s can't hurt anything. `aisoc` owns every table, so
+> `UPDATE`/`DELETE`/`TRUNCATE` have no guardrails — wrap risky edits in `BEGIN; … ROLLBACK;` to test first.
+>
+> **Web UI?** PostgreSQL itself has no web interface (CLI/`psql` only). Lightweight add-ons exist —
+> Adminer (single PHP file) or pgweb (Docker). Bind any DB web UI to `127.0.0.1` only.
+
+---
+
+## 7. Backups & recovery (PostgreSQL)
 
 ```bash
 # Connection vars live in .env (PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE).
@@ -138,7 +180,7 @@ Existing backups live in `~/aisoc-backups/` (outside the repo).
 
 ---
 
-## 7. Build & quality checks
+## 8. Build & quality checks
 
 ```bash
 npm run lint     # tsc --noEmit — typecheck the whole project (frontend + server/)
@@ -148,7 +190,7 @@ npm run clean    # rm -rf dist
 
 ---
 
-## 8. Rare / one-time
+## 9. Rare / one-time
 
 ```bash
 npm run db:migrate   # legacy SQLite → Postgres ETL. Already done — do NOT re-run
@@ -162,5 +204,6 @@ npm run db:migrate   # legacy SQLite → Postgres ETL. Already done — do NOT r
 - **Daily:** `npm run dev`
 - **Broken:** `bash troubleshoot.sh` → then `--fix`
 - **Logs:** `tail -f /tmp/server.log`
+- **Inspect data:** source the `.env` `PG*` vars, then `psql`
 - **Dependency down:** `sudo systemctl restart postgresql` / `ollama`
 - **Locked out:** `bash troubleshoot.sh --reset-pass` (then change the password)

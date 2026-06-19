@@ -205,6 +205,14 @@ export async function getAgentStats(): Promise<AgentStat[]> {
   return res.json();
 }
 
+export async function getRiskSeries(granularity: 'hours' | 'days' | 'months' | 'years'): Promise<Array<{
+  day: string; label: string; risk: number; activeHighCritical: number; solvedHighCritical: number; newAlerts: number;
+}>> {
+  const res = await fetch(`/api/stats/risk-series?granularity=${granularity}`, { headers: authHeaders() });
+  if (!res.ok) return [];
+  return res.json();
+}
+
 // ─── LLM provider registry ───────────────────────────────────────────────────
 export async function getLlmProviders(): Promise<LlmProvidersResponse> {
   const res = await fetch('/api/admin/llm-providers', { headers: authHeaders() });

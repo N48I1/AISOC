@@ -172,6 +172,31 @@ sudo ufw allow 3001/tcp
 
 ---
 
+### "Risk & Pipeline Over Time chart looks flat / only covers the last ~24h"
+
+**How the chart is fed (current design).** The *Risk & Pipeline Over Time* widget is populated by the server endpoint **`GET /api/stats/risk-series?granularity=hours|days|months|years`** (`server/server.ts`). It aggregates the **full `alerts` table** into evenly-spaced buckets with a single `generate_series` + `FILTER` query, reconstructing the state "as of" each bucket end from current status + the resolution timestamp `COALESCE(closed_at, filtered_at)`. `DashboardTab.tsx` fetches it on mount and whenever the granularity selector changes, and overlays the live global-risk score on the most-recent bucket so "now" matches the Global Risk donut.
+
+> **History note.** This chart used to be computed **client-side** from the in-memory `alerts` array, which only ever holds the **100 most-recent alerts** (`/api/alerts?pageSize=100`). On a busy sensor (~200–400 alerts/day) those 100 rows span only a few hours, so every bucket older than "today" was empty and plotted as risk 0 — making the line look like it only covered the last 24h. The server-side endpoint fixed this. The old `Total alerts` series (a cumulative count capped at the 100-row load limit) was replaced with **`New alerts`** (count per bucket).
+
+**If the line is genuinely flat at 100 for recent buckets** — that's not a bug. Risk = `activeCritical*5 + activeHigh*2 + activeMedium + escalated*2`, clamped to 100. A backlog of unresolved high/critical alerts (status `ESCALATED`/`TRIAGED`, never closed) drives the raw score well past 100. Check the active backlog:
+```bash
+psql "$DATABASE_URL" -tAc \
+  "SELECT status, count(*) FROM alerts
+    WHERE status NOT IN ('FALSE_POSITIVE','FP_CONFIRMED','FILTERED','CLOSED')
+      AND severity >= 10 GROUP BY status ORDER BY 2 DESC;"
+```
+The score drops as those alerts are closed; it is not rescaled here.
+
+**If older buckets are unexpectedly empty**, confirm the raw data and the endpoint:
+```bash
+psql "$DATABASE_URL" -tAc "SELECT count(*), min(timestamp), max(timestamp) FROM alerts;"
+curl -sk "https://localhost:3001/api/stats/risk-series?granularity=days" \
+  -H "Authorization: Bearer <jwt>" | head
+```
+Note: historical "active as of day" uses each alert's *current* status (there is no per-alert status history), so reclassified alerts are reflected at their current state across the whole window.
+
+---
+
 ## Useful One-liners
 
 ```bash

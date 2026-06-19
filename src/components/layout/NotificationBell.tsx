@@ -5,7 +5,7 @@ import { useNotifications } from '../../contexts/NotificationContext';
 import { type ToastItem } from '../../lib/toast';
 
 const NotificationBell: React.FC = () => {
-  const { notifications, unreadCount, markAllRead, clearAll, remove } = useNotifications();
+  const { notifications, unreadCount, markAllRead, clearAll, remove, navigate } = useNotifications();
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -77,10 +77,21 @@ const NotificationBell: React.FC = () => {
                 <p className="text-[0.75rem] text-[var(--t3)]">Toasts you see in the app appear here.</p>
               </div>
             ) : (
-              notifications.map(n => (
+              notifications.map(n => {
+                const clickable = !!n.link;
+                const handleOpen = () => {
+                  if (!n.link) return;
+                  navigate(n.link);
+                  setOpen(false);
+                };
+                return (
                 <div
                   key={n.id}
-                  className={`group px-4 py-3 border-b border-[var(--b1)] last:border-b-0 hover:bg-[var(--s1)] transition-colors ${!n.read ? 'bg-[var(--s1)]/50' : ''}`}
+                  onClick={clickable ? handleOpen : undefined}
+                  role={clickable ? 'button' : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpen(); } } : undefined}
+                  className={`group px-4 py-3 border-b border-[var(--b1)] last:border-b-0 hover:bg-[var(--s1)] transition-colors ${!n.read ? 'bg-[var(--s1)]/50' : ''} ${clickable ? 'cursor-pointer' : ''}`}
                 >
                   <div className="flex items-start gap-3">
                     <div className={`mt-0.5 w-6 h-6 rounded-full border flex items-center justify-center text-[0.7rem] font-black shrink-0 ${colorFor(n.type)}`}>
@@ -88,10 +99,18 @@ const NotificationBell: React.FC = () => {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-[0.78rem] text-[var(--t1)] leading-snug break-words">{n.message}</p>
-                      <p className="text-[0.6rem] text-[var(--t3)] mt-1">{formatRelative(n.timestamp)}</p>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <p className="text-[0.6rem] text-[var(--t3)]">{formatRelative(n.timestamp)}</p>
+                        {clickable && (
+                          <span className="inline-flex items-center gap-0.5 text-[0.6rem] font-bold text-[var(--p1)] group-hover:underline">
+                            · Open {n.link!.type === 'incident' ? 'incident' : 'alert'}
+                            <ChevronRight size={11} />
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button
-                      onClick={() => remove(n.id)}
+                      onClick={(e) => { e.stopPropagation(); remove(n.id); }}
                       className="opacity-0 group-hover:opacity-100 text-[var(--t3)] hover:text-red-600 transition-opacity"
                       aria-label="Dismiss"
                     >
@@ -99,7 +118,8 @@ const NotificationBell: React.FC = () => {
                     </button>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </motion.div>
