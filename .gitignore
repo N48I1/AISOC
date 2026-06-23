@@ -18,3 +18,7 @@ coverage/
 
 # TLS certificates (contain private keys — never commit)
 certs/
+
+# Vim swap files
+*.swp
+*.swo

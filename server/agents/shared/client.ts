@@ -93,7 +93,9 @@ export function getLocalModelClient(modelName: string, baseUrl?: string): ChatOp
       model:       modelName,
       temperature: 0.1,
       maxRetries:  0,
-      timeout:     90000,
+      // CPU-bound Ollama is slow, and the parallel investigator agents queue
+      // behind each other on a single instance — give them room to finish.
+      timeout:     240000,
       modelKwargs: { response_format: { type: "json_object" } },
       configuration: { apiKey: "ollama", baseURL: `${url}/v1` },
     }));

@@ -116,15 +116,46 @@ export async function orchestrateAnalysis(
     onUpdate(data);
     return data;
   } catch (err: any) {
+    // Surface the failure instead of swallowing it: reset the optimistic status,
+    // then re-throw so the caller can show the reason and offer a retry.
     console.error("[orchestrateAnalysis]", err?.message);
     onUpdate({ status: "NEW" });
-    return null;
+    throw err instanceof Error ? err : new Error(err?.message || "Orchestration failed");
   }
+}
+
+export interface AiHealthProvider {
+  id: number;
+  name: string;
+  kind: string;
+  enabled: boolean;
+  last_test_ok: number | null;    // 1 ok | 0 failed | null untested
+  last_test_error: string | null;
+  last_test_at: string | null;
+}
+export interface AiHealth {
+  providers: AiHealthProvider[];
+  local: { enabled: boolean; model: string };
+  anyOk: boolean;
+  anyConfigured: boolean;
+  down: boolean;
+}
+
+export async function getAiHealth(): Promise<AiHealth> {
+  const res = await fetch(`/api/ai/health`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`Health check failed (${res.status})`);
+  return res.json();
 }
 
 export async function getAlertRuns(alertId: string): Promise<any[]> {
   const res = await fetch(`/api/alerts/${alertId}/runs`, { headers: authHeaders() });
   if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getAlert(alertId: string): Promise<any> {
+  const res = await fetch(`/api/alerts/${alertId}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`Failed to load alert (${res.status})`);
   return res.json();
 }
 

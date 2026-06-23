@@ -2,6 +2,7 @@ import { z } from "zod";
 import { callStructuredLLM, type RunContext } from "../shared/llm.js";
 import { DEFAULT_AGENT_MODELS } from "../config.js";
 import { ReasoningSchema, REASONING_PROMPT_INSTRUCTION, REASONING_JSON_EXAMPLE } from "../memory/reasoning.js";
+import { buildAlertContext } from "../alert-context.js";
 
 const KnowledgeSchema = z.object({
   remediation_steps:        z.string(),
@@ -15,16 +16,17 @@ const KnowledgeSchema = z.object({
 export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT_MODELS.knowledge, ctx?: RunContext) {
   const logs: string[] = [];
   logs.push(`[Knowledge] Fetching playbooks for tactic: ${state.analysis?.attack_category || "Unknown"}`);
+  const alertContext = buildAlertContext(state.alert);
 
   const knowledge = await callStructuredLLM({
     phase: "knowledge",
     model,
     schema: KnowledgeSchema,
-    systemPrompt: `You are a Security Playbook Retrieval Agent. Provide numbered remediation steps tailored to the alert. Respond ONLY with valid JSON:
+    systemPrompt: `You are a Security Remediation Agent. Produce SPECIFIC, actionable remediation steps tailored to THIS exact alert — not a generic playbook. Read the RAW EVENT LOG and use the concrete details in it: name the exact service/application, file paths, software versions, the precise fix (e.g. "install .NET 8.0.0 ASP.NET Core Runtime x64"), any download URL present in the event, config changes, and the service/host to act on. If the event is an operational/configuration failure (missing runtime, expired cert, disk full), give the operational fix — do not force a security-incident framing. Respond ONLY with valid JSON:
 
 {
-  "remediation_steps": "1. <first step>\\n2. <second step>\\n3. <third step>\\n4. <fourth step>\\n5. <fifth step>",
-  "playbook_reference": "<e.g. NIST IR-2 or internal PB-WEB-001>",
+  "remediation_steps": "1. <specific step naming exact artifact>\\n2. <step, include exact versions / paths / URLs from the event>\\n3. <step>\\n4. <verification step>",
+  "playbook_reference": "<e.g. NIST IR-2, internal PB-XXX, or 'Operational: .NET runtime remediation'>",
   "containment_priority": "<IMMEDIATE|HIGH|MEDIUM|LOW>",
   "estimated_effort_minutes": 15,
   "confidence": 0.85,
@@ -32,8 +34,8 @@ export async function ragKnowledgeNode(state: any, model: string = DEFAULT_AGENT
 }
 
 ${REASONING_PROMPT_INSTRUCTION}
-For the knowledge agent: evidence_for/against should reference the attack category and concrete elements of the alert that drove playbook selection. rejected_hypotheses should list other playbooks you considered (e.g. "PB-WEB-001 — rejected, no HTTP/web vector observed").`,
-    userPrompt: `Alert: ${state.alert?.description || ""}\nLog: ${(state.alert?.full_log || "").slice(0, 500)}\nAnalysis: ${state.analysis?.analysis_summary || ""}`,
+For the knowledge agent: evidence_for/against should reference concrete elements of the event that drove the remediation. rejected_hypotheses should list other approaches you considered.`,
+    userPrompt: `Alert: ${state.alert?.description || ""}\nAnalysis: ${state.analysis?.analysis_summary || ""}\n\nNORMALIZED RAW EVENT CONTEXT (extract exact services, paths, versions, URLs from here):\n${alertContext}`,
     fallback: {
       remediation_steps: "Playbook retrieval unavailable — LLM did not respond.",
       playbook_reference: "N/A",

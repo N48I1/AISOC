@@ -10,6 +10,10 @@ import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRi
 import { ToastContext, ToastContainer, useToast, type ToastItem } from '../../lib/toast';
 import { AuthProvider, useAuth } from '../../contexts/AuthContext';
 import { ConfirmModal } from '../../components/ConfirmModal';
+import { AgentRunStatus } from '../../components/AgentRunStatus';
+import { ProviderHealthBadge } from '../../components/ProviderHealthBadge';
+import { CopyButton } from '../../components/CopyButton';
+import { getAlert } from '../../services/aiService';
 import { severityChipColor, timeAgo } from '../../lib/format';
 
 const MANDATORY_PHASES    = ['analysis'];
@@ -1547,7 +1551,7 @@ const InvestigationGrid = ({
 };
 
 const AlertDetail = ({
-  alert, onClose, onAction, returnTab, setActiveTab,
+  alert: alertProp, onClose, onAction, returnTab, setActiveTab,
   allAlerts = [],
   onAlertSelect,
 }: {
@@ -1560,6 +1564,13 @@ const AlertDetail = ({
   onAlertSelect?: (a: Alert) => void;
 }) => {
   const showToast = useToast();
+  // Manual "Refresh" re-pulls the persisted alert row (status, ai_analysis,
+  // last_error) into this local override, without a page reload. Cleared when
+  // the selected alert changes so socket-driven prop updates win.
+  const [liveAlert, setLiveAlert] = useState<Alert | null>(null);
+  useEffect(() => { setLiveAlert(null); }, [alertProp.id]);
+  const alert = liveAlert ?? alertProp;
+  const [refreshing, setRefreshing] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [runningPhase, setRunningPhase] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1818,7 +1829,9 @@ const AlertDetail = ({
       });
     } catch (err: any) {
       console.error('[Agent run failed]', err);
-      setRunError(err?.message || `Failed to run the ${phase} agent.`);
+      const msg = err?.message || `Failed to run the ${phase} agent.`;
+      setRunError(msg);
+      showToast(`${phase} agent failed: ${msg}`, 'error');
     } finally {
       setRunningPhase(null);
     }
@@ -1853,7 +1866,9 @@ const AlertDetail = ({
         completedAny = true;
       } catch (err: any) {
         console.error(`[Agent ${agent.id} failed]`, err);
-        setRunError(err?.message || `Failed to run the ${agent.label} agent.`);
+        const msg = err?.message || `Failed to run the ${agent.label} agent.`;
+        setRunError(msg);
+        showToast(`${agent.label} agent failed: ${msg}`, 'error');
         break;
       }
     }
@@ -1890,6 +1905,7 @@ const AlertDetail = ({
     if (isAnalyzing || isRerunning) return;
     setIsRerunning(true);
     setRunError(null);
+    setLiveAlert(null);
     try {
       const result = await orchestrateAnalysis(alert, [], (update) => onAction(alert.id, update));
       // Rebuild per-phase history from the orchestration result so cards light up immediately
@@ -1902,10 +1918,30 @@ const AlertDetail = ({
       }
       const updated = await getAlertRuns(alert.id);
       setRuns(updated);
+      showToast('Agents finished — analysis updated', 'success');
     } catch (err: any) {
-      setRunError(err?.message || 'Rerun failed.');
+      const msg = err?.message || 'Rerun failed.';
+      setRunError(msg);
+      showToast(`Agent run failed: ${msg}`, 'error');
     } finally {
       setIsRerunning(false);
+    }
+  };
+
+  // Re-pull the persisted alert (status, ai_analysis, last_error) + run history
+  // without re-running agents or reloading the page.
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const [fresh, updatedRuns] = await Promise.all([getAlert(alert.id), getAlertRuns(alert.id)]);
+      setLiveAlert(fresh);
+      setRuns(updatedRuns);
+      setRunError(null);
+    } catch (err: any) {
+      showToast(err?.message || 'Refresh failed', 'error');
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -2031,6 +2067,15 @@ const AlertDetail = ({
             )}
             <button
               type="button"
+              onClick={handleRefresh}
+              disabled={refreshing || isAnalyzing}
+              title="Re-pull this alert's latest state without re-running agents"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--s1)] hover:bg-[var(--s2)] text-[var(--t6)] text-[0.72rem] font-bold transition-colors border border-[var(--b2)] disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh
+            </button>
+            <button
+              type="button"
               onClick={handleRerunFresh}
               disabled={isAnalyzing}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[var(--p1)] hover:bg-[var(--pd)] text-white text-[0.72rem] font-bold transition-colors disabled:opacity-60 shadow-sm"
@@ -2044,35 +2089,24 @@ const AlertDetail = ({
           </div>
         </div>
 
-        {runError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[0.75rem] text-red-700">
-            {runError}
-          </div>
-        )}
+        <div className="flex justify-end">
+          <ProviderHealthBadge />
+        </div>
 
-        {(() => {
-          const fallbackPhases: string[] = Array.isArray(aiData?.fallback_phases) ? aiData.fallback_phases : [];
-          const agentFallbacks = fallbackPhases.filter(p => AGENT_PHASES_UI.some(a => a.phase === p));
-          const quotaExhausted = aiData?.quota_exhausted === true;
-          const allFallback = aiData && agentFallbacks.length >= AGENT_PHASES_UI.length;
-          if (!quotaExhausted && !allFallback) return null;
-          return (
-            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3">
-              <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
-              <div className="flex-1 text-[0.78rem] text-red-800 leading-relaxed">
-                <p className="font-black uppercase tracking-wider text-[0.7rem] mb-0.5">
-                  {quotaExhausted ? 'LLM Daily Quota Exhausted' : 'All agents returned fallback data'}
-                </p>
-                <p>
-                  {quotaExhausted
-                    ? 'Real analysis could not run — OpenRouter\'s free-tier daily limit (50 req/day) is used up on both API keys. '
-                    : `${agentFallbacks.length}/${AGENT_PHASES_UI.length} agents failed — the data shown below is placeholder fallback, not a real assessment. `}
-                  Add credits at <span className="font-mono font-bold">openrouter.ai</span> or wait until midnight UTC for the quota to reset. Then click <span className="font-bold">Run Agents</span> again.
-                </p>
-              </div>
-            </div>
-          );
-        })()}
+        <AgentRunStatus
+          loading={isRerunning}
+          error={runError}
+          lastError={alert.last_error}
+          lastErrorAt={alert.last_error_at}
+          quotaExhausted={aiData?.quota_exhausted === true}
+          fallbackPhases={Array.isArray(aiData?.fallback_phases) ? aiData.fallback_phases : []}
+          phaseErrors={aiData?.phase_errors || {}}
+          busy={isRerunning || refreshing}
+          onRetry={handleRerunFresh}
+          onRefresh={handleRefresh}
+          onDismiss={() => setRunError(null)}
+          retryLabel="Retry all agents"
+        />
 
         {/* Run History Panel */}
         {showHistory && (
@@ -2324,6 +2358,7 @@ const AlertDetail = ({
               const isViewingLatest = currentIdx === runCount - 1;
               const isExpanded = expandedAgent === agent.id;
               const isFallback = Array.isArray(aiData?.fallback_phases) && aiData.fallback_phases.includes(agent.id);
+              const phaseError: string | undefined = aiData?.phase_errors?.[agent.id];
               const isSkipped = !isFP && aiData?.phaseData && (agent.id in aiData.phaseData) && aiData.phaseData[agent.id] === null;
               const memHits = (agent.id === 'recall' || agent.id === 'ioc_check')
                 ? (displayResult?.hits?.length ?? aiData?.phaseData?.[agent.id]?.hits?.length ?? null)
@@ -2423,6 +2458,22 @@ const AlertDetail = ({
                           </button>
                         </div>
                       </div>
+                      {(isFallback || phaseError) && !isFP && !isSkipped && (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-2.5 py-2">
+                          <p className="text-[0.6rem] font-black uppercase tracking-wider text-amber-800 mb-0.5">Fallback — agent did not produce a real result</p>
+                          {phaseError && <p className="text-[0.64rem] text-amber-800 break-words leading-relaxed">{phaseError}</p>}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleAgentRun(agent.id); }}
+                            disabled={isAnalyzing || isRunningThis}
+                            className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[0.64rem] font-bold transition-colors disabled:opacity-60"
+                          >
+                            {isRunningThis
+                              ? <><div className="w-2.5 h-2.5 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Re-running…</>
+                              : <><RefreshCw size={11} /> Re-run this agent</>}
+                          </button>
+                        </div>
+                      )}
                       {displayResult ? (
                         <pre className="bg-slate-950 text-emerald-300 rounded p-3 text-[0.65rem] leading-relaxed font-mono overflow-x-auto max-h-64 overflow-y-auto">{JSON.stringify(displayResult, null, 2)}</pre>
                       ) : (
@@ -2520,9 +2571,12 @@ const AlertDetail = ({
           </button>
           {!collapsedSections.rawlog && (
             <div className="px-4 pb-4">
-              <pre className="text-[0.68rem] bg-slate-950 text-emerald-400 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed">
-                {alert.full_log || 'No log data.'}
-              </pre>
+              <div className="relative">
+                {alert.full_log && <CopyButton text={alert.full_log} className="absolute top-2 right-2 z-10" />}
+                <pre className="text-[0.68rem] bg-slate-950 text-emerald-400 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed">
+                  {alert.full_log || 'No log data.'}
+                </pre>
+              </div>
             </div>
           )}
         </div>

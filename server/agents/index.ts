@@ -101,6 +101,7 @@ async function runLinearLegacy(
     agentLogs: ctx.agentLogs,
     quota_exhausted: ctx.quotaExhausted,
     fallback_phases: ctx.fallbackPhases,
+    phase_errors:    ctx.phaseErrors,
     trace_id: ctx.traceId,
     phaseData: { analysis, intel, knowledge, correlation, ticket, response: responsePlan, validation },
   };

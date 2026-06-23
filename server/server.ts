@@ -2109,10 +2109,10 @@ async function startServer() {
       io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
       const update = await runOrchestration(alert, recentAlerts, { modelAssignments: await getAgentModelAssignments() });
       if (update.status === 'FALSE_POSITIVE' && update.fp_method) {
-        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=now() WHERE id=?`)
+        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=now(), last_error=NULL, last_error_at=NULL WHERE id=?`)
           .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, update.fp_method, update.fp_reason, update.fp_confidence ?? 0, alertId);
       } else {
-        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=? WHERE id=?`)
+        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, last_error=NULL, last_error_at=NULL WHERE id=?`)
           .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
       }
       await db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
@@ -2125,8 +2125,9 @@ async function startServer() {
       io.emit('alert_updated', { id: alertId, ...update });
     } catch (err: any) {
       console.error('[Auto-Orchestrate]', err?.message);
-      await db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alertId);
-      io.emit('alert_updated', { id: alertId, status: 'NEW' });
+      await db.prepare('UPDATE alerts SET status = ?, last_error = ?, last_error_at = now() WHERE id = ?')
+        .run('NEW', (err?.message || 'Orchestration failed').slice(0, 500), alertId);
+      io.emit('alert_updated', { id: alertId, status: 'NEW', last_error: (err?.message || 'Orchestration failed').slice(0, 500) });
     }
   }
 
@@ -2312,8 +2313,10 @@ async function startServer() {
       agents:          AGENT_PHASES.map(phase => ({ phase, ...AGENT_METADATA[phase] })),
       defaults:        DEFAULT_AGENT_MODELS,
       assignments,
-      availableModels: OPENROUTER_FREE_MODELS,
-      modelLabels:     OPENROUTER_MODEL_LABELS,
+      // Source the OpenRouter dropdown from the editable catalog (includes paid
+      // models like DeepSeek/Kimi), not just the legacy free-tier list.
+      availableModels: PROVIDER_MODEL_CATALOG.openrouter.map(m => m.id),
+      modelLabels:     Object.fromEntries(PROVIDER_MODEL_CATALOG.openrouter.map(m => [m.id, m.label])),
       providerGroups:  externalGroups,
       localConfig:     { url: localUrl, enabled: localEnabled },
       localModels,
@@ -2333,7 +2336,7 @@ async function startServer() {
     //  2. <providerKind>::<model>       (anthropic, openai, gemini, custom, openrouter)
     //  3. bare OpenRouter free-tier id  (legacy compat)
     const isLocal      = model.startsWith('local::');
-    const isOpenRouter = OPENROUTER_FREE_MODELS.includes(model as any);
+    const isOpenRouter = OPENROUTER_FREE_MODELS.includes(model as any) || PROVIDER_MODEL_CATALOG.openrouter.some(m => m.id === model);
     const idx = model.indexOf('::');
     const validKinds = ['openrouter','openai','anthropic','gemini','custom'];
     const isPrefixed = idx > 0 && (validKinds.includes(model.slice(0, idx)) || /^\d+$/.test(model.slice(0, idx)));
@@ -2353,6 +2356,37 @@ async function startServer() {
     const enabled        = (await db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
     const fallback_model = (await db.prepare("SELECT value FROM local_llm_config WHERE key='fallback_model'").get() as any)?.value || '';
     res.json({ url, enabled, fallback_model });
+  });
+
+  // Operator-readable LLM health: lets any authenticated user see whether the
+  // AI layer is reachable (provider up/down) before/after running agents. Reads
+  // the cached registry + the last admin test result — no live LLM calls.
+  app.get('/api/ai/health', authenticate, async (_req, res) => {
+    const rows = await listProviders(db, { includeDisabled: true });
+    const providers = rows.map(p => ({
+      id:              p.id,
+      name:            p.name,
+      kind:            p.kind,
+      enabled:         p.enabled === 1,
+      last_test_ok:    p.last_test_ok,      // 1 | 0 | null (untested)
+      last_test_error: p.last_test_error,
+      last_test_at:    p.last_test_at,
+    }));
+    const enabledProviders = providers.filter(p => p.enabled);
+    const localEnabled = (await db.prepare("SELECT value FROM local_llm_config WHERE key='enabled'").get() as any)?.value === '1';
+    const localModel   = (await db.prepare("SELECT value FROM local_llm_config WHERE key='fallback_model'").get() as any)?.value || '';
+    // Healthy if a provider tested OK (or local fallback is on). Down only when
+    // every enabled provider was last tested and failed. Untested → unknown.
+    const anyOk        = enabledProviders.some(p => p.last_test_ok === 1) || (localEnabled && !!localModel);
+    const anyConfigured = enabledProviders.length > 0 || (localEnabled && !!localModel);
+    const allTestedFailing = enabledProviders.length > 0 && enabledProviders.every(p => p.last_test_ok === 0);
+    res.json({
+      providers,
+      local: { enabled: localEnabled, model: localModel },
+      anyOk,
+      anyConfigured,
+      down: allTestedFailing && !anyOk,
+    });
   });
 
   app.patch('/api/local-llm/config', authenticate, requireAdmin, requireStepUp, async (req: any, res) => {
@@ -2939,7 +2973,7 @@ async function startServer() {
       const result = await runFpScan(alert, recentAlerts, { modelAssignments: await getAgentModelAssignments() });
 
       // Update alert with FP scan results
-      await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, fp_method=?, fp_confidence=?, fp_reason=?, fp_details=?, triage_data=?, filtered_at=now() WHERE id=?`)
+      await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, fp_method=?, fp_confidence=?, fp_reason=?, fp_details=?, triage_data=?, filtered_at=now(), last_error=NULL, last_error_at=NULL WHERE id=?`)
         .run(result.status, result.ai_analysis,
           result.fp_method, result.fp_confidence, result.fp_reason,
           result.fp_details ? JSON.stringify(result.fp_details) : null,
@@ -2951,9 +2985,10 @@ async function startServer() {
       res.json({ id: alertId, ...result });
     } catch (err: any) {
       console.error('[FP Scan Error]', err?.message);
-      await db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alertId);
-      io.emit('alert_updated', { id: alertId, status: 'NEW' });
-      res.status(500).json({ error: err?.message || 'FP scan failed' });
+      const reason = (err?.message || 'FP scan failed').slice(0, 500);
+      await db.prepare('UPDATE alerts SET status = ?, last_error = ?, last_error_at = now() WHERE id = ?').run('NEW', reason, alertId);
+      io.emit('alert_updated', { id: alertId, status: 'NEW', last_error: reason });
+      res.status(500).json({ error: reason });
     }
   });
 
@@ -3048,10 +3083,10 @@ async function startServer() {
       }
 
       if (update.status === 'FALSE_POSITIVE' && update.fp_method) {
-        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=now(), investigated_at=now() WHERE id=?`)
+        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=now(), investigated_at=now(), last_error=NULL, last_error_at=NULL WHERE id=?`)
           .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, update.fp_method, update.fp_reason, update.fp_confidence ?? 0, alertId);
       } else {
-        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, investigated_at=now() WHERE id=?`)
+        await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, investigated_at=now(), last_error=NULL, last_error_at=NULL WHERE id=?`)
           .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
       }
 
@@ -3070,9 +3105,10 @@ async function startServer() {
       res.json({ id: alertId, ...update });
     } catch (err: any) {
       console.error('[Investigation Error]', err?.message);
-      await db.prepare("UPDATE alerts SET status = 'FILTERED' WHERE id = ?").run(alertId);
-      io.emit('alert_updated', { id: alertId, status: 'FILTERED' });
-      res.status(500).json({ error: err?.message || 'Investigation failed' });
+      const reason = (err?.message || 'Investigation failed').slice(0, 500);
+      await db.prepare("UPDATE alerts SET status = 'FILTERED', last_error = ?, last_error_at = now() WHERE id = ?").run(reason, alertId);
+      io.emit('alert_updated', { id: alertId, status: 'FILTERED', last_error: reason });
+      res.status(500).json({ error: reason });
     }
   });
 
@@ -3104,6 +3140,16 @@ async function startServer() {
     }));
 
     res.json({ alerts: enriched, total, page, pageSize });
+  });
+
+  // Single alert — used by the detail view's "Refresh" to re-pull persisted
+  // state (status, ai_analysis, last_error) without a full page reload.
+  // NOTE: registered *after* the literal /api/alerts/* routes (e.g. fp-archive)
+  // so the ":id" wildcard doesn't shadow them.
+  app.get('/api/alerts/:id', authenticate, async (req: any, res) => {
+    const row = await db.prepare('SELECT * FROM alerts WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Alert not found' });
+    res.json(row);
   });
 
   // ── Incident management ───────────────────────────────────────────────────
@@ -3355,7 +3401,8 @@ async function startServer() {
 
     inc.alerts = await db.prepare(`
       SELECT a.id, a.timestamp, a.rule_id, a.description, a.severity, a.source_ip, a.dest_ip,
-             a."user", a.hostname, a.agent_name, a.status, a.ai_analysis, a.mitre_attack, a.full_log
+             a."user", a.hostname, a.agent_name, a.status, a.ai_analysis, a.mitre_attack, a.full_log,
+             a.last_error, a.last_error_at
       FROM alerts a
       INNER JOIN incident_alerts ia ON ia.alert_id = a.id
       WHERE ia.incident_id = ?
@@ -3432,6 +3479,14 @@ async function startServer() {
 
       await triggerOrchestration(alert.id);   // runs all agents → records reasoning + ai_analysis
       await db.prepare("UPDATE alerts SET status = 'ESCALATED' WHERE id = ?").run(alert.id);
+
+      // Sync the incident's analysis snapshot with the fresh result, so the
+      // overview stops showing the stale (often fallback) analysis from creation.
+      const fresh: any = await db.prepare('SELECT ai_analysis FROM alerts WHERE id = ?').get(alert.id);
+      if (fresh?.ai_analysis) {
+        await db.prepare('UPDATE incidents SET analysis = ? WHERE id = ?').run(fresh.ai_analysis, id);
+      }
+
       io.emit('alert_updated', { id: alert.id, status: 'ESCALATED' });
       io.emit('incident_updated', { id });
 
@@ -4028,7 +4083,7 @@ async function startServer() {
 
       const update = await runOrchestration(alert, recentAlerts, { modelAssignments: await getAgentModelAssignments() });
 
-      await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=? WHERE id=?`)
+      await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, last_error=NULL, last_error_at=NULL WHERE id=?`)
         .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, alertId);
 
       await db.prepare('INSERT INTO agent_runs (alert_id, ai_analysis, mitre_attack, remediation_steps, status) VALUES (?, ?, ?, ?, ?)')
@@ -4050,9 +4105,10 @@ async function startServer() {
       res.json({ id: alertId, ...update });
     } catch (err: any) {
       console.error('[Orchestration Error]', err?.message);
-      await db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('NEW', alertId);
-      io.emit('alert_updated', { id: alertId, status: 'NEW' });
-      res.status(500).json({ error: err?.message || 'Orchestration failed' });
+      const reason = (err?.message || 'Orchestration failed').slice(0, 500);
+      await db.prepare('UPDATE alerts SET status = ?, last_error = ?, last_error_at = now() WHERE id = ?').run('NEW', reason, alertId);
+      io.emit('alert_updated', { id: alertId, status: 'NEW', last_error: reason });
+      res.status(500).json({ error: reason });
     }
   });
 

@@ -36,6 +36,8 @@ export const PROVIDER_KIND_DEFAULTS: Record<ProviderKind, { base_url: string; la
 // always type a custom model name if the one they want isn't here.
 export const PROVIDER_MODEL_CATALOG: Record<ProviderKind, Array<{ id: string; label: string }>> = {
   openrouter: [
+    { id: 'deepseek/deepseek-v4-flash',                label: 'DeepSeek V4 Flash' },
+    { id: 'moonshotai/kimi-k2',                        label: 'Kimi K2' },
     { id: 'openai/gpt-oss-120b:free',                  label: 'GPT-OSS 120B (Free)' },
     { id: 'openai/gpt-oss-20b:free',                   label: 'GPT-OSS 20B (Free)' },
     { id: 'meta-llama/llama-3.3-70b-instruct:free',    label: 'Llama 3.3 70B Instruct (Free)' },
@@ -63,9 +65,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderKind, Array<{ id: string; la
     { id: 'claude-3-opus-latest',     label: 'Claude 3 Opus' },
   ],
   gemini: [
-    { id: 'gemini-2.0-flash',  label: 'Gemini 2.0 Flash' },
-    { id: 'gemini-1.5-pro',    label: 'Gemini 1.5 Pro' },
-    { id: 'gemini-1.5-flash',  label: 'Gemini 1.5 Flash' },
+    { id: 'gemini-2.5-flash',       label: 'Gemini 2.5 Flash' },
+    { id: 'gemini-2.5-flash-lite',  label: 'Gemini 2.5 Flash-Lite' },
+    { id: 'gemini-2.5-pro',         label: 'Gemini 2.5 Pro' },
+    { id: 'gemini-flash-latest',    label: 'Gemini Flash (latest)' },
+    { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)' },
   ],
   custom: [],
 };

@@ -576,7 +576,7 @@ const AgentsTab = () => {
                     onChange={(e) => handleModelChange(selectedPhase, e.target.value)}
                     className="w-full border border-[var(--b1)] rounded-lg px-3 py-2.5 text-[0.82rem] outline-none focus:border-[var(--p1)] disabled:opacity-60 bg-[var(--s0)]"
                   >
-                    <optgroup label="☁ OpenRouter (free tier)">
+                    <optgroup label="☁ OpenRouter">
                       {cloudOptions.map((model) => (
                         <option key={model} value={model}>{config?.modelLabels?.[model] || model}</option>
                       ))}

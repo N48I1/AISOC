@@ -76,6 +76,10 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
   const [refreshing, setRefreshing] = useState(false);
   const [riskGranularity, setRiskGranularity] = useState<RiskChartGranularity>('days');
   const [riskSeries, setRiskSeries] = useState<RiskSeriesPoint[]>([]);
+  // Live alert stream filters
+  const [streamSearch, setStreamSearch] = useState('');
+  const [streamSeverity, setStreamSeverity] = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'>('ALL');
+  const [streamStatus, setStreamStatus] = useState<string>('ALL');
 
   const handleRefresh = () => {
     if (!onRefreshAlerts || refreshing) return;
@@ -148,6 +152,28 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
     idx === riskSeries.length - 1 ? { ...point, risk: globalRiskScore } : point
   );
 
+  // Live alert stream: status options + the filtered/sorted rows to render.
+  const streamStatuses = useMemo(
+    () => Array.from(new Set(alerts.map(a => a.status).filter(Boolean))).sort(),
+    [alerts],
+  );
+  const streamFiltersActive = streamSearch.trim() !== '' || streamSeverity !== 'ALL' || streamStatus !== 'ALL';
+  const streamAlerts = useMemo(() => {
+    const q = streamSearch.trim().toLowerCase();
+    const sevMatch = (s: number) =>
+      streamSeverity === 'ALL' ? true :
+      streamSeverity === 'CRITICAL' ? s >= 13 :
+      streamSeverity === 'HIGH' ? s >= 10 && s < 13 :
+      streamSeverity === 'MEDIUM' ? s >= 7 && s < 10 :
+      s < 7;
+    return [...alerts]
+      .filter(a => sevMatch(a.severity))
+      .filter(a => streamStatus === 'ALL' || a.status === streamStatus)
+      .filter(a => !q || [a.description, a.source_ip, a.agent_name, a.id].some(f => String(f ?? '').toLowerCase().includes(q)))
+      .sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime())
+      .slice(0, 50);
+  }, [alerts, streamSearch, streamSeverity, streamStatus]);
+
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
       <PageHeader eyebrow="Overview" title="Aegis SOC Dashboard" description="Real-time alert pipeline, FP filtering efficiency, and system health." />
@@ -187,29 +213,75 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
       </div>
 
       <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-[var(--b1)] flex justify-between items-center bg-[var(--s1)]/50">
-          <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM (WAZUH)</h3>
-          <div className="flex items-center gap-3">
-            <span className="text-[0.65rem] text-[var(--t2)] font-mono">{alerts.length} ALERTS</span>
-            <button
-              onClick={handleRefresh}
-              disabled={refreshing}
-              title="Refresh alert list"
-              className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
+        <div className="p-4 border-b border-[var(--b1)] bg-[var(--s1)]/50 space-y-3">
+          <div className="flex justify-between items-center gap-3">
+            <h3 className="text-[0.82rem] font-black text-[var(--p1)] flex items-center gap-2"><Activity className="w-4 h-4" />LIVE ALERT STREAM (WAZUH)</h3>
+            <div className="flex items-center gap-3">
+              <span className="text-[0.65rem] text-[var(--t2)] font-mono">{streamAlerts.length} / {alerts.length} ALERTS</span>
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing}
+                title="Refresh alert list"
+                className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] hover:text-[var(--p1)] transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+                {refreshing ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[160px]">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={streamSearch}
+                onChange={e => setStreamSearch(e.target.value)}
+                placeholder="Search description, IP, host…"
+                className="w-full pl-7 pr-2 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[0.7rem] text-[var(--t6)] outline-none focus:border-[var(--p1)]"
+              />
+            </div>
+            <select
+              value={streamSeverity}
+              onChange={e => setStreamSeverity(e.target.value as typeof streamSeverity)}
+              title="Filter by severity"
+              className="rounded-lg border border-[var(--b2)] bg-[var(--s0)] px-2.5 py-1.5 text-[0.7rem] font-bold text-[var(--t6)] outline-none focus:border-[var(--p1)]"
             >
-              <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-              {refreshing ? 'Refreshing…' : 'Refresh'}
-            </button>
+              <option value="ALL">All severities</option>
+              <option value="CRITICAL">Critical (L13+)</option>
+              <option value="HIGH">High (L10–12)</option>
+              <option value="MEDIUM">Medium (L7–9)</option>
+              <option value="LOW">Low (&lt;L7)</option>
+            </select>
+            <select
+              value={streamStatus}
+              onChange={e => setStreamStatus(e.target.value)}
+              title="Filter by status"
+              className="rounded-lg border border-[var(--b2)] bg-[var(--s0)] px-2.5 py-1.5 text-[0.7rem] font-bold text-[var(--t6)] outline-none focus:border-[var(--p1)]"
+            >
+              <option value="ALL">All statuses</option>
+              {streamStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {streamFiltersActive && (
+              <button
+                onClick={() => { setStreamSearch(''); setStreamSeverity('ALL'); setStreamStatus('ALL'); }}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg border border-[var(--b2)] text-[0.65rem] font-bold text-[var(--t4)] hover:bg-[var(--s1)] hover:text-[var(--p1)] transition-colors"
+              >
+                <X size={11} /> Clear
+              </button>
+            )}
           </div>
         </div>
         <div className="max-h-[320px] overflow-y-auto">
-          {alerts.length > 0 ? (
-            [...alerts].sort((a, b) => new Date(b.timestamp.replace(' ', 'T')).getTime() - new Date(a.timestamp.replace(' ', 'T')).getTime()).slice(0, 30).map(alert => {
+          {streamAlerts.length > 0 ? (
+            streamAlerts.map(alert => {
               const sevLabel = alert.severity >= 13 ? 'CRIT' : alert.severity >= 10 ? 'HIGH' : alert.severity >= 7 ? 'MED' : 'LOW';
               const sevColor = alert.severity >= 13 ? 'text-red-500 bg-red-50' : alert.severity >= 10 ? 'text-orange-500 bg-orange-50' : alert.severity >= 7 ? 'text-amber-500 bg-amber-50' : 'text-green-500 bg-green-50';
+              const ts = new Date(alert.timestamp.replace(' ', 'T'));
               return (
                 <div key={alert.id} onClick={() => onAlertClick(alert)} className="px-4 py-2.5 border-b border-[var(--b1)] cursor-pointer hover:bg-[var(--sa)] flex items-center gap-3">
-                  <span className="text-[0.58rem] text-[var(--t3)] font-mono shrink-0 w-14">{new Date(alert.timestamp.replace(' ', 'T')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                  <span className="text-[0.58rem] text-[var(--t3)] font-mono shrink-0 w-16 flex flex-col leading-tight" title={ts.toLocaleString()}>
+                    <span className="text-[var(--t2)] font-bold">{ts.toLocaleDateString([], { month: 'short', day: '2-digit' })}</span>
+                    <span>{ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                  </span>
                   <span className={`px-1.5 py-0.5 rounded text-[0.55rem] font-black shrink-0 ${sevColor}`}>L{alert.severity} {sevLabel}</span>
                   <p className="text-[0.72rem] text-[var(--t7)] truncate flex-1">{alert.description}</p>
                   <span className="text-[0.6rem] text-[var(--t3)] font-mono shrink-0">{alert.source_ip || '—'}</span>
@@ -219,7 +291,8 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
             })
           ) : (
             <div className="h-32 flex items-center justify-center text-[var(--t3)] text-sm opacity-50">
-              <Activity className="w-8 h-8 animate-pulse mr-2" /> Waiting for Wazuh alerts...
+              <Activity className="w-8 h-8 animate-pulse mr-2" />
+              {alerts.length > 0 ? 'No alerts match the current filters' : 'Waiting for Wazuh alerts...'}
             </div>
           )}
         </div>

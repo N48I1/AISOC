@@ -58,7 +58,7 @@ export const PHASE_LABELS: Record<IncidentPhase, string> = {
 };
 
 export interface Incident {
-  id:                     number;
+  id:                     string;   // e.g. "INC-17805810-85YH"
   title:                  string;
   severity:               string;
   status:                 IncidentStatus;
@@ -113,6 +113,7 @@ export interface User {
   bio?: string;
   last_login?: string;
   password_changed_at?: string;
+  must_change_password?: boolean;
   created_at?: string;
 }
 
@@ -133,6 +134,8 @@ export interface Alert {
   mitre_attack?: string[];
   remediation_steps?: string;
   email_sent?: number;
+  last_error?: string | null;
+  last_error_at?: string | null;
 }
 
 export interface Stats {

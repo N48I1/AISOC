@@ -16,6 +16,10 @@ import {
 } from '../types';
 import PageHeader from '../components/ui/PageHeader';
 import { parseMitreTags } from '../features/alerts/alertUtils';
+import { AgentRunStatus } from '../components/AgentRunStatus';
+import { ProviderHealthBadge } from '../components/ProviderHealthBadge';
+import { CopyButton } from '../components/CopyButton';
+import { Markdown } from '../components/Markdown';
 import { useToast } from '../lib/toast';
 import { useAuth } from '../contexts/AuthContext';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -103,6 +107,14 @@ function lastEventLabel(t?: string | null, n?: string | null): string {
   return t;
 }
 
+// Placeholder reason stamped on incidents created by the legacy migration
+// backfill — it isn't a real escalation rationale, so we suppress it in the UI.
+const BACKFILL_REASON = 'Backfilled from existing escalated alert';
+const realReason = (r?: string | null): string | null => {
+  const t = (r || '').trim();
+  return !t || t === BACKFILL_REASON ? null : t;
+};
+
 function extractAiResults(analysisJson: string | null) {
   if (!analysisJson) return {} as any;
   try {
@@ -111,6 +123,8 @@ function extractAiResults(analysisJson: string | null) {
     const intel = j?.phaseData?.intel || {};
     const corr  = j?.phaseData?.correlation || {};
     const valid = j?.phaseData?.validation || {};
+    const know  = j?.phaseData?.knowledge || {};
+    const resp  = j?.phaseData?.response || {};
     const ticket= j?.ticket || j?.phaseData?.ticket || {};
     return {
       summary:            j?.summary || a?.analysis_summary,
@@ -128,9 +142,13 @@ function extractAiResults(analysisJson: string | null) {
       correlation_summary:corr?.summary,
       intel_summary:      intel?.intel_summary || j?.intel,
       threat_actor:       intel?.threat_actor,
-      validation_status:  valid?.sla_status,
+      threat_actor_type:  intel?.threat_actor_type,
+      campaign_family:    intel?.campaign_family,
+      validation_status:  valid?.sla_status || valid?.recommendation,
       affected_systems:   ticket?.affected_systems,
       business_impact:    ticket?.business_impact,
+      response_actions:   Array.isArray(resp?.actions) ? resp.actions : (Array.isArray(ticket?.actions) ? ticket.actions : []),
+      remediation:        know?.playbook || know?.remediation || know?.summary || j?.remediation,
     };
   } catch { return {} as any; }
 }
@@ -264,10 +282,69 @@ const WazuhAlertCard: React.FC<{ alert: Alert; index: number; total: number }> =
       </table>
       {rawLog && showRaw && (
         <div className="border-t border-[var(--b1)] p-3">
-          <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-2">Raw Wazuh Alert (JSON)</p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Raw Wazuh Alert (JSON)</p>
+            <CopyButton text={rawLog} />
+          </div>
           <pre className="text-[0.7rem] bg-slate-950 text-emerald-400 p-5 rounded-xl overflow-x-auto font-mono leading-relaxed max-h-96 overflow-y-auto">{rawLog}</pre>
         </div>
       )}
+    </div>
+  );
+};
+
+// Compact, scrollable table of the alerts correlated into an incident. Each row
+// expands to the full Wazuh detail (field/value table + raw JSON) so analysts
+// don't have to scroll past large cards to reach the AI summary.
+const sevRowBadge = (sev: number): string =>
+  sev >= 12 ? 'bg-red-100 text-red-700 border-red-200'
+  : sev >= 7 ? 'bg-orange-100 text-orange-700 border-orange-200'
+  : sev >= 4 ? 'bg-amber-100 text-amber-700 border-amber-200'
+  :            'bg-green-100 text-green-700 border-green-200';
+
+const CorrelatedAlertsTable: React.FC<{ alerts: Alert[] }> = ({ alerts }) => {
+  const [openId, setOpenId] = useState<string | null>(null);
+  return (
+    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
+        <AlertTriangle size={13} className="text-orange-500" />
+        <p className="text-[0.72rem] font-black text-[var(--t7)]">Correlated Wazuh Alerts ({alerts.length})</p>
+        <span className="ml-auto text-[0.55rem] text-[var(--t3)] font-semibold">click a row to expand</span>
+      </div>
+      {/* Column header */}
+      <div className="px-4 py-1.5 bg-[var(--s1)]/50 border-b border-[var(--b1)] hidden md:flex items-center gap-3 text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">
+        <span className="w-4" />
+        <span className="w-14">Sev</span>
+        <span className="w-24">Event</span>
+        <span className="w-16">Rule</span>
+        <span className="flex-1">Description</span>
+        <span className="w-28">Source IP</span>
+        <span className="w-16 text-right">When</span>
+      </div>
+      <div className="max-h-[26rem] overflow-y-auto divide-y divide-[var(--b1)]">
+        {alerts.map(a => {
+          const isOpen = openId === a.id;
+          return (
+            <div key={a.id}>
+              <button onClick={() => setOpenId(isOpen ? null : a.id)}
+                className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${isOpen ? 'bg-[var(--s1)]' : 'hover:bg-[var(--s1)]'}`}>
+                <ChevronRight size={13} className={`text-[var(--t3)] shrink-0 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                <span className={`w-14 shrink-0 text-center px-1 py-0.5 rounded text-[0.5rem] font-black uppercase border ${sevRowBadge(a.severity)}`}>lvl {a.severity}</span>
+                <code className="w-24 shrink-0 font-mono text-[0.6rem] text-[var(--p1)] truncate">#{a.id.slice(0, 10).toUpperCase()}</code>
+                <code className="w-16 shrink-0 font-mono text-[0.62rem] text-[var(--t6)] font-bold truncate">{a.rule_id || '—'}</code>
+                <span className="flex-1 min-w-0 text-[0.7rem] text-[var(--t6)] truncate">{a.description || '—'}</span>
+                <span className="w-28 shrink-0 font-mono text-[0.62rem] text-[var(--t4)] truncate hidden md:block">{a.source_ip || '—'}</span>
+                <span className="w-16 shrink-0 text-right text-[0.58rem] text-[var(--t3)] hidden md:block">{a.timestamp ? timeAgo(new Date(a.timestamp).getTime()) : '—'}</span>
+              </button>
+              {isOpen && (
+                <div className="px-3 pb-3 pt-1 bg-[var(--s1)]/30">
+                  <WazuhAlertCard alert={a} index={0} total={1} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -527,9 +604,20 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
     const currentIdx   = INCIDENT_PHASES.indexOf(detail.phase as IncidentPhase);
     const nextPhase    = currentIdx >= 0 && currentIdx < INCIDENT_PHASES.length - 1 ? INCIDENT_PHASES[currentIdx + 1] : null;
 
-    const ai  = extractAiResults(detail.analysis);
+    // Prefer the latest linked alert's ai_analysis — re-investigation writes the
+    // fresh result onto the alert, while incident.analysis is a snapshot from
+    // creation that can go stale (showing old fallback data). Fall back to the
+    // incident's analysis only if the alert has none.
+    const aiSource = detail.alerts?.[0]?.ai_analysis || detail.analysis || null;
+    const ai  = extractAiResults(aiSource);
     const sla = computeSla(detail.severity, detail.escalated_at);
     const actions = detail.actions || [];
+
+    // Surface agent-run failures: the persisted last_error on any linked alert,
+    // plus quota/fallback signals parsed from the analysis JSON.
+    const erroredAlert = (detail.alerts || []).find(a => a.last_error);
+    let incidentAiMeta: { quota_exhausted?: boolean; fallback_phases?: string[]; phase_errors?: Record<string,string> } = {};
+    try { incidentAiMeta = aiSource ? JSON.parse(aiSource) : {}; } catch { incidentAiMeta = {}; }
 
     const handleNextPhase = async () => {
       if (!nextPhase) return;
@@ -634,6 +722,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
               <ChevronRight size={14} className="rotate-180" />Back to Incidents
             </button>
             <div className="flex items-center gap-2">
+              <ProviderHealthBadge className="mr-1" />
               <code className="text-[0.7rem] font-mono bg-[var(--s1)] text-[var(--t5)] px-2 py-1 rounded">{detail.id}</code>
               <span className={`px-2 py-1 rounded text-[0.6rem] font-black uppercase tracking-widest border ${SEV_COLORS[detail.severity] || 'bg-gray-100 text-gray-700'}`}>{detail.severity}</span>
               <span className={`px-3 py-1 rounded-lg text-[0.65rem] font-black uppercase tracking-widest border ${STATUS_COLORS[detail.status] || 'bg-gray-100 text-gray-700'}`}>
@@ -687,98 +776,152 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
               {/* ===== OVERVIEW TAB ===== */}
               {detailTab === 'overview' && (
                 <div className="space-y-4">
-                  {/* Quick metrics row */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
-                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{ai.risk_score ?? '—'}</p>
-                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">Risk Score</p>
-                    </div>
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
-                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{ai.confidence != null ? `${Math.round(ai.confidence * 100)}%` : '—'}</p>
-                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">AI Confidence</p>
-                    </div>
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
-                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{detail.alerts?.length ?? 0}</p>
-                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">Linked Alerts</p>
-                    </div>
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 text-center">
-                      <p className="text-[1.1rem] font-black text-[var(--t7)]">{observables.length}</p>
-                      <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest">Observables</p>
-                    </div>
-                  </div>
+                  {/* Agent-run health: shows a failure reason + retry/refresh when the
+                      incident's alert investigation failed or fell back. */}
+                  <AgentRunStatus
+                    loading={reinvestigating}
+                    lastError={erroredAlert?.last_error}
+                    lastErrorAt={erroredAlert?.last_error_at}
+                    quotaExhausted={incidentAiMeta.quota_exhausted === true}
+                    fallbackPhases={Array.isArray(incidentAiMeta.fallback_phases) ? incidentAiMeta.fallback_phases : []}
+                    phaseErrors={incidentAiMeta.phase_errors || {}}
+                    busy={reinvestigating}
+                    onRetry={handleRunInvestigation}
+                    onRefresh={() => fetchDetail(detail.id)}
+                    retryLabel="Re-run investigation"
+                  />
 
-                  {/* Wazuh alert(s) — raw event fields, the source of truth */}
-                  {(detail.alerts && detail.alerts.length > 0) ? (
-                    <div className="space-y-3">
-                      {detail.alerts.map((a, i) => (
-                        <WazuhAlertCard key={a.id} alert={a} index={i} total={detail.alerts!.length} />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-6 text-center text-[var(--t3)] text-[0.72rem]">
-                      No Wazuh alerts linked to this incident.
-                    </div>
-                  )}
-
-                  {/* AI Conclusion — the detailed verdict, not just a one-liner */}
-                  {(ai.summary || ai.ticket_summary || detail.reason || ai.business_impact || ai.recommended_action) && (
+                  {/* ===== AI ANALYSIS & CONCLUSION — first, so analysts don't scroll past alerts ===== */}
+                  {(ai.summary || ai.ticket_summary || realReason(detail.reason) || ai.intel_summary || ai.recommended_action || ai.business_impact || (ai.mitre && ai.mitre.length > 0) || (ai.response_actions && ai.response_actions.length > 0)) ? (
                     <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                      <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
-                        <Activity size={13} className="text-violet-600" />
-                        <p className="text-[0.72rem] font-black text-[var(--t7)]">AI Analysis &amp; Conclusion</p>
-                        {ai.confidence != null && (
-                          <span className="ml-auto text-[0.55rem] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full uppercase tracking-widest">
-                            {Math.round(ai.confidence * 100)}% confidence
-                          </span>
-                        )}
+                      <div className="px-4 py-2.5 bg-gradient-to-r from-violet-50 to-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2 flex-wrap">
+                        <Activity size={14} className="text-violet-600" />
+                        <p className="text-[0.75rem] font-black text-[var(--t7)]">AI Analysis &amp; Conclusion</p>
+                        <div className="ml-auto flex items-center gap-1.5">
+                          {ai.risk_score != null && <span className="text-[0.55rem] font-black text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full uppercase tracking-widest">Risk {ai.risk_score}</span>}
+                          {ai.confidence != null && <span className="text-[0.55rem] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full uppercase tracking-widest">{Math.round(ai.confidence * 100)}% conf</span>}
+                        </div>
                       </div>
                       <div className="p-4 space-y-4 text-[0.78rem] text-[var(--t6)] leading-relaxed">
-                        {/* Why it became an incident */}
-                        {detail.reason && (
+                        {/* Why escalated (real reasons only — legacy backfill placeholder suppressed) */}
+                        {realReason(detail.reason) && (
                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
                             <p className="text-[0.55rem] font-black text-orange-800 uppercase tracking-widest mb-1">Why this was escalated</p>
-                            <p className="text-orange-900 text-[0.74rem] whitespace-pre-line">{detail.reason}</p>
+                            <p className="text-orange-900 text-[0.74rem] whitespace-pre-line">{realReason(detail.reason)}</p>
                           </div>
                         )}
 
-                        {/* Full narrative conclusion */}
-                        {(ai.summary || ai.ticket_summary) && (
+                        {/* AI report — the rich, synthesised markdown report (preferred),
+                            else the triage summary. Rendered as Markdown. */}
+                        {(ai.ticket_summary || ai.summary) ? (
                           <div>
-                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Conclusion</p>
-                            <p className="whitespace-pre-line">{ai.summary || ai.ticket_summary}</p>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">AI Report</p>
+                            <Markdown>{String(ai.ticket_summary || ai.summary)}</Markdown>
+                          </div>
+                        ) : (
+                          <p className="text-[0.74rem] text-[var(--t4)] italic">No AI summary recorded yet — use “Re-run investigation” above to generate one.</p>
+                        )}
+
+                        {/* Key facts grid */}
+                        {(() => {
+                          const stats = [
+                            { label: 'Verdict / Category', value: ai.attack_category },
+                            { label: 'Kill Chain Stage',   value: ai.kill_chain_stage },
+                            { label: 'Threat Actor',       value: ai.threat_actor || ai.threat_actor_type },
+                            { label: 'Campaign',           value: ai.correlation || ai.campaign_family },
+                            { label: 'Risk Score',         value: ai.risk_score != null ? String(ai.risk_score) : null },
+                            { label: 'FP Likelihood',      value: ai.fp_confidence != null ? `${Math.round(ai.fp_confidence * 100)}%` : null },
+                            { label: 'SLA / Validation',   value: ai.validation_status },
+                          ].filter(x => x.value);
+                          return stats.length ? (
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                              {stats.map((item, idx) => (
+                                <div key={idx} className="bg-[var(--s1)] rounded-lg p-2.5 border border-[var(--b2)]">
+                                  <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">{item.label}</p>
+                                  <p className="font-mono text-[0.7rem] text-[var(--t7)] font-bold truncate" title={String(item.value)}>{item.value}</p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null;
+                        })()}
+
+                        {/* Threat-intel narrative — only when there's no full report (else it's covered) */}
+                        {ai.intel_summary && !ai.ticket_summary && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Threat Intelligence</p>
+                            <Markdown>{String(ai.intel_summary)}</Markdown>
                           </div>
                         )}
 
-                        {/* Verdict chips */}
-                        {(ai.attack_category || ai.kill_chain_stage || ai.risk_score != null || ai.fp_confidence != null) && (
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                            {[
-                              { label: 'Verdict / Category', value: ai.attack_category },
-                              { label: 'Kill Chain Stage',   value: ai.kill_chain_stage },
-                              { label: 'Risk Score',         value: ai.risk_score != null ? String(ai.risk_score) : null },
-                              { label: 'FP Likelihood',      value: ai.fp_confidence != null ? `${Math.round(ai.fp_confidence * 100)}%` : null },
-                            ].filter(x => x.value).map((item, idx) => (
-                              <div key={idx} className="bg-[var(--s1)] rounded-lg p-2.5 border border-[var(--b2)]">
-                                <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">{item.label}</p>
-                                <p className="font-mono text-[0.7rem] text-[var(--t7)] font-bold truncate">{item.value}</p>
-                              </div>
-                            ))}
+                        {/* MITRE + TTP chips */}
+                        {((ai.mitre && ai.mitre.length > 0) || (ai.ttp_tags && ai.ttp_tags.length > 0)) && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">MITRE ATT&CK / TTPs</p>
+                            <div className="flex gap-1.5 flex-wrap">
+                              {(ai.mitre || []).slice(0, 20).map((t: any, i: number) => (
+                                <span key={`m${i}`} className="px-2 py-1 rounded-lg bg-violet-50 text-violet-700 text-[0.6rem] font-mono border border-violet-200">{t}</span>
+                              ))}
+                              {(ai.ttp_tags || []).slice(0, 12).map((t: any, i: number) => (
+                                <span key={`t${i}`} className="px-2 py-1 rounded-lg bg-[var(--s1)] text-[var(--t5)] text-[0.6rem] border border-[var(--b2)]">{String(t)}</span>
+                              ))}
+                            </div>
                           </div>
                         )}
 
-                        {/* Recommended action */}
-                        {ai.recommended_action && (
+                        {/* IOCs */}
+                        {ai.iocs && Object.values(ai.iocs).some((v: any) => Array.isArray(v) && v.length) && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Indicators of Compromise</p>
+                            <div className="space-y-1.5">
+                              {Object.entries(ai.iocs).filter(([, v]) => Array.isArray(v) && (v as any[]).length).map(([k, v]) => (
+                                <div key={k} className="flex items-start gap-2">
+                                  <span className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest w-16 shrink-0 mt-1">{k}</span>
+                                  <div className="flex gap-1.5 flex-wrap">
+                                    {(v as any[]).slice(0, 12).map((x, i) => (
+                                      <code key={i} className="px-1.5 py-0.5 rounded bg-[var(--s1)] text-[var(--t6)] text-[0.6rem] font-mono border border-[var(--b2)] break-all">{String(x)}</code>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Recommended response */}
+                        {(ai.recommended_action || (ai.response_actions && ai.response_actions.length > 0)) && (
                           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                            <p className="text-[0.55rem] font-black text-blue-800 uppercase tracking-widest mb-0.5">Recommended Next Step</p>
-                            <p className="font-mono font-bold text-blue-900 text-[0.72rem] whitespace-pre-line">{ai.recommended_action}</p>
+                            <p className="text-[0.55rem] font-black text-blue-800 uppercase tracking-widest mb-1">Recommended Response</p>
+                            {ai.recommended_action && <p className="font-mono font-bold text-blue-900 text-[0.72rem] whitespace-pre-line mb-1.5">{ai.recommended_action}</p>}
+                            {ai.response_actions && ai.response_actions.length > 0 && (
+                              <ul className="space-y-1">
+                                {ai.response_actions.slice(0, 8).map((act: any, i: number) => (
+                                  <li key={i} className="text-[0.68rem] text-blue-900 flex items-start gap-1.5">
+                                    <span className="text-blue-500 mt-0.5">▸</span>
+                                    <span>
+                                      <span className="font-bold">{String(act.type || act.action || 'action').replace(/_/g, ' ')}</span>
+                                      {act.target ? <> → <span className="font-mono">{String(act.target)}</span></> : null}
+                                      {act.description ? <> — {String(act.description)}</> : null}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                           </div>
                         )}
 
-                        {/* Business impact */}
-                        {ai.business_impact && (
+                        {/* Remediation / playbook — only when there's no full report */}
+                        {ai.remediation && !ai.ticket_summary && (
+                          <div>
+                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Remediation / Playbook</p>
+                            <Markdown>{typeof ai.remediation === 'string' ? ai.remediation : JSON.stringify(ai.remediation)}</Markdown>
+                          </div>
+                        )}
+
+                        {/* Business impact — only when there's no full report */}
+                        {ai.business_impact && !ai.ticket_summary && (
                           <div>
                             <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Business Impact</p>
-                            <p className="whitespace-pre-line">{typeof ai.business_impact === 'string' ? ai.business_impact : JSON.stringify(ai.business_impact)}</p>
+                            <Markdown>{typeof ai.business_impact === 'string' ? ai.business_impact : JSON.stringify(ai.business_impact)}</Markdown>
                           </div>
                         )}
 
@@ -798,54 +941,42 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                           </div>
                         )}
 
-                        {/* Correlation narrative */}
-                        {ai.correlation_summary && (
+                        {/* Correlation narrative — only when there's no full report */}
+                        {ai.correlation_summary && !ai.ticket_summary && (
                           <div>
                             <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">
                               Correlation{ai.correlation ? ` — ${ai.correlation}` : ''}
                             </p>
-                            <p className="whitespace-pre-line">{ai.correlation_summary}</p>
+                            <Markdown>{String(ai.correlation_summary)}</Markdown>
                           </div>
                         )}
                       </div>
                     </div>
+                  ) : (
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-8 text-center">
+                      <Activity size={26} className="mx-auto text-[var(--t3)] opacity-50 mb-2" />
+                      <p className="text-[0.82rem] font-bold text-[var(--t6)]">No AI analysis recorded for this incident yet</p>
+                      <p className="text-[0.7rem] text-[var(--t3)] mt-1 max-w-md mx-auto">
+                        This incident was escalated without a full agent investigation. Run the agents now to generate the AI summary, threat intel, IOCs and recommended actions.
+                      </p>
+                      <button
+                        onClick={handleRunInvestigation}
+                        disabled={reinvestigating}
+                        className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 text-white text-[0.74rem] font-bold hover:bg-violet-700 disabled:opacity-60 transition-colors"
+                      >
+                        {reinvestigating
+                          ? <><RefreshCw size={13} className="animate-spin" /> Running investigation…</>
+                          : <><Zap size={13} /> Run AI Investigation</>}
+                      </button>
+                    </div>
                   )}
 
-                  {/* Threat Intelligence */}
-                  {(ai.intel_summary || (ai.mitre && ai.mitre.length > 0) || ai.threat_actor || ai.attack_category) && (
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                      <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2">
-                        <Shield size={13} className="text-red-600" />
-                        <p className="text-[0.72rem] font-black text-[var(--t7)]">Threat Intelligence</p>
-                      </div>
-                      <div className="p-4 space-y-3 text-[0.72rem]">
-                        {ai.intel_summary && (
-                          <p className="text-[var(--t6)] leading-relaxed">{ai.intel_summary}</p>
-                        )}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          {[
-                            { label: 'Attack Category', value: ai.attack_category },
-                            { label: 'Kill Chain Stage', value: ai.kill_chain_stage },
-                            { label: 'Threat Actor', value: ai.threat_actor },
-                            { label: 'Campaign', value: ai.correlation },
-                          ].map((item, idx) => (
-                            <div key={idx} className="bg-[var(--s1)] rounded-lg p-2.5 border border-[var(--b2)]">
-                              <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">{item.label}</p>
-                              <p className="font-mono text-[0.68rem] text-[var(--t6)] truncate">{item.value || '—'}</p>
-                            </div>
-                          ))}
-                        </div>
-                        {ai.mitre && ai.mitre.length > 0 && (
-                          <div>
-                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">MITRE ATT&CK Techniques</p>
-                            <div className="flex gap-1.5 flex-wrap">
-                              {ai.mitre.slice(0, 16).map((t: any, i: number) => (
-                                <span key={i} className="px-2 py-1 rounded-lg bg-violet-50 text-violet-700 text-[0.6rem] font-mono border border-violet-200">{t}</span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                  {/* ===== Correlated alerts — compact, scrollable, expandable (after the AI summary) ===== */}
+                  {(detail.alerts && detail.alerts.length > 0) ? (
+                    <CorrelatedAlertsTable alerts={detail.alerts} />
+                  ) : (
+                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-6 text-center text-[var(--t3)] text-[0.72rem]">
+                      No Wazuh alerts linked to this incident.
                     </div>
                   )}
 

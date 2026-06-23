@@ -134,10 +134,15 @@ CREATE TABLE IF NOT EXISTS alerts (
   filtered_at TIMESTAMP,
   investigated_at TIMESTAMP,
   escalated_at TIMESTAMP,
-  closed_at TIMESTAMP
+  closed_at TIMESTAMP,
+  last_error TEXT,
+  last_error_at TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_alerts_status    ON alerts(status);
+-- Failure reason for the last agent/LLM run (cleared on success). Idempotent for existing DBs.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY,

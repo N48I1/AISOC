@@ -7,6 +7,7 @@ import {
   REASONING_JSON_EXAMPLE,
   type ReasoningRow,
 } from "../memory/reasoning.js";
+import { alertData, buildAlertContext } from "../alert-context.js";
 
 const IocSchema = z.object({
   ips:       z.array(z.string()).default([]),
@@ -121,7 +122,7 @@ IOC extraction:
 
 Respond with this exact JSON structure:
 {
-  "analysis_summary": "<2-4 sentence technical description>",
+  "analysis_summary": "<A detailed analyst report in GitHub-Flavored MARKDOWN (it is rendered as markdown). Quote EXACT values from the RAW EVENT LOG — process/service/application names, file paths, software versions (e.g. 'requires 8.0.0, found 10.0.9'), error/event codes, URLs. Use these exact sections:\\n\\n## Executive Summary\\n2-4 sentences: what happened, on which host/asset, and whether this is a security threat or an operational/configuration failure.\\n\\n## Root Cause\\nThe precise technical reason, naming exact artifacts and versions.\\n\\n## Severity Assessment\\nWhy this severity, and the operational/business impact.\\n\\n## Classification\\nTrue Positive or False Positive, and why (distinguish a real operational fault from a security incident).\\n\\n## Recommended Remediation\\nA numbered list of specific, actionable steps (exact versions, paths, download URLs, service/host names).\\n\\nBe thorough and specific like an expert Tier-2 SOC analyst. Escape all newlines and quotes to keep the JSON valid.>",
   "iocs": { "ips": [], "users": [], "hosts": [], "hashes": [], "files": [], "ports": [], "domains": [], "processes": [], "urls": [] },
   "attack_category": "<MITRE tactic enum>",
   "kill_chain_stage": "<kill chain enum>",
@@ -149,11 +150,8 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
 
   logs.push(`[Analysis] Initializing triage for alert ${a.id}`);
 
-  // For DB-sourced alerts a.data is undefined; parse from full_log if available
-  let parsedData: any = a.data ?? {};
-  if (!a.data && a.full_log) {
-    try { parsedData = JSON.parse(a.full_log).data ?? {}; } catch {}
-  }
+  const parsedData = alertData(a);
+  const alertContext = buildAlertContext(a);
 
   const related = (state.recentAlerts || [])
     .filter((r: any) => r.id !== a.id)
@@ -251,6 +249,11 @@ export async function alertAnalysisNode(state: any, model: string = DEFAULT_AGEN
 - User: ${parsedData?.dstuser ?? parsedData?.srcuser ?? 'N/A'}
 - Program: ${parsedData?.program_name ?? 'N/A'}
 - Full data: ${JSON.stringify(parsedData, null, 2)}
+
+NORMALIZED RAW EVENT CONTEXT — this includes extracted facts and the full nested
+Wazuh alert when available. Mine it for exact process/service names, file paths,
+software versions, error/event codes, registry keys, URLs. Quote exact values.
+${alertContext}
 
 RECENT RELATED ALERTS (same agent or source IP — last 72 hours):
 ${related.length ? JSON.stringify(related, null, 2) : 'None'}`;
