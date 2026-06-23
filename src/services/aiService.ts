@@ -761,6 +761,13 @@ export async function reinvestigateIncident(id: string): Promise<{ ok: boolean; 
   return data;
 }
 
+export async function generateIncidentReport(id: string): Promise<{ ok: boolean; report_body: string }> {
+  const res = await fetch(`/api/incidents/${id}/generate-report`, { method: 'POST', headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Report generation failed');
+  return data;
+}
+
 export async function getAlertReasoning(alertId: string): Promise<{
   alert_id: string;
   count:    number;

@@ -5,7 +5,7 @@ import {
   RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, Terminal,
 } from 'lucide-react';
 import {
-  getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, createIncident,
+  getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, generateIncidentReport, createIncident,
   assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote,
   reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction,
   reorderIncidentActions, updateIncident, listAnalysts, type ReasoningRow,
@@ -513,6 +513,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const [reportDraft, setReportDraft]   = useState('');
   const [reportEditing, setReportEditing] = useState(false);
   const [reportSaving, setReportSaving]   = useState(false);
+  const [generatingReport, setGeneratingReport] = useState(false);
   const [noteText, setNoteText]         = useState('');
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [deleteActionTarget, setDeleteActionTarget] = useState<IncidentAction | null>(null);
@@ -702,6 +703,23 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       else toast(r.error || 'Failed', 'error');
     };
 
+    // Ask the AI to write a formal incident report (Markdown) and save it.
+    const handleGenerateReport = async () => {
+      if (generatingReport) return;
+      setGeneratingReport(true);
+      try {
+        const r = await generateIncidentReport(detail.id);
+        setReportDraft(r.report_body);
+        setReportEditing(false);
+        fetchDetail(detail.id);
+        toast('AI report generated', 'success');
+      } catch (e: any) {
+        toast(e?.message || 'Report generation failed', 'error');
+      } finally {
+        setGeneratingReport(false);
+      }
+    };
+
     const observables = extractObservables(detail.analysis, detail.alerts);
     const DETAIL_TABS = [
       { key: 'overview'     as const, label: 'Overview',     icon: <Eye size={13} /> },
@@ -776,8 +794,25 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
               {/* ===== OVERVIEW TAB ===== */}
               {detailTab === 'overview' && (
                 <div className="space-y-4">
-                  {/* Agent-run health: shows a failure reason + retry/refresh when the
-                      incident's alert investigation failed or fell back. */}
+                  {/* Always-available actions — re-run the AI agents on this incident, or
+                      refresh its data. Present on every incident, not just failed ones. */}
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => fetchDetail(detail.id)} disabled={loadingDetail || reinvestigating}
+                      title="Re-fetch this incident's latest data"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[var(--t6)] text-[0.7rem] font-bold hover:bg-[var(--s1)] disabled:opacity-50 transition-colors">
+                      <RefreshCw size={13} className={loadingDetail ? 'animate-spin' : ''} /> Refresh
+                    </button>
+                    <button onClick={handleRunInvestigation} disabled={reinvestigating}
+                      title="Re-run all AI agents on this incident's alert"
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-violet-600 text-white text-[0.7rem] font-bold hover:bg-violet-700 disabled:opacity-60 transition-colors shadow-sm">
+                      {reinvestigating
+                        ? <><RefreshCw size={13} className="animate-spin" /> Running investigation…</>
+                        : <><Zap size={13} /> Re-run investigation</>}
+                    </button>
+                  </div>
+
+                  {/* Agent-run health: shows the failure reason when the last run failed
+                      or fell back (the actions live in the toolbar above). */}
                   <AgentRunStatus
                     loading={reinvestigating}
                     lastError={erroredAlert?.last_error}
@@ -786,9 +821,6 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     fallbackPhases={Array.isArray(incidentAiMeta.fallback_phases) ? incidentAiMeta.fallback_phases : []}
                     phaseErrors={incidentAiMeta.phase_errors || {}}
                     busy={reinvestigating}
-                    onRetry={handleRunInvestigation}
-                    onRefresh={() => fetchDetail(detail.id)}
-                    retryLabel="Re-run investigation"
                   />
 
                   {/* ===== AI ANALYSIS & CONCLUSION — first, so analysts don't scroll past alerts ===== */}
@@ -1536,44 +1568,78 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
               {/* ===== REPORT TAB ===== */}
               {detailTab === 'report' && (
                 <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
+                  <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
                       <FileText size={13} className="text-[var(--p1)]" />
                       <p className="text-[0.72rem] font-black text-[var(--t7)]">Incident Report</p>
+                      <span className="text-[0.48rem] font-black text-[var(--t3)] uppercase tracking-widest bg-[var(--s2)] px-1.5 py-0.5 rounded">Markdown</span>
                     </div>
-                    {!isClosed && canEdit && !reportEditing && (
-                      <button onClick={() => setReportEditing(true)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--p1)] border border-[var(--p1)] hover:bg-blue-50 transition-colors">
-                        <FileText size={11} /> Edit Report
-                      </button>
+                    {!reportEditing && (
+                      <div className="flex items-center gap-1.5">
+                        {detail.report_body && <CopyButton text={detail.report_body} />}
+                        {!isClosed && canEdit && (
+                          <button onClick={handleGenerateReport} disabled={generatingReport} title="Have the AI write the incident report"
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-60 transition-colors">
+                            {generatingReport ? <><RefreshCw size={11} className="animate-spin" /> Generating…</> : <><Activity size={11} /> {detail.report_body ? 'Regenerate' : 'Generate'}</>}
+                          </button>
+                        )}
+                        {!isClosed && canEdit && (
+                          <button onClick={() => setReportEditing(true)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--p1)] border border-[var(--p1)] hover:bg-blue-50 transition-colors">
+                            <FileText size={11} /> Edit
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className="p-4">
                     {reportEditing ? (
                       <>
-                        <textarea value={reportDraft} onChange={e => setReportDraft(e.target.value)} rows={14}
-                          placeholder="Write or refine the incident report..."
-                          className="w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed" />
-                        <div className="flex gap-2 mt-3">
+                        <div className="grid lg:grid-cols-2 gap-3">
+                          <div className="flex flex-col">
+                            <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Markdown source</p>
+                            <textarea value={reportDraft} onChange={e => setReportDraft(e.target.value)} rows={20}
+                              placeholder="Write the report in Markdown — ## headings, **bold**, tables, - lists, [links](url)…"
+                              className="w-full flex-1 border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.74rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed min-h-[20rem]" />
+                          </div>
+                          <div className="flex flex-col">
+                            <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Live preview</p>
+                            <div className="border border-[var(--b2)] rounded-lg p-3 bg-[var(--s1)]/30 min-h-[20rem] max-h-[34rem] overflow-y-auto">
+                              {reportDraft.trim() ? <Markdown>{reportDraft}</Markdown> : <p className="text-[0.74rem] italic text-[var(--t4)]">Nothing to preview yet…</p>}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 mt-3 flex-wrap items-center">
                           <button onClick={handleSaveReport} disabled={reportSaving}
                             className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold disabled:opacity-50 flex items-center gap-1">
                             {reportSaving ? 'Saving...' : <><CheckCircle size={12} /> Save Report</>}
                           </button>
                           <button onClick={() => { setReportEditing(false); setReportDraft(detail.report_body || ''); }}
                             className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.72rem] font-semibold">Cancel</button>
+                          {(ai.ticket_summary || ai.summary) && (
+                            <button onClick={() => setReportDraft(String(ai.ticket_summary || ai.summary))} title="Replace the draft with the AI analysis (Markdown)"
+                              className="ml-auto px-3 py-2 rounded-lg border border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 text-[0.7rem] font-bold flex items-center gap-1.5">
+                              <Activity size={12} /> Insert AI analysis
+                            </button>
+                          )}
                         </div>
                       </>
                     ) : detail.report_body ? (
-                      <div className="prose prose-sm max-w-none">
-                        <p className="text-[0.78rem] text-[var(--t6)] leading-relaxed whitespace-pre-line">{detail.report_body}</p>
-                      </div>
+                      <Markdown>{detail.report_body}</Markdown>
                     ) : (
                       <div className="text-center py-8">
                         <FileText size={28} className="mx-auto text-[var(--t3)] mb-2" />
                         <p className="text-[0.82rem] font-semibold text-[var(--t5)]">No report written yet</p>
+                        <p className="text-[0.68rem] text-[var(--t3)] mt-1 mb-3">Let the AI write it, or start from scratch in Markdown.</p>
                         {canEdit && !isClosed && (
-                          <button onClick={() => setReportEditing(true)} className="mt-2 px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold hover:bg-[var(--pd)]">
-                            Write Report
-                          </button>
+                          <div className="flex items-center justify-center gap-2 flex-wrap">
+                            <button onClick={handleGenerateReport} disabled={generatingReport}
+                              className="px-4 py-2 rounded-lg bg-violet-600 text-white text-[0.72rem] font-bold hover:bg-violet-700 disabled:opacity-60 flex items-center gap-1.5">
+                              {generatingReport ? <><RefreshCw size={12} className="animate-spin" /> Generating…</> : <><Activity size={12} /> Generate Report</>}
+                            </button>
+                            <button onClick={() => setReportEditing(true)} className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.72rem] font-bold hover:bg-[var(--s1)]">
+                              Write manually
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}

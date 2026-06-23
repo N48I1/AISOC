@@ -63,6 +63,8 @@ import {
 import { reinforceFeedback, processAutoLearning } from './agents/memory/learning.js';
 import { listReasoningForAlert } from './agents/memory/reasoning.js';
 import { extractAssetValuesFromAlert } from './agents/memory/assets.js';
+import { callStructuredLLM, newRunContext } from './agents/shared/llm.js';
+import { z } from 'zod';
 
 dotenv.config();
 
@@ -3496,6 +3498,56 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Reinvestigate] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Re-investigation failed' });
+    }
+  });
+
+  // Generate a formal incident report (Markdown) from the incident context via
+  // the LLM, and save it to report_body. Powers the "Generate Report" button.
+  app.post('/api/incidents/:id/generate-report', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const inc: any = await db.prepare('SELECT * FROM incidents WHERE id = ?').get(id);
+      if (!inc) return res.status(404).json({ error: 'Incident not found' });
+      const alert: any = await db.prepare(
+        `SELECT a.* FROM incident_alerts ia JOIN alerts a ON a.id = ia.alert_id
+         WHERE ia.incident_id = ? ORDER BY a.timestamp DESC LIMIT 1`
+      ).get(id);
+
+      // Pull the existing AI analysis (incident snapshot, else the latest alert).
+      let analysisSummary = '';
+      try {
+        const j = JSON.parse(inc.analysis || alert?.ai_analysis || '{}');
+        analysisSummary = j?.phaseData?.analysis?.analysis_summary || j?.summary || '';
+      } catch { /* ignore */ }
+
+      const actions  = await db.prepare('SELECT action_type, target, status, description FROM incident_actions WHERE incident_id = ? ORDER BY order_index, id').all(id);
+      const timeline = await db.prepare('SELECT event_type, note, created_at FROM incident_timeline WHERE incident_id = ? ORDER BY created_at, id').all(id);
+
+      const assignments = await getAgentModelAssignments();
+      const model = (assignments as any).ticketing || (assignments as any).analysis || OPENROUTER_FREE_MODELS[0];
+      const ctx = newRunContext(`report-${id}`);
+
+      const result = await callStructuredLLM({
+        phase: 'report',
+        model,
+        schema: z.object({ report_body: z.string() }),
+        systemPrompt: `You are a senior SOC analyst writing the official incident report. Respond ONLY with valid JSON: {"report_body":"<markdown>"}. The "report_body" must be a complete, professional incident report in GitHub-Flavored MARKDOWN with these sections (omit one only if truly not applicable):\n\n## Summary\nWhat happened, on which asset, severity, and whether it is a security incident or operational failure.\n\n## Affected Assets\nA Markdown table (Host | IP | Component/Service | Detail).\n\n## Technical Details\nQuote EXACT artifacts from the raw event — process/service names, file paths, software versions, error/event codes, URLs.\n\n## Root Cause\nThe precise cause.\n\n## Impact\nBusiness/operational impact.\n\n## Timeline\nKey events with timestamps (from the provided timeline).\n\n## Response Actions\nWhat was done / recommended (from the provided actions).\n\n## Recommendations\nNumbered, specific, actionable next steps (exact versions/paths/URLs where relevant).\n\nBe specific and useful like an expert analyst. Escape newlines and quotes so the JSON stays valid.`,
+        userPrompt: `INCIDENT: ${inc.title}\nSeverity: ${inc.severity} | Status: ${inc.status} | Phase: ${inc.phase}\n\nAI ANALYSIS:\n${analysisSummary || '(none)'}\n\nRAW EVENT LOG:\n${(alert?.full_log || '').slice(0, 4000)}\n\nRESPONSE ACTIONS:\n${JSON.stringify(actions)}\n\nTIMELINE:\n${JSON.stringify(timeline)}`,
+        fallback: { report_body: '' },
+        ctx,
+      });
+
+      const reportBody = (result?.report_body || '').trim();
+      if (!reportBody) {
+        return res.status(502).json({ error: 'Report generation failed — the AI did not return a report. Check the LLM provider / model.' });
+      }
+      await db.prepare('UPDATE incidents SET report_body = ? WHERE id = ?').run(reportBody, id);
+      writeAudit(req.user?.id, 'INCIDENT_REPORT_GENERATED', `Generated AI incident report for ${id} (${reportBody.length} chars)`);
+      io.emit('incident_updated', { id });
+      res.json({ ok: true, report_body: reportBody });
+    } catch (err: any) {
+      console.error('[Generate Report] Error:', err?.message);
+      res.status(500).json({ error: err?.message || 'Report generation failed' });
     }
   });
 
