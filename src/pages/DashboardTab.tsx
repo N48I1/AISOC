@@ -6,6 +6,7 @@ import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentMod
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from '../types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from '../types';
 import PageHeader from '../components/ui/PageHeader';
+import { PeriodFilter } from '../components/PeriodFilter';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from '../features/alerts/alertUtils';
 import { ToastContext, ToastContainer, useToast, type ToastItem } from '../lib/toast';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
@@ -67,8 +68,16 @@ const computeDashboardRiskScore = ({
   return activeCritical <= 20 && bounded === 100 ? 99 : bounded;
 };
 
-const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: { alerts: Alert[]; onAlertClick: (a: Alert) => void; setActiveTab: (t: string) => void; onRefreshAlerts?: () => void }) => {
+const DashboardTab = ({ alerts: allAlerts, onAlertClick, setActiveTab, onRefreshAlerts }: { alerts: Alert[]; onAlertClick: (a: Alert) => void; setActiveTab: (t: string) => void; onRefreshAlerts?: () => void }) => {
   const { token } = useAuth();
+  const [period, setPeriod] = useState('all');
+  // Scope every alert-derived dashboard metric to the selected time window.
+  const alerts = useMemo(() => {
+    if (period === 'all') return allAlerts;
+    const ms = ({ '24h': 864e5, '7d': 6048e5, '30d': 2592e6, '1y': 31536e6 } as Record<string, number>)[period] ?? Infinity;
+    const cutoff = Date.now() - ms;
+    return allAlerts.filter(a => { const t = new Date(a.timestamp).getTime(); return Number.isNaN(t) || t >= cutoff; });
+  }, [allAlerts, period]);
   const [funnel, setFunnel] = useState<any>(null);
   const [trends, setTrends] = useState<Array<{ day: string; count: number }> | null>(null);
   const [agentStats, setAgentStatsState] = useState<AgentStat[]>([]);
@@ -93,13 +102,13 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
 
   useEffect(() => {
     if (!token) return;
-    getPipelineFunnel().then(setFunnel).catch(() => {});
+    getPipelineFunnel(period).then(setFunnel).catch(() => {});
     fetch('/api/stats/trends', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()).then(data => { if (Array.isArray(data)) setTrends(data); }).catch(() => {});
     getAgentStats().then(setAgentStatsState).catch(() => setAgentStatsState([]));
     getIncidents({ limit: 1, offset: 0 })
       .then(data => setIncidentCounts(toDashboardIncidentCounts(data?.counts)))
       .catch(() => setIncidentCounts(toDashboardIncidentCounts()));
-  }, [token]);
+  }, [token, period]);
 
   // Risk & pipeline series comes from the server (aggregated over the full alerts
   // table) so it reflects real history, not just the page of alerts loaded client-side.
@@ -176,7 +185,13 @@ const DashboardTab = ({ alerts, onAlertClick, setActiveTab, onRefreshAlerts }: {
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6 overflow-y-auto h-full">
-      <PageHeader eyebrow="Overview" title="Aegis SOC Dashboard" description="Real-time alert pipeline, FP filtering efficiency, and system health." />
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <PageHeader eyebrow="Overview" title="Aegis SOC Dashboard" description="Real-time alert pipeline, FP filtering efficiency, and system health." />
+        <div className="flex items-center gap-2 shrink-0 pt-1">
+          <span className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Period</span>
+          <PeriodFilter value={period} onChange={setPeriod} />
+        </div>
+      </div>
 
       <div className="grid grid-cols-4 gap-4">
         {[

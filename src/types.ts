@@ -74,6 +74,11 @@ export interface Incident {
   action_plan:            string | null;
   reason:                 string | null;
   report_body?:           string | null;
+  report_locked?:         number;
+  report_locked_by?:      number | null;
+  report_locked_by_username?: string | null;
+  report_locked_at?:      string | null;
+  report_updated_at?:     string | null;
   alert_count?:           number;
   action_count?:          number;
   pending_actions?:       number;

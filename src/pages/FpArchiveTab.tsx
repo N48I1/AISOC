@@ -6,6 +6,7 @@ import { getAgentModelConfig, orchestrateAnalysis, runAgentPhase, updateAgentMod
 import { INCIDENT_PHASES, PHASE_LABELS, INCIDENT_STATUS_LABELS, type Incident, type IncidentPhase, type IncidentStatus, type IncidentAction, type IncidentActionStatus } from '../types';
 import { User as UserType, Alert, AgentRun, Stats, UserRole, Integration, ActionLog, ReportRow, ReportSummary, ROLE_LABELS, ROLE_LEVEL } from '../types';
 import PageHeader from '../components/ui/PageHeader';
+import { PeriodFilter, PERIOD_OPTIONS } from '../components/PeriodFilter';
 import { AGENT_PHASES_UI, parseAlertAi, parseMitreTags, getPhaseData, getAlertRiskScore, getConfidenceValues, percent } from '../features/alerts/alertUtils';
 import { ToastContext, ToastContainer, useToast, type ToastItem } from '../lib/toast';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
@@ -20,6 +21,7 @@ const FpArchiveTab = () => {
   const [data, setData] = useState<{ alerts: any[]; total: number }>({ alerts: [], total: 0 });
   const [page, setPage] = useState(1);
   const [methodFilter, setMethodFilter] = useState('');
+  const [period, setPeriod] = useState('all');
   const [effectiveness, setEffectiveness] = useState<any>(null);
   const [fpTimeline, setFpTimeline] = useState<any[]>([]);
   const [noisySources, setNoisySources] = useState<any[]>([]);
@@ -28,11 +30,11 @@ const FpArchiveTab = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const reload = useCallback(() => {
-    getFpArchive({ page, pageSize: 25, method: methodFilter || undefined }).then(setData).catch(() => {});
-    getDetectionEffectiveness().then(setEffectiveness).catch(() => {});
-    getFpOverTime().then(setFpTimeline).catch(() => {});
+    getFpArchive({ page, pageSize: 25, method: methodFilter || undefined, period }).then(setData).catch(() => {});
+    getDetectionEffectiveness(period).then(setEffectiveness).catch(() => {});
+    getFpOverTime(period).then(setFpTimeline).catch(() => {});
     getNoisySources().then(setNoisySources).catch(() => {});
-  }, [page, methodFilter]);
+  }, [page, methodFilter, period]);
   useEffect(() => { reload(); }, [reload]);
 
   const handleReinvestigate = async (id: string) => {
@@ -63,7 +65,13 @@ const FpArchiveTab = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
-      <PageHeader eyebrow="History" title="False Positive Archive" description="Browse all detected false positives with reasoning, analytics, and audit trail." />
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <PageHeader eyebrow="History" title="False Positive Archive" description="Browse all detected false positives with reasoning, analytics, and audit trail." />
+        <div className="flex items-center gap-2 shrink-0 pt-1">
+          <span className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Period</span>
+          <PeriodFilter value={period} onChange={(v) => { setPeriod(v); setPage(1); }} />
+        </div>
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-5 gap-4">

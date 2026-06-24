@@ -162,8 +162,30 @@ CREATE TABLE IF NOT EXISTS incidents (
   glpi_ticket_id TEXT,
   reason TEXT,
   report_body TEXT,
+  report_locked INTEGER DEFAULT 0,
+  report_locked_by INTEGER,
+  report_locked_at TIMESTAMP,
+  report_updated_at TIMESTAMP,
   FOREIGN KEY(assigned_to) REFERENCES users(id)
 );
+-- Report lock + change-tracking columns (idempotent for existing DBs).
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS report_locked INTEGER DEFAULT 0;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS report_locked_by INTEGER;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS report_locked_at TIMESTAMP;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS report_updated_at TIMESTAMP;
+
+-- Per-incident report change history (edits, AI generations, lock/unlock).
+CREATE TABLE IF NOT EXISTS incident_report_history (
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  incident_id TEXT NOT NULL,
+  user_id INTEGER,
+  username TEXT,
+  action TEXT NOT NULL,          -- edited | generated | locked | unlocked
+  snapshot TEXT,                 -- report_body at this point (for edited/generated)
+  created_at TIMESTAMP DEFAULT now(),
+  FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_report_history_incident ON incident_report_history(incident_id, created_at);
 
 CREATE TABLE IF NOT EXISTS incident_alerts (
   incident_id TEXT,

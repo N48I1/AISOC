@@ -71,6 +71,20 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+// Time-window filter for analytics/archive endpoints. `period` comes from a
+// fixed allowlist (24h/7d/30d/1y/all), so mapping it to an interval is safe to
+// inline. Returns a leading-AND fragment (or '' for "all"/unknown).
+const PERIOD_INTERVALS: Record<string, string> = {
+  '24h': '24 hours', '7d': '7 days', '30d': '30 days', '1y': '1 year',
+};
+function periodClause(period: unknown, col: string): string {
+  const iv = PERIOD_INTERVALS[String(period ?? '')];
+  return iv ? ` AND ${col} >= now() - interval '${iv}'` : '';
+}
+function periodDays(period: unknown, fallback = 30): number {
+  return ({ '24h': 1, '7d': 7, '30d': 30, '1y': 365 } as Record<string, number>)[String(period ?? '')] ?? fallback;
+}
+
 const JWT_SECRET = process.env.JWT_SECRET || 'black-box-soc-secret-2026';
 
 // --- Ingest rate-limiter (in-memory, resets each minute) -------------------
@@ -1190,12 +1204,13 @@ async function startServer() {
   });
 
   // ── Stats ─────────────────────────────────────────────────────────────────
-  app.get('/api/stats', authenticate, async (_req, res) => {
-    const activeRow: any  = await db.prepare("SELECT COUNT(*) as count FROM alerts WHERE status IN ('NEW', 'ANALYZING', 'ESCALATED')").get();
-    const mttrRow: any    = await db.prepare(`SELECT AVG((extract(epoch from now()) - extract(epoch from timestamp))) as avg_seconds FROM alerts WHERE status IN ('TRIAGED', 'CLOSED') AND ai_analysis IS NOT NULL`).get();
-    const totalRow: any   = await db.prepare("SELECT COUNT(*) as count FROM alerts").get();
-    const analyzedRow: any= await db.prepare("SELECT COUNT(*) as count FROM alerts WHERE ai_analysis IS NOT NULL").get();
-    const fpRow: any      = await db.prepare("SELECT COUNT(*) as count FROM alerts WHERE status = 'FALSE_POSITIVE'").get();
+  app.get('/api/stats', authenticate, async (req: any, res) => {
+    const p = periodClause(req.query.period, 'timestamp');   // '' when "all"
+    const activeRow: any  = await db.prepare(`SELECT COUNT(*) as count FROM alerts WHERE status IN ('NEW', 'ANALYZING', 'ESCALATED')${p}`).get();
+    const mttrRow: any    = await db.prepare(`SELECT AVG((extract(epoch from now()) - extract(epoch from timestamp))) as avg_seconds FROM alerts WHERE status IN ('TRIAGED', 'CLOSED') AND ai_analysis IS NOT NULL${p}`).get();
+    const totalRow: any   = await db.prepare(`SELECT COUNT(*) as count FROM alerts WHERE TRUE${p}`).get();
+    const analyzedRow: any= await db.prepare(`SELECT COUNT(*) as count FROM alerts WHERE ai_analysis IS NOT NULL${p}`).get();
+    const fpRow: any      = await db.prepare(`SELECT COUNT(*) as count FROM alerts WHERE status = 'FALSE_POSITIVE'${p}`).get();
 
     const total          = totalRow?.count ?? 0;
     const analyzed       = analyzedRow?.count ?? 0;
@@ -2834,8 +2849,9 @@ async function startServer() {
     });
   });
 
-  app.get('/api/analytics/fp-over-time', authenticate, async (_req, res) => {
-    // FPs per day for last 30 days, broken down by trigger
+  app.get('/api/analytics/fp-over-time', authenticate, async (req: any, res) => {
+    // FPs per day over the selected window (default 30 days), broken down by trigger
+    const days = periodDays(req.query.period, 30);
     const rows = await db.prepare(`
       SELECT
         DATE(created_at) as day,
@@ -2846,7 +2862,7 @@ async function startServer() {
         SUM(CASE WHEN triggered_by = 'composer' THEN 1 ELSE 0 END) as composer_fp
       FROM incident_insights
       WHERE outcome = 'FALSE_POSITIVE'
-        AND created_at >= current_date - interval '30 days'
+        AND created_at >= current_date - interval '${days} days'
       GROUP BY DATE(created_at)
       ORDER BY day ASC
     `).all();
@@ -2855,7 +2871,7 @@ async function startServer() {
     const alertRows = await db.prepare(`
       SELECT DATE(timestamp) as day, COUNT(*) as total
       FROM alerts
-      WHERE timestamp >= current_date - interval '30 days'
+      WHERE timestamp >= current_date - interval '${days} days'
       GROUP BY DATE(timestamp)
       ORDER BY day ASC
     `).all() as Array<{ day: string; total: number }>;
@@ -3126,7 +3142,8 @@ async function startServer() {
     const params: any[] = [];
     if (method) { where.push('fp_method = ?'); params.push(method); }
     if (source) { where.push('source_ip = ?'); params.push(source); }
-    const whereClause = where.join(' AND ');
+    let whereClause = where.join(' AND ');
+    whereClause += periodClause(req.query.period, 'timestamp');   // time-window filter
 
     const total = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE ${whereClause}`).get(...params) as any).c;
     const rows  = await db.prepare(
@@ -3393,10 +3410,12 @@ async function startServer() {
   app.get('/api/incidents/:id', authenticate, async (req: any, res) => {
     const { id } = req.params;
     const inc: any = await db.prepare(`
-      SELECT i.*, u.username AS assigned_to_username, eu.username AS escalated_by_username
+      SELECT i.*, u.username AS assigned_to_username, eu.username AS escalated_by_username,
+             lu.username AS report_locked_by_username
       FROM incidents i
       LEFT JOIN users u  ON u.id  = i.assigned_to
       LEFT JOIN users eu ON eu.id = i.escalated_by
+      LEFT JOIN users lu ON lu.id = i.report_locked_by
       WHERE i.id = ?
     `).get(id);
     if (!inc) return res.status(404).json({ error: 'Incident not found' });
@@ -3508,6 +3527,13 @@ async function startServer() {
     try {
       const inc: any = await db.prepare('SELECT * FROM incidents WHERE id = ?').get(id);
       if (!inc) return res.status(404).json({ error: 'Incident not found' });
+      // Don't overwrite a locked report (unless the locker/admin asks).
+      const role = req.user?.role;
+      const isAdminLead = ['ADMIN', 'SUPER_ADMIN', 'INCIDENT_LEAD'].includes(role);
+      if (inc.report_locked && inc.report_locked_by !== req.user?.id && !isAdminLead) {
+        const locker: any = await db.prepare('SELECT username FROM users WHERE id = ?').get(inc.report_locked_by);
+        return res.status(423).json({ error: `Report is locked by ${locker?.username || 'another analyst'} — unlock it before regenerating.` });
+      }
       const alert: any = await db.prepare(
         `SELECT a.* FROM incident_alerts ia JOIN alerts a ON a.id = ia.alert_id
          WHERE ia.incident_id = ? ORDER BY a.timestamp DESC LIMIT 1`
@@ -3541,7 +3567,9 @@ async function startServer() {
       if (!reportBody) {
         return res.status(502).json({ error: 'Report generation failed — the AI did not return a report. Check the LLM provider / model.' });
       }
-      await db.prepare('UPDATE incidents SET report_body = ? WHERE id = ?').run(reportBody, id);
+      await db.prepare('UPDATE incidents SET report_body = ?, report_updated_at = now() WHERE id = ?').run(reportBody, id);
+      await db.prepare(`INSERT INTO incident_report_history (incident_id, user_id, username, action, snapshot) VALUES (?, ?, ?, 'generated', ?)`)
+        .run(id, req.user?.id ?? null, req.user?.username ?? null, reportBody);
       writeAudit(req.user?.id, 'INCIDENT_REPORT_GENERATED', `Generated AI incident report for ${id} (${reportBody.length} chars)`);
       io.emit('incident_updated', { id });
       res.json({ ok: true, report_body: reportBody });
@@ -3668,17 +3696,25 @@ async function startServer() {
     const { report_body, title, severity, status: newStatus } = req.body || {};
     const validStatuses = ['OPEN', 'IN_PROGRESS', 'CONTAINED', 'RESOLVED', 'CLOSED', 'RECLASSIFIED_FP'];
 
-    const inc: any = await db.prepare('SELECT status, assigned_to FROM incidents WHERE id = ?').get(id);
+    const inc: any = await db.prepare('SELECT status, assigned_to, report_locked, report_locked_by FROM incidents WHERE id = ?').get(id);
     if (!inc) return res.status(404).json({ error: 'Incident not found' });
 
     const requesterRole = req.user?.role;
     const isOwner = inc.assigned_to === req.user?.id;
-    const canEdit = ['ADMIN', 'INCIDENT_LEAD'].includes(requesterRole) || (requesterRole === 'TIER2' && isOwner);
+    const isAdminLead = ['ADMIN', 'SUPER_ADMIN', 'INCIDENT_LEAD'].includes(requesterRole);
+    const canEdit = isAdminLead || (requesterRole === 'TIER2' && isOwner);
     if (!canEdit) return res.status(403).json({ error: 'Not allowed to edit this incident' });
+
+    // Report lock: while locked, only the analyst who locked it (or an admin/lead)
+    // may change the body. Everyone else must wait for it to be unlocked.
+    if (report_body !== undefined && inc.report_locked && inc.report_locked_by !== req.user?.id && !isAdminLead) {
+      const locker: any = await db.prepare('SELECT username FROM users WHERE id = ?').get(inc.report_locked_by);
+      return res.status(423).json({ error: `Report is locked by ${locker?.username || 'another analyst'}. Ask them to unlock it first.` });
+    }
 
     const sets: string[] = ['updated_at = now()'];
     const params: any[]  = [];
-    if (report_body !== undefined) { sets.push('report_body = ?'); params.push(report_body); }
+    if (report_body !== undefined) { sets.push('report_body = ?', 'report_updated_at = now()'); params.push(report_body); }
     if (title       !== undefined) { sets.push('title = ?');       params.push(title.slice(0, 200)); }
     if (severity    !== undefined) { sets.push('severity = ?');    params.push(severity); }
     if (newStatus   !== undefined) {
@@ -3692,9 +3728,52 @@ async function startServer() {
     if (sets.length === 1) return res.status(400).json({ error: 'no fields to update' });
     params.push(id);
     await db.prepare(`UPDATE incidents SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    if (report_body !== undefined) {
+      await db.prepare(
+        `INSERT INTO incident_report_history (incident_id, user_id, username, action, snapshot) VALUES (?, ?, ?, 'edited', ?)`
+      ).run(id, req.user?.id ?? null, req.user?.username ?? null, report_body);
+    }
     if (newStatus) writeAudit(req.user?.id, 'INCIDENT_STATUS', `Incident ${id} status ${inc.status} → ${newStatus}`);
     io.emit('incident_updated', { id });
     res.json({ ok: true });
+  });
+
+  // Lock / unlock the report. Anyone with edit rights can lock; only the analyst
+  // who locked it (or an admin/lead) can unlock — so the investigator controls it.
+  app.post('/api/incidents/:id/report-lock', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const lock = req.body?.locked !== false;   // default: lock
+    const inc: any = await db.prepare('SELECT assigned_to, report_locked, report_locked_by FROM incidents WHERE id = ?').get(id);
+    if (!inc) return res.status(404).json({ error: 'Incident not found' });
+
+    const role = req.user?.role;
+    const isAdminLead = ['ADMIN', 'SUPER_ADMIN', 'INCIDENT_LEAD'].includes(role);
+    const canEdit = isAdminLead || (role === 'TIER2' && inc.assigned_to === req.user?.id);
+    if (!canEdit) return res.status(403).json({ error: 'Not allowed to edit this incident' });
+
+    if (lock) {
+      await db.prepare('UPDATE incidents SET report_locked = 1, report_locked_by = ?, report_locked_at = now() WHERE id = ?').run(req.user?.id ?? null, id);
+      await db.prepare(`INSERT INTO incident_report_history (incident_id, user_id, username, action) VALUES (?, ?, ?, 'locked')`).run(id, req.user?.id ?? null, req.user?.username ?? null);
+    } else {
+      // Only the locker or an admin/lead may unlock.
+      if (inc.report_locked && inc.report_locked_by !== req.user?.id && !isAdminLead) {
+        const locker: any = await db.prepare('SELECT username FROM users WHERE id = ?').get(inc.report_locked_by);
+        return res.status(423).json({ error: `Only ${locker?.username || 'the analyst who locked it'} (or an admin) can unlock this report.` });
+      }
+      await db.prepare('UPDATE incidents SET report_locked = 0, report_locked_by = NULL, report_locked_at = NULL WHERE id = ?').run(id);
+      await db.prepare(`INSERT INTO incident_report_history (incident_id, user_id, username, action) VALUES (?, ?, ?, 'unlocked')`).run(id, req.user?.id ?? null, req.user?.username ?? null);
+    }
+    io.emit('incident_updated', { id });
+    res.json({ ok: true, locked: lock });
+  });
+
+  // Report change history (newest first).
+  app.get('/api/incidents/:id/report-history', authenticate, async (req: any, res) => {
+    const rows = await db.prepare(
+      `SELECT id, user_id, username, action, snapshot, created_at
+       FROM incident_report_history WHERE incident_id = ? ORDER BY created_at DESC, id DESC LIMIT 100`
+    ).all(req.params.id);
+    res.json({ history: rows });
   });
 
   // Reclassify as False Positive
@@ -4014,14 +4093,15 @@ async function startServer() {
   });
 
   // ── Pipeline Funnel Analytics ─────────────────────────────────────────────
-  app.get('/api/analytics/pipeline-funnel', authenticate, async (_req, res) => {
-    const ingested     = (await db.prepare("SELECT COUNT(*) as c FROM alerts").get() as any).c;
-    const newAlerts    = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'NEW'").get() as any).c;
-    const fpFiltered   = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status IN ('FALSE_POSITIVE','FP_CONFIRMED')").get() as any).c;
-    const filtered     = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'FILTERED'").get() as any).c;
-    const investigated = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status IN ('TRIAGED','ESCALATED','CLOSED') AND investigated_at IS NOT NULL").get() as any).c;
-    const escalated    = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'ESCALATED'").get() as any).c;
-    const closed       = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE status = 'CLOSED'").get() as any).c;
+  app.get('/api/analytics/pipeline-funnel', authenticate, async (req: any, res) => {
+    const p = periodClause(req.query.period, 'timestamp');
+    const ingested     = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE TRUE${p}`).get() as any).c;
+    const newAlerts    = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE status = 'NEW'${p}`).get() as any).c;
+    const fpFiltered   = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE status IN ('FALSE_POSITIVE','FP_CONFIRMED')${p}`).get() as any).c;
+    const filtered     = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE status = 'FILTERED'${p}`).get() as any).c;
+    const investigated = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE status IN ('TRIAGED','ESCALATED','CLOSED') AND investigated_at IS NOT NULL${p}`).get() as any).c;
+    const escalated    = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE status = 'ESCALATED'${p}`).get() as any).c;
+    const closed       = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE status = 'CLOSED'${p}`).get() as any).c;
 
     // Timing metrics
     const timingRow = await db.prepare(`
@@ -4029,7 +4109,7 @@ async function startServer() {
         AVG(CASE WHEN filtered_at IS NOT NULL THEN (extract(epoch from filtered_at) - extract(epoch from timestamp)) END) as avg_filter_sec,
         AVG(CASE WHEN investigated_at IS NOT NULL THEN (extract(epoch from investigated_at) - extract(epoch from filtered_at)) END) as avg_investigate_sec,
         AVG(CASE WHEN closed_at IS NOT NULL THEN (extract(epoch from closed_at) - extract(epoch from timestamp)) END) as avg_close_sec
-      FROM alerts
+      FROM alerts WHERE TRUE${p}
     `).get() as any;
 
     res.json({
@@ -4042,13 +4122,14 @@ async function startServer() {
   });
 
   // ── Detection Method Effectiveness ────────────────────────────────────────
-  app.get('/api/analytics/detection-effectiveness', authenticate, async (_req, res) => {
+  app.get('/api/analytics/detection-effectiveness', authenticate, async (req: any, res) => {
+    const p = periodClause(req.query.period, 'timestamp');
     const methods = ['suppression', 'memory', 'triage'];
     const result: any = {};
     for (const m of methods) {
-      const total    = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE fp_method = ?").get(m) as any).c;
-      const confirmed = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE fp_method = ? AND status = 'FP_CONFIRMED'").get(m) as any).c;
-      const overridden = (await db.prepare("SELECT COUNT(*) as c FROM alerts WHERE fp_method = ? AND status = 'FILTERED'").get(m) as any).c;
+      const total    = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE fp_method = ?${p}`).get(m) as any).c;
+      const confirmed = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE fp_method = ? AND status = 'FP_CONFIRMED'${p}`).get(m) as any).c;
+      const overridden = (await db.prepare(`SELECT COUNT(*) as c FROM alerts WHERE fp_method = ? AND status = 'FILTERED'${p}`).get(m) as any).c;
       result[m] = {
         total_caught: total,
         analyst_confirmed: confirmed,
@@ -4067,15 +4148,16 @@ async function startServer() {
   });
 
   // ── Source Distribution Analytics ─────────────────────────────────────────
-  app.get('/api/analytics/source-distribution', authenticate, async (_req, res) => {
+  app.get('/api/analytics/source-distribution', authenticate, async (req: any, res) => {
+    const p = periodClause(req.query.period, 'timestamp');
     const byAgent = await db.prepare(`
       SELECT agent_name as name, COUNT(*) as count
-      FROM alerts WHERE agent_name IS NOT NULL AND agent_name != ''
+      FROM alerts WHERE agent_name IS NOT NULL AND agent_name != ''${p}
       GROUP BY agent_name ORDER BY count DESC LIMIT 15
     `).all();
     const byRule = await db.prepare(`
       SELECT rule_id, description, COUNT(*) as count
-      FROM alerts WHERE rule_id IS NOT NULL
+      FROM alerts WHERE rule_id IS NOT NULL${p}
       GROUP BY rule_id ORDER BY count DESC LIMIT 15
     `).all();
     res.json({ by_agent: byAgent, by_rule: byRule });
@@ -4465,6 +4547,7 @@ async function startServer() {
         SELECT id, severity, timestamp FROM alerts
         WHERE status IN ('NEW', 'ANALYZING')
         AND timestamp IS NOT NULL
+        AND fp_method IS NULL
       `).all() as Array<{ id: string; severity: number; timestamp: string }>;
 
       for (const alert of stale) {

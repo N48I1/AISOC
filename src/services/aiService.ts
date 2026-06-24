@@ -592,8 +592,8 @@ export async function getFpReduction(): Promise<any> {
   return res.json();
 }
 
-export async function getFpOverTime(): Promise<any[]> {
-  const res = await fetch("/api/analytics/fp-over-time", { headers: authHeaders() });
+export async function getFpOverTime(period?: string): Promise<any[]> {
+  const res = await fetch(`/api/analytics/fp-over-time${(period && period !== 'all') ? `?period=${period}` : ''}`, { headers: authHeaders() });
   if (!res.ok) return [];
   return res.json();
 }
@@ -766,6 +766,20 @@ export async function generateIncidentReport(id: string): Promise<{ ok: boolean;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Report generation failed');
   return data;
+}
+
+export async function lockIncidentReport(id: string, locked: boolean): Promise<{ ok: boolean; locked: boolean }> {
+  const res = await fetch(`/api/incidents/${id}/report-lock`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ locked }) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Failed to change report lock');
+  return data;
+}
+
+export interface ReportHistoryRow { id: number; user_id: number | null; username: string | null; action: string; snapshot: string | null; created_at: string; }
+export async function getReportHistory(id: string): Promise<{ history: ReportHistoryRow[] }> {
+  const res = await fetch(`/api/incidents/${id}/report-history`, { headers: authHeaders() });
+  if (!res.ok) return { history: [] };
+  return res.json();
 }
 
 export async function getAlertReasoning(alertId: string): Promise<{
@@ -964,31 +978,34 @@ export async function overrideFp(alertId: string): Promise<any> {
   return res.json();
 }
 
-export async function getFpArchive(opts: { page?: number; pageSize?: number; method?: string; source?: string } = {}): Promise<any> {
+export async function getFpArchive(opts: { page?: number; pageSize?: number; method?: string; source?: string; period?: string } = {}): Promise<any> {
   const params = new URLSearchParams();
   if (opts.page)     params.set('page', String(opts.page));
   if (opts.pageSize) params.set('pageSize', String(opts.pageSize));
   if (opts.method)   params.set('method', opts.method);
   if (opts.source)   params.set('source', opts.source);
+  if (opts.period && opts.period !== 'all') params.set('period', opts.period);
   const res = await fetch(`/api/alerts/fp-archive?${params}`, { headers: authHeaders() });
   if (!res.ok) return { alerts: [], total: 0 };
   return res.json();
 }
 
-export async function getPipelineFunnel(): Promise<any> {
-  const res = await fetch("/api/analytics/pipeline-funnel", { headers: authHeaders() });
+const periodQ = (period?: string) => (period && period !== 'all') ? `?period=${period}` : '';
+
+export async function getPipelineFunnel(period?: string): Promise<any> {
+  const res = await fetch(`/api/analytics/pipeline-funnel${periodQ(period)}`, { headers: authHeaders() });
   if (!res.ok) return null;
   return res.json();
 }
 
-export async function getDetectionEffectiveness(): Promise<any> {
-  const res = await fetch("/api/analytics/detection-effectiveness", { headers: authHeaders() });
+export async function getDetectionEffectiveness(period?: string): Promise<any> {
+  const res = await fetch(`/api/analytics/detection-effectiveness${periodQ(period)}`, { headers: authHeaders() });
   if (!res.ok) return null;
   return res.json();
 }
 
-export async function getSourceDistribution(): Promise<any> {
-  const res = await fetch("/api/analytics/source-distribution", { headers: authHeaders() });
+export async function getSourceDistribution(period?: string): Promise<any> {
+  const res = await fetch(`/api/analytics/source-distribution${periodQ(period)}`, { headers: authHeaders() });
   if (!res.ok) return null;
   return res.json();
 }

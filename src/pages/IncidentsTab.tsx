@@ -2,10 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shield, AlertTriangle, AlertOctagon, Activity, FileText, Search, User, CheckCircle, XCircle, X,
   Clock, ChevronRight, Filter, Plus, UserPlus, Eye, ThumbsUp, ThumbsDown, BookOpen, Send, Zap,
-  RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, Terminal,
+  RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, Terminal, Download, Lock, Unlock,
 } from 'lucide-react';
 import {
-  getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, generateIncidentReport, createIncident,
+  getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, generateIncidentReport,
+  lockIncidentReport, getReportHistory, type ReportHistoryRow, createIncident,
   assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote,
   reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction,
   reorderIncidentActions, updateIncident, listAnalysts, type ReasoningRow,
@@ -260,12 +261,15 @@ const WazuhAlertCard: React.FC<{ alert: Alert; index: number; total: number }> =
         </p>
         {ruleId && <code className="font-mono text-[0.58rem] text-[var(--t3)]">rule {ruleId}</code>}
         {rawLog && (
-          <button onClick={() => setShowRaw(s => !s)}
-            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--p1)] bg-blue-50 hover:bg-blue-100 text-[0.62rem] font-bold text-[var(--p1)] transition-colors">
-            <Terminal size={12} />
-            {showRaw ? 'Hide' : 'View'} Raw JSON
-            <ChevronRight size={12} className={`transition-transform ${showRaw ? 'rotate-90' : ''}`} />
-          </button>
+          <div className="ml-auto flex items-center gap-1.5">
+            <CopyButton text={rawLog} />
+            <button onClick={() => setShowRaw(s => !s)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--p1)] bg-blue-50 hover:bg-blue-100 text-[0.62rem] font-bold text-[var(--p1)] transition-colors">
+              <Terminal size={12} />
+              {showRaw ? 'Hide' : 'View'} Raw JSON
+              <ChevronRight size={12} className={`transition-transform ${showRaw ? 'rotate-90' : ''}`} />
+            </button>
+          </div>
         )}
       </div>
       <table className="w-full text-[0.72rem]">
@@ -484,6 +488,13 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const { user } = useAuth();
   const isAdminOrLead = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN || user?.role === 'INCIDENT_LEAD';
 
+  // Copy helper — used by double-click-to-copy on the incident title/ID.
+  const copyText = (text: string, label = 'Copied') => {
+    navigator.clipboard.writeText(text)
+      .then(() => toast(`${label} to clipboard`, 'success'))
+      .catch(() => toast('Copy failed', 'error'));
+  };
+
   const [list, setList]               = useState<Incident[]>([]);
   const [total, setTotal]             = useState(0);
   const [counts, setCounts]           = useState<Record<string, number>>({});
@@ -498,9 +509,10 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const [activeId, setActiveId]       = useState<string | null>(null);
   const [detail, setDetail]           = useState<Incident | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [detailTab, setDetailTab]     = useState<'overview'|'observables'|'tasks'|'reasoning'|'timeline'|'report'>('overview');
+  const [detailTab, setDetailTab]     = useState<'overview'|'observables'|'tasks'|'timeline'|'report'>('overview');
   const [reasoning, setReasoning]     = useState<ReasoningRow[]>([]);
   const [loadingReasoning, setLoadingReasoning] = useState(false);
+  const [showOverviewReasoning, setShowOverviewReasoning] = useState(false);
   const [reinvestigating, setReinvestigating]   = useState(false);
   const [myOnly, setMyOnly]           = useState(false);
 
@@ -514,6 +526,10 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const [reportEditing, setReportEditing] = useState(false);
   const [reportSaving, setReportSaving]   = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [locking, setLocking] = useState(false);
+  const [reportHistory, setReportHistory] = useState<ReportHistoryRow[]>([]);
+  const [showReportHistory, setShowReportHistory] = useState(false);
+  const [historySnapshot, setHistorySnapshot] = useState<ReportHistoryRow | null>(null);
   const [noteText, setNoteText]         = useState('');
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [deleteActionTarget, setDeleteActionTarget] = useState<IncidentAction | null>(null);
@@ -555,15 +571,10 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
     else { setDetail(null); setReportEditing(false); setReasoning([]); }
   }, [activeId, fetchDetail]);
 
-  // Lazy-load the reasoning timeline only when the user opens that tab.
-  // Cheap (a single GET on a small table) but no need to fetch eagerly.
+  // Load the report change-history when the Report tab opens.
   useEffect(() => {
-    if (detailTab !== 'reasoning' || !activeId) return;
-    setLoadingReasoning(true);
-    getIncidentReasoning(activeId)
-      .then(d => setReasoning(d.reasoning || []))
-      .catch(() => setReasoning([]))
-      .finally(() => setLoadingReasoning(false));
+    if (detailTab !== 'report' || !activeId) { setShowReportHistory(false); return; }
+    getReportHistory(activeId).then(d => setReportHistory(d.history)).catch(() => setReportHistory([]));
   }, [detailTab, activeId]);
 
   // Re-run the agents on this incident's alert to capture (missing) reasoning.
@@ -699,8 +710,10 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       setReportSaving(true);
       const r = await updateIncident(detail.id, { report_body: reportDraft });
       setReportSaving(false);
-      if (r.ok) { toast('Report saved', 'success'); setReportEditing(false); fetchDetail(detail.id); }
-      else toast(r.error || 'Failed', 'error');
+      if (r.ok) {
+        toast('Report saved', 'success'); setReportEditing(false); fetchDetail(detail.id);
+        getReportHistory(detail.id).then(d => setReportHistory(d.history)).catch(() => {});
+      } else toast(r.error || 'Failed', 'error');
     };
 
     // Ask the AI to write a formal incident report (Markdown) and save it.
@@ -712,6 +725,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
         setReportDraft(r.report_body);
         setReportEditing(false);
         fetchDetail(detail.id);
+        getReportHistory(detail.id).then(d => setReportHistory(d.history)).catch(() => {});
         toast('AI report generated', 'success');
       } catch (e: any) {
         toast(e?.message || 'Report generation failed', 'error');
@@ -720,12 +734,66 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       }
     };
 
+    // ── Report metadata (static — always in the report, not editable) ────────
+    const fmtDate = (d?: string | null) => d ? new Date(d).toLocaleString() : '—';
+    const reportMeta: Array<{ label: string; value: string }> = [
+      { label: 'Incident ID',      value: detail.id },
+      { label: 'Severity',         value: detail.severity },
+      { label: 'Status',           value: STATUS_LABELS[detail.status] || detail.status },
+      { label: 'Phase',            value: PHASE_LABELS[detail.phase as IncidentPhase] || detail.phase },
+      { label: 'Assigned Analyst', value: detail.assigned_to_username || 'Unassigned' },
+      { label: 'Escalated By',     value: detail.escalated_by_username || '—' },
+      { label: 'Escalated At',     value: fmtDate(detail.escalated_at) },
+      { label: 'Report Date',      value: new Date().toLocaleString() },
+    ];
+    const buildReportMarkdown = () => [
+      `# Incident Report — ${detail.title}`,
+      '',
+      '| Field | Value |',
+      '| --- | --- |',
+      ...reportMeta.map(m => `| **${m.label}** | ${m.value} |`),
+      `| **Title** | ${detail.title} |`,
+      '',
+      '---',
+      '',
+      detail.report_body || '_No report body written yet._',
+      '',
+    ].join('\n');
+    const downloadReport = () => {
+      const blob = new Blob([buildReportMarkdown()], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${detail.id}-report.md`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast('Report downloaded', 'success');
+    };
+
+    // ── Report lock + history ────────────────────────────────────────────────
+    const isReportLocked   = !!detail.report_locked;
+    const reportLockedByMe = detail.report_locked_by === user?.id;
+    const canManageReport  = canEdit && !isClosed && (!isReportLocked || reportLockedByMe || isAdminOrLead);
+    const reloadHistory = () => { getReportHistory(detail.id).then(d => setReportHistory(d.history)).catch(() => {}); };
+    const handleToggleLock = async () => {
+      if (locking) return;
+      setLocking(true);
+      try {
+        const r = await lockIncidentReport(detail.id, !isReportLocked);
+        toast(r.locked ? 'Report locked' : 'Report unlocked', 'success');
+        fetchDetail(detail.id);
+        reloadHistory();
+      } catch (e: any) {
+        toast(e?.message || 'Lock change failed', 'error');
+      } finally {
+        setLocking(false);
+      }
+    };
+
     const observables = extractObservables(detail.analysis, detail.alerts);
     const DETAIL_TABS = [
       { key: 'overview'     as const, label: 'Overview',     icon: <Eye size={13} /> },
       { key: 'observables'  as const, label: `Observables (${observables.length})`, icon: <Crosshair size={13} /> },
       { key: 'tasks'        as const, label: `Tasks (${actions.length})`, icon: <ListChecks size={13} /> },
-      { key: 'reasoning'    as const, label: 'Reasoning',    icon: <Activity size={13} /> },
       { key: 'timeline'     as const, label: `Timeline (${detail.timeline?.length || 0})`, icon: <MessageSquare size={13} /> },
       { key: 'report'       as const, label: 'Report',      icon: <FileText size={13} /> },
     ];
@@ -741,7 +809,9 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
             </button>
             <div className="flex items-center gap-2">
               <ProviderHealthBadge className="mr-1" />
-              <code className="text-[0.7rem] font-mono bg-[var(--s1)] text-[var(--t5)] px-2 py-1 rounded">{detail.id}</code>
+              <code onDoubleClick={() => copyText(detail.id, 'Incident ID copied')}
+                title="Double-click to copy incident ID"
+                className="text-[0.7rem] font-mono bg-[var(--s1)] text-[var(--t5)] px-2 py-1 rounded cursor-pointer select-none hover:bg-[var(--s2)] transition-colors">{detail.id}</code>
               <span className={`px-2 py-1 rounded text-[0.6rem] font-black uppercase tracking-widest border ${SEV_COLORS[detail.severity] || 'bg-gray-100 text-gray-700'}`}>{detail.severity}</span>
               <span className={`px-3 py-1 rounded-lg text-[0.65rem] font-black uppercase tracking-widest border ${STATUS_COLORS[detail.status] || 'bg-gray-100 text-gray-700'}`}>
                 {STATUS_LABELS[detail.status] || detail.status}
@@ -755,7 +825,9 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
 
           {/* Title + assignee */}
           <div className="flex items-start justify-between gap-4">
-            <h2 className="text-[1.25rem] font-black text-[var(--t7)]">{detail.title}</h2>
+            <h2 onDoubleClick={() => copyText(detail.title, 'Title copied')}
+              title="Double-click to copy title"
+              className="text-[1.25rem] font-black text-[var(--t7)] cursor-pointer select-none">{detail.title}</h2>
             {detail.assigned_to_username && (
               <div className="flex items-center gap-2 shrink-0">
                 <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[var(--p1)] to-[var(--pd)] flex items-center justify-center text-white text-[0.55rem] font-black">
@@ -775,8 +847,9 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
           {/* Two-column body */}
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
 
-            {/* Left column — tabbed content */}
-            <div className="space-y-4">
+            {/* Left column — tabbed content (min-w-0 so wide content like raw JSON scrolls
+                inside its own box instead of stretching the whole page) */}
+            <div className="space-y-4 min-w-0">
               {/* Tab bar */}
               <div className="flex gap-1 bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-1 overflow-x-auto">
                 {DETAIL_TABS.map(t => (
@@ -1012,6 +1085,56 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     </div>
                   )}
 
+                  {/* ===== Agent reasoning — collapsed by default, expand to view ===== */}
+                  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => {
+                        const next = !showOverviewReasoning;
+                        setShowOverviewReasoning(next);
+                        if (next && reasoning.length === 0 && !loadingReasoning) {
+                          setLoadingReasoning(true);
+                          getIncidentReasoning(detail.id).then(d => setReasoning(d.reasoning || [])).catch(() => {}).finally(() => setLoadingReasoning(false));
+                        }
+                      }}
+                      className="w-full px-4 py-2.5 bg-[var(--s1)] flex items-center gap-2 hover:bg-[var(--s2)] transition-colors text-left">
+                      <Activity size={13} className="text-violet-600" />
+                      <p className="text-[0.72rem] font-black text-[var(--t7)]">Agent Reasoning{reasoning.length ? ` (${reasoning.length})` : ''}</p>
+                      <span className="ml-auto text-[0.6rem] text-[var(--t3)] font-semibold">{showOverviewReasoning ? 'Hide' : 'Show'}</span>
+                      <ChevronRight size={14} className={`text-[var(--t3)] transition-transform ${showOverviewReasoning ? 'rotate-90' : ''}`} />
+                    </button>
+                    {showOverviewReasoning && (
+                      <div className="border-t border-[var(--b1)] p-4">
+                        {loadingReasoning ? (
+                          <p className="text-[0.72rem] text-[var(--t3)] text-center py-4"><RefreshCw size={14} className="inline animate-spin mr-1" /> Loading reasoning…</p>
+                        ) : reasoning.length === 0 ? (
+                          <div className="text-center py-4">
+                            <p className="text-[0.74rem] text-[var(--t5)]">No agent reasoning recorded yet.</p>
+                            <button onClick={handleRunInvestigation} disabled={reinvestigating}
+                              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-[0.7rem] font-bold hover:bg-violet-700 disabled:opacity-60">
+                              {reinvestigating ? <><RefreshCw size={12} className="animate-spin" /> Running…</> : <><Zap size={12} /> Run investigation</>}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-2 max-h-[28rem] overflow-y-auto">
+                            {reasoning.map((r, i) => (
+                              <div key={i} className="border border-[var(--b2)] rounded-lg p-2.5 bg-[var(--s1)]/40">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-[0.6rem] font-black text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded uppercase tracking-wide">{r.agent}</span>
+                                  {typeof r.confidence === 'number' && r.confidence > 0 && (
+                                    <span className="text-[0.58rem] text-[var(--t4)] font-mono">{Math.round(r.confidence <= 1 ? r.confidence * 100 : r.confidence)}% conf</span>
+                                  )}
+                                </div>
+                                {r.decision && <p className="text-[0.72rem] text-[var(--t6)] leading-relaxed">{r.decision}</p>}
+                                {r.evidence_for?.length > 0 && <p className="text-[0.64rem] text-emerald-700 mt-1">✓ {r.evidence_for.slice(0, 3).join(' · ')}</p>}
+                                {r.evidence_against?.length > 0 && <p className="text-[0.64rem] text-red-700 mt-0.5">✗ {r.evidence_against.slice(0, 3).join(' · ')}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                 </div>
               )}
 
@@ -1173,331 +1296,6 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                 </div>
               )}
 
-              {/* ===== REASONING TAB =====
-                  Visual chain-of-thought across every AI agent that touched
-                  this incident. Grouped into Triage / Investigation / Composition
-                  with per-agent cards showing decision, evidence, and rejected
-                  hypotheses. */}
-              {detailTab === 'reasoning' && (() => {
-                const AGENT_META: Record<string, { icon: any; label: string; tagline: string; color: string; ring: string; bg: string; dot: string }> = {
-                  analysis:    { icon: Search,      label: 'Triage Analyst',  tagline: 'Extracts IOCs, validates severity, flags false positives', color: 'text-violet-700 dark:text-violet-300',  ring: 'ring-violet-200 dark:ring-violet-900',  bg: 'from-violet-50 to-transparent dark:from-violet-950/40',  dot: 'bg-violet-500' },
-                  intel:       { icon: Crosshair,   label: 'Threat Intel',    tagline: 'Maps IOCs to MITRE ATT&CK and assesses reputation',    color: 'text-blue-700 dark:text-blue-300',      ring: 'ring-blue-200 dark:ring-blue-900',      bg: 'from-blue-50 to-transparent dark:from-blue-950/40',      dot: 'bg-blue-500' },
-                  knowledge:   { icon: BookOpen,    label: 'Knowledge / RAG', tagline: 'Pulls relevant playbooks and remediation steps',       color: 'text-amber-700 dark:text-amber-300',    ring: 'ring-amber-200 dark:ring-amber-900',    bg: 'from-amber-50 to-transparent dark:from-amber-950/40',    dot: 'bg-amber-500' },
-                  correlation: { icon: Link2,       label: 'Correlation',     tagline: 'Detects multi-alert campaigns and kill-chain stages',  color: 'text-pink-700 dark:text-pink-300',      ring: 'ring-pink-200 dark:ring-pink-900',      bg: 'from-pink-50 to-transparent dark:from-pink-950/40',      dot: 'bg-pink-500' },
-                  recall:      { icon: Clock,       label: 'Memory Recall',   tagline: 'Finds semantically similar prior incidents',           color: 'text-indigo-700 dark:text-indigo-300',  ring: 'ring-indigo-200 dark:ring-indigo-900',  bg: 'from-indigo-50 to-transparent dark:from-indigo-950/40',  dot: 'bg-indigo-500' },
-                  ioc_check:   { icon: Hash,        label: 'IOC History',     tagline: 'Checks indicators against historical IOC memory',      color: 'text-teal-700 dark:text-teal-300',      ring: 'ring-teal-200 dark:ring-teal-900',      bg: 'from-teal-50 to-transparent dark:from-teal-950/40',      dot: 'bg-teal-500' },
-                  ticketing:   { icon: FileText,    label: 'Ticketing',       tagline: 'Authors the incident ticket and sets priority',        color: 'text-cyan-700 dark:text-cyan-300',      ring: 'ring-cyan-200 dark:ring-cyan-900',      bg: 'from-cyan-50 to-transparent dark:from-cyan-950/40',      dot: 'bg-cyan-500' },
-                  response:    { icon: Zap,         label: 'Response',        tagline: 'Recommends containment actions and target assets',    color: 'text-orange-700 dark:text-orange-300',  ring: 'ring-orange-200 dark:ring-orange-900',  bg: 'from-orange-50 to-transparent dark:from-orange-950/40',  dot: 'bg-orange-500' },
-                  validation:  { icon: CheckCircle, label: 'Validation',      tagline: 'Verifies plan completeness and SLA alignment',         color: 'text-emerald-700 dark:text-emerald-300',ring: 'ring-emerald-200 dark:ring-emerald-900',bg: 'from-emerald-50 to-transparent dark:from-emerald-950/40',dot: 'bg-emerald-500' },
-                };
-                const fallbackMeta = { icon: Activity, label: 'Agent', tagline: '', color: 'text-[var(--t6)]', ring: 'ring-[var(--b1)]', bg: 'from-[var(--s1)] to-transparent', dot: 'bg-slate-400' };
-
-                const PHASES: Array<{ key: 'triage' | 'investigation' | 'composition'; label: string; sub: string; agents: string[] }> = [
-                  { key: 'triage',        label: 'Triage',        sub: 'Initial verdict',                agents: ['analysis'] },
-                  { key: 'investigation', label: 'Investigation', sub: 'Parallel evidence gathering',    agents: ['intel', 'knowledge', 'correlation', 'recall', 'ioc_check'] },
-                  { key: 'composition',   label: 'Composition',   sub: 'Ticket, response, validation',   agents: ['ticketing', 'response', 'validation'] },
-                ];
-
-                const groupedByPhase = PHASES.map(p => ({
-                  ...p,
-                  rows: reasoning.filter(r => p.agents.includes(r.agent)),
-                })).filter(p => p.rows.length > 0);
-
-                const otherRows = reasoning.filter(r => !PHASES.some(p => p.agents.includes(r.agent)));
-                if (otherRows.length > 0) {
-                  groupedByPhase.push({ key: 'composition', label: 'Other', sub: 'Misc agent reasoning', agents: [], rows: otherRows });
-                }
-
-                const totalAgents = new Set(reasoning.map(r => r.agent)).size;
-                const avgConfidence = reasoning.length > 0
-                  ? Math.round((reasoning.reduce((s, r) => s + (r.confidence || 0), 0) / reasoning.length) * 100)
-                  : 0;
-                const firstAt = reasoning[0]?.created_at;
-                const lastAt  = reasoning[reasoning.length - 1]?.created_at;
-                const elapsedMs = (firstAt && lastAt) ? (new Date(lastAt).getTime() - new Date(firstAt).getTime()) : 0;
-                const elapsedLabel = elapsedMs < 1000 ? '< 1s'
-                                   : elapsedMs < 60_000  ? `${Math.round(elapsedMs / 1000)}s`
-                                   : elapsedMs < 3600_000 ? `${Math.round(elapsedMs / 60_000)}m`
-                                   : `${(elapsedMs / 3600_000).toFixed(1)}h`;
-
-                const overallVerdictColor =
-                  avgConfidence >= 85 ? 'text-emerald-600 dark:text-emerald-400' :
-                  avgConfidence >= 60 ? 'text-amber-600 dark:text-amber-400'     :
-                                        'text-red-500 dark:text-red-400';
-                const overallBarColor =
-                  avgConfidence >= 85 ? 'bg-emerald-500' :
-                  avgConfidence >= 60 ? 'bg-amber-500'   :
-                                        'bg-red-500';
-
-                return (
-                  <div className="space-y-4">
-                    {/* ── Hero summary card ─────────────────────────────────────── */}
-                    <div className="bg-gradient-to-br from-violet-50 via-[var(--s0)] to-blue-50 dark:from-violet-950/30 dark:via-[var(--s0)] dark:to-blue-950/30 border border-[var(--b1)] rounded-2xl shadow-sm overflow-hidden">
-                      <div className="px-5 py-4 flex items-center gap-3 border-b border-[var(--b1)]">
-                        <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center shadow-sm">
-                          <Activity size={17} className="text-white" />
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-[0.95rem] font-black text-[var(--t7)] leading-tight">Reasoning Timeline</p>
-                          <p className="text-[0.66rem] text-[var(--t3)] mt-0.5">How the AI agents thought through this incident, step by step</p>
-                        </div>
-                      </div>
-
-                      {loadingReasoning ? (
-                        <div className="p-10 text-center">
-                          <RefreshCw size={18} className="inline animate-spin text-violet-500 mb-2" />
-                          <p className="text-[0.72rem] text-[var(--t3)]">Loading reasoning trace…</p>
-                        </div>
-                      ) : reasoning.length === 0 ? (
-                        <div className="p-10 text-center space-y-3">
-                          <Activity size={28} className="inline text-[var(--t3)] opacity-50" />
-                          <p className="text-[0.85rem] font-bold text-[var(--t6)]">No reasoning recorded yet</p>
-                          <p className="text-[0.7rem] text-[var(--t3)] max-w-md mx-auto">
-                            This incident's alerts were escalated without a full agent investigation
-                            (e.g. auto-escalated or imported), so there's nothing to show. Run the agents
-                            now to capture per-agent reasoning for this incident.
-                          </p>
-                          <button
-                            onClick={handleRunInvestigation}
-                            disabled={reinvestigating}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 text-white text-[0.72rem] font-bold hover:bg-violet-700 disabled:opacity-60"
-                          >
-                            {reinvestigating
-                              ? <><RefreshCw size={13} className="animate-spin" /> Running investigation…</>
-                              : <><Activity size={13} /> Run Investigation</>}
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="px-5 py-5 grid grid-cols-1 sm:grid-cols-4 gap-4">
-                          {/* Overall confidence */}
-                          <div>
-                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Avg confidence</p>
-                            <div className="flex items-baseline gap-1">
-                              <span className={`text-[1.85rem] font-black tabular-nums leading-none ${overallVerdictColor}`}>{avgConfidence}</span>
-                              <span className={`text-[0.85rem] font-bold ${overallVerdictColor}`}>%</span>
-                            </div>
-                            <div className="mt-2 h-1.5 rounded-full bg-[var(--s2)] overflow-hidden">
-                              <div className={`h-full ${overallBarColor} transition-all duration-500`} style={{ width: `${avgConfidence}%` }} />
-                            </div>
-                          </div>
-
-                          {/* Agents that contributed */}
-                          <div>
-                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Agents</p>
-                            <div className="flex items-baseline gap-1">
-                              <span className="text-[1.85rem] font-black tabular-nums leading-none text-[var(--t7)]">{totalAgents}</span>
-                              <span className="text-[0.7rem] text-[var(--t3)] font-bold">distinct</span>
-                            </div>
-                            <div className="mt-2 flex items-center gap-1 flex-wrap">
-                              {Array.from(new Set(reasoning.map(r => r.agent))).slice(0, 9).map((a: string) => {
-                                const m = AGENT_META[a] ?? fallbackMeta;
-                                const Icon = m.icon;
-                                return (
-                                  <span key={a} title={m.label} className={`w-5 h-5 rounded-md flex items-center justify-center ring-1 ${m.ring} bg-[var(--s0)]`}>
-                                    <Icon size={11} className={m.color} />
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* Steps */}
-                          <div>
-                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Reasoning steps</p>
-                            <div className="flex items-baseline gap-1">
-                              <span className="text-[1.85rem] font-black tabular-nums leading-none text-[var(--t7)]">{reasoning.length}</span>
-                              <span className="text-[0.7rem] text-[var(--t3)] font-bold">total</span>
-                            </div>
-                            <p className="text-[0.6rem] text-[var(--t3)] mt-2">
-                              across <span className="font-bold text-[var(--t6)]">{groupedByPhase.length}</span> phase{groupedByPhase.length === 1 ? '' : 's'}
-                            </p>
-                          </div>
-
-                          {/* Elapsed */}
-                          <div>
-                            <p className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)] mb-1.5">Time elapsed</p>
-                            <div className="flex items-baseline gap-1">
-                              <span className="text-[1.85rem] font-black tabular-nums leading-none text-[var(--t7)]">{elapsedLabel}</span>
-                            </div>
-                            <p className="text-[0.6rem] text-[var(--t3)] mt-2 truncate" title={firstAt ? new Date(firstAt).toLocaleString() : ''}>
-                              start: <span className="font-mono">{firstAt ? new Date(firstAt).toLocaleTimeString() : '—'}</span>
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* ── Phase-grouped reasoning cards ─────────────────────────── */}
-                    {!loadingReasoning && reasoning.length > 0 && groupedByPhase.map((phase, phaseIdx) => (
-                      <div key={`${phase.key}-${phaseIdx}`} className="space-y-3">
-                        {/* Phase header */}
-                        <div className="flex items-center gap-3 px-1">
-                          <div className="flex items-center gap-2">
-                            <span className="w-7 h-7 rounded-lg bg-[var(--p1)] text-white flex items-center justify-center text-[0.7rem] font-black shadow-sm">
-                              {phaseIdx + 1}
-                            </span>
-                            <div>
-                              <p className="text-[0.85rem] font-black text-[var(--t7)] leading-tight">{phase.label}</p>
-                              <p className="text-[0.6rem] text-[var(--t3)] font-semibold">{phase.sub}</p>
-                            </div>
-                          </div>
-                          <div className="flex-1 h-px bg-gradient-to-r from-[var(--b1)] to-transparent" />
-                          <span className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">
-                            {phase.rows.length} agent{phase.rows.length === 1 ? '' : 's'}
-                          </span>
-                        </div>
-
-                        {/* Agent cards inside this phase */}
-                        <div className="relative space-y-3 pl-3">
-                          {/* Vertical connector line */}
-                          <div className="absolute left-[18px] top-3 bottom-3 w-px bg-gradient-to-b from-[var(--b1)] via-[var(--b1)] to-transparent" />
-
-                          {phase.rows.map((r, rowIdx) => {
-                            const meta = AGENT_META[r.agent] ?? fallbackMeta;
-                            const Icon = meta.icon;
-                            const conf = Math.round((r.confidence || 0) * 100);
-                            const confColor =
-                              conf >= 85 ? 'text-emerald-600 dark:text-emerald-400' :
-                              conf >= 60 ? 'text-amber-600 dark:text-amber-400'     :
-                                           'text-red-500 dark:text-red-400';
-                            const confBar =
-                              conf >= 85 ? 'bg-emerald-500' :
-                              conf >= 60 ? 'bg-amber-500'   :
-                                           'bg-red-500';
-                            const isLast = rowIdx === phase.rows.length - 1;
-
-                            return (
-                              <div key={r.id} className="relative">
-                                {/* Connector dot */}
-                                <span className={`absolute left-[10px] top-5 w-3 h-3 rounded-full ${meta.dot} ring-4 ring-[var(--s0)] z-10`} />
-
-                                <div className={`ml-8 relative overflow-hidden border border-[var(--b1)] rounded-xl bg-gradient-to-br ${meta.bg} hover:shadow-md transition-shadow`}>
-                                  {/* Card header */}
-                                  <div className="px-4 py-3 flex items-start gap-3 border-b border-[var(--b1)]/60 bg-[var(--s0)]/70 backdrop-blur-sm">
-                                    <div className={`shrink-0 w-10 h-10 rounded-xl ring-1 ${meta.ring} bg-[var(--s0)] flex items-center justify-center shadow-sm`}>
-                                      <Icon size={18} className={meta.color} />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2 flex-wrap">
-                                        <p className={`text-[0.82rem] font-black ${meta.color}`}>{meta.label}</p>
-                                        <span className="text-[0.55rem] font-bold text-[var(--t3)] uppercase tracking-widest">
-                                          step {r.step}
-                                        </span>
-                                      </div>
-                                      <p className="text-[0.62rem] text-[var(--t3)] mt-0.5 truncate">{meta.tagline}</p>
-                                    </div>
-                                    <div className="shrink-0 text-right">
-                                      <p className={`text-[1.05rem] font-black tabular-nums leading-none ${confColor}`}>{conf}%</p>
-                                      <p className="text-[0.55rem] font-bold text-[var(--t3)] uppercase tracking-wider mt-0.5">confidence</p>
-                                    </div>
-                                  </div>
-
-                                  {/* Confidence bar */}
-                                  <div className="h-1 bg-[var(--s2)] overflow-hidden">
-                                    <div className={`h-full ${confBar} transition-all duration-700`} style={{ width: `${conf}%` }} />
-                                  </div>
-
-                                  {/* Body */}
-                                  <div className="p-4 space-y-3">
-                                    {/* Decision — hero text */}
-                                    {r.decision && (
-                                      <div className="flex gap-2.5">
-                                        <span className={`shrink-0 w-1 rounded-full ${meta.dot}`} />
-                                        <p className="text-[0.85rem] text-[var(--t7)] leading-relaxed font-medium italic">
-                                          “{r.decision}”
-                                        </p>
-                                      </div>
-                                    )}
-
-                                    {/* Evidence for / against — visual two-column */}
-                                    {(r.evidence_for?.length > 0 || r.evidence_against?.length > 0) && (
-                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                                        {r.evidence_for?.length > 0 && (
-                                          <div className="group bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60 rounded-xl p-3 transition-colors hover:bg-emerald-50 dark:hover:bg-emerald-950/50">
-                                            <div className="flex items-center gap-1.5 mb-2">
-                                              <ThumbsUp size={11} className="text-emerald-600 dark:text-emerald-400" />
-                                              <p className="text-[0.58rem] font-black text-emerald-700 dark:text-emerald-300 uppercase tracking-widest">
-                                                Evidence for ({r.evidence_for.length})
-                                              </p>
-                                            </div>
-                                            <ul className="space-y-1.5">
-                                              {r.evidence_for.map((e, i) => (
-                                                <li key={i} className="text-[0.74rem] text-[var(--t7)] leading-relaxed flex gap-2">
-                                                  <span className="text-emerald-600 dark:text-emerald-400 shrink-0 font-bold mt-0.5">＋</span>
-                                                  <span className="flex-1">{e}</span>
-                                                </li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        )}
-                                        {r.evidence_against?.length > 0 && (
-                                          <div className="group bg-red-50/80 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 rounded-xl p-3 transition-colors hover:bg-red-50 dark:hover:bg-red-950/50">
-                                            <div className="flex items-center gap-1.5 mb-2">
-                                              <ThumbsDown size={11} className="text-red-600 dark:text-red-400" />
-                                              <p className="text-[0.58rem] font-black text-red-700 dark:text-red-300 uppercase tracking-widest">
-                                                Evidence against ({r.evidence_against.length})
-                                              </p>
-                                            </div>
-                                            <ul className="space-y-1.5">
-                                              {r.evidence_against.map((e, i) => (
-                                                <li key={i} className="text-[0.74rem] text-[var(--t7)] leading-relaxed flex gap-2">
-                                                  <span className="text-red-500 dark:text-red-400 shrink-0 font-bold mt-0.5">−</span>
-                                                  <span className="flex-1">{e}</span>
-                                                </li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {/* Rejected hypotheses — considered & discarded */}
-                                    {r.rejected_hypotheses?.length > 0 && (
-                                      <div className="bg-[var(--s1)] border border-[var(--b1)] rounded-xl p-3">
-                                        <div className="flex items-center gap-1.5 mb-2">
-                                          <XCircle size={11} className="text-[var(--t3)]" />
-                                          <p className="text-[0.58rem] font-black text-[var(--t3)] uppercase tracking-widest">
-                                            Considered &amp; rejected ({r.rejected_hypotheses.length})
-                                          </p>
-                                        </div>
-                                        <ul className="space-y-1.5">
-                                          {r.rejected_hypotheses.map((h, i) => (
-                                            <li key={i} className="text-[0.72rem] text-[var(--t4)] leading-relaxed flex gap-2">
-                                              <span className="shrink-0 text-[var(--t3)] mt-0.5">✗</span>
-                                              <span className="line-through decoration-[var(--t3)]/40 flex-1">{h}</span>
-                                            </li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-
-                                    {/* Empty body fallback */}
-                                    {!r.decision && !(r.evidence_for?.length) && !(r.evidence_against?.length) && !(r.rejected_hypotheses?.length) && (
-                                      <p className="text-[0.7rem] text-[var(--t3)] italic">This agent ran but did not emit structured reasoning.</p>
-                                    )}
-                                  </div>
-
-                                  {/* Footer — subtle metadata */}
-                                  <div className="px-4 py-2 border-t border-[var(--b1)]/60 bg-[var(--s1)]/40 flex items-center gap-2 flex-wrap">
-                                    <span className="text-[0.55rem] text-[var(--t3)] tabular-nums">
-                                      {new Date(r.created_at).toLocaleString()}
-                                    </span>
-                                    <span className="text-[var(--t3)] text-[0.5rem]">•</span>
-                                    <span className="text-[0.55rem] text-[var(--t3)] font-mono" title={`alert ${r.alert_id} · trace ${r.trace_id}`}>
-                                      alert {r.alert_id.slice(0, 8)}… · trace {r.trace_id.slice(0, 6)}…
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-
               {/* ===== TIMELINE TAB ===== */}
               {detailTab === 'timeline' && (
                 <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
@@ -1575,15 +1373,31 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                       <span className="text-[0.48rem] font-black text-[var(--t3)] uppercase tracking-widest bg-[var(--s2)] px-1.5 py-0.5 rounded">Markdown</span>
                     </div>
                     {!reportEditing && (
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button onClick={() => setShowReportHistory(s => !s)} title="View report change history"
+                          className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold border transition-colors ${showReportHistory ? 'bg-[var(--p1)] text-white border-[var(--p1)]' : 'text-[var(--t6)] border-[var(--b2)] bg-[var(--s0)] hover:bg-[var(--s1)]'}`}>
+                          <Clock size={11} /> History{reportHistory.length ? ` (${reportHistory.length})` : ''}
+                        </button>
                         {detail.report_body && <CopyButton text={detail.report_body} />}
+                        <button onClick={downloadReport} title="Download the report as a Markdown file"
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--t6)] border border-[var(--b2)] bg-[var(--s0)] hover:bg-[var(--s1)] transition-colors">
+                          <Download size={11} /> Download
+                        </button>
                         {!isClosed && canEdit && (
+                          <button onClick={handleToggleLock} disabled={locking || (isReportLocked && !reportLockedByMe && !isAdminOrLead)}
+                            title={isReportLocked ? (reportLockedByMe || isAdminOrLead ? 'Unlock the report' : `Locked by ${detail.report_locked_by_username || 'another analyst'}`) : 'Lock the report so only you can edit it'}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold border transition-colors disabled:opacity-60 ${isReportLocked ? 'text-amber-700 border-amber-300 bg-amber-50 hover:bg-amber-100' : 'text-[var(--t6)] border-[var(--b2)] bg-[var(--s0)] hover:bg-[var(--s1)]'}`}>
+                            {locking ? <RefreshCw size={11} className="animate-spin" /> : isReportLocked ? <Unlock size={11} /> : <Lock size={11} />}
+                            {isReportLocked ? 'Unlock' : 'Lock'}
+                          </button>
+                        )}
+                        {canManageReport && (
                           <button onClick={handleGenerateReport} disabled={generatingReport} title="Have the AI write the incident report"
                             className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-60 transition-colors">
                             {generatingReport ? <><RefreshCw size={11} className="animate-spin" /> Generating…</> : <><Activity size={11} /> {detail.report_body ? 'Regenerate' : 'Generate'}</>}
                           </button>
                         )}
-                        {!isClosed && canEdit && (
+                        {canManageReport && (
                           <button onClick={() => setReportEditing(true)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--p1)] border border-[var(--p1)] hover:bg-blue-50 transition-colors">
                             <FileText size={11} /> Edit
                           </button>
@@ -1592,11 +1406,70 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     )}
                   </div>
                   <div className="p-4">
+                    {/* Static report header — always present, never editable */}
+                    <div className="mb-4 rounded-lg border border-[var(--b1)] bg-[var(--s1)]/40 p-4">
+                      <h3 className="text-[0.98rem] font-black text-[var(--t7)] leading-tight">{detail.title}</h3>
+                      <p className="text-[0.6rem] font-mono text-[var(--t3)] mt-0.5 mb-3">Incident Report · {detail.id}</p>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2.5">
+                        {reportMeta.map((m, i) => (
+                          <div key={i}>
+                            <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-0.5">{m.label}</p>
+                            <p className="text-[0.72rem] font-semibold text-[var(--t6)] truncate" title={m.value}>{m.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Locked banner */}
+                    {isReportLocked && (
+                      <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+                        <Lock size={13} className="text-amber-700 shrink-0" />
+                        <p className="text-[0.72rem] text-amber-900 flex-1">
+                          Report <span className="font-bold">locked</span> by <span className="font-bold">{detail.report_locked_by_username || 'an analyst'}</span>
+                          {detail.report_locked_at ? ` · ${new Date(detail.report_locked_at).toLocaleString()}` : ''}
+                          {!reportLockedByMe && !isAdminOrLead ? ' — editing is disabled until they unlock it.' : ''}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Change history */}
+                    {showReportHistory && (
+                      <div className="mb-4 rounded-lg border border-[var(--b1)] bg-[var(--s1)]/30 overflow-hidden">
+                        <div className="px-3 py-2 border-b border-[var(--b1)] flex items-center gap-2">
+                          <Clock size={12} className="text-[var(--t4)]" />
+                          <p className="text-[0.6rem] font-black text-[var(--t4)] uppercase tracking-widest">Report Change History</p>
+                        </div>
+                        {reportHistory.length === 0 ? (
+                          <p className="px-3 py-3 text-[0.7rem] text-[var(--t3)] italic">No changes recorded yet.</p>
+                        ) : (
+                          <div className="max-h-72 overflow-y-auto divide-y divide-[var(--b1)]">
+                            {reportHistory.map(h => {
+                              const verb = h.action === 'edited' ? 'edited the report' : h.action === 'generated' ? 'generated the report (AI)' : h.action === 'locked' ? 'locked the report' : h.action === 'unlocked' ? 'unlocked the report' : h.action;
+                              const dot = h.action === 'locked' ? 'bg-amber-500' : h.action === 'unlocked' ? 'bg-emerald-500' : h.action === 'generated' ? 'bg-violet-500' : 'bg-[var(--p1)]';
+                              return (
+                                <div key={h.id} className="px-3 py-2 flex items-center gap-2.5 text-[0.7rem]">
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+                                  <span className="text-[var(--t6)] flex-1 min-w-0 truncate">
+                                    <span className="font-bold">{h.username || 'system'}</span> {verb}
+                                  </span>
+                                  {h.snapshot && (h.action === 'edited' || h.action === 'generated') && (
+                                    <button onClick={() => setHistorySnapshot(h)} className="text-[0.62rem] font-bold text-[var(--p1)] hover:underline shrink-0">view</button>
+                                  )}
+                                  <span className="text-[0.62rem] text-[var(--t3)] shrink-0" title={new Date(h.created_at).toLocaleString()}>{new Date(h.created_at).toLocaleString()}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {reportEditing ? (
                       <>
+                        <p className="text-[0.6rem] text-[var(--t3)] mb-2">The header above is generated automatically. Edit only the report body below.</p>
                         <div className="grid lg:grid-cols-2 gap-3">
                           <div className="flex flex-col">
-                            <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Markdown source</p>
+                            <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Markdown source (body)</p>
                             <textarea value={reportDraft} onChange={e => setReportDraft(e.target.value)} rows={20}
                               placeholder="Write the report in Markdown — ## headings, **bold**, tables, - lists, [links](url)…"
                               className="w-full flex-1 border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.74rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed min-h-[20rem]" />
@@ -1643,6 +1516,24 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                         )}
                       </div>
                     )}
+                  </div>
+                </div>
+              )}
+
+              {/* Report snapshot viewer (from history) */}
+              {historySnapshot && (
+                <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-6" onClick={() => setHistorySnapshot(null)}>
+                  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl shadow-2xl max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+                    <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between">
+                      <div>
+                        <p className="text-[0.72rem] font-black text-[var(--t7)]">Report snapshot</p>
+                        <p className="text-[0.6rem] text-[var(--t3)]">{historySnapshot.username || 'system'} · {new Date(historySnapshot.created_at).toLocaleString()}</p>
+                      </div>
+                      <button onClick={() => setHistorySnapshot(null)} className="text-[var(--t3)] hover:text-[var(--t6)]"><X size={16} /></button>
+                    </div>
+                    <div className="p-4 overflow-y-auto">
+                      <Markdown>{historySnapshot.snapshot || '(empty)'}</Markdown>
+                    </div>
                   </div>
                 </div>
               )}
