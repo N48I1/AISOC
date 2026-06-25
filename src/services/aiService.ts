@@ -714,7 +714,7 @@ export async function getResponseActions(): Promise<ResponseActionsResponse> {
   return res.json();
 }
 
-export async function updateIncident(id: string, payload: { report_body?: string; title?: string; severity?: string; status?: string }): Promise<{ ok: boolean; error?: string }> {
+export async function updateIncident(id: string, payload: { report_body?: string; title?: string; severity?: string; status?: string; analysis?: string }): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`/api/incidents/${id}`, { method: 'PATCH', headers: authHeaders(), body: JSON.stringify(payload) });
   return res.json();
 }
@@ -794,6 +794,13 @@ export async function getAlertReasoning(alertId: string): Promise<{
 
 export async function createIncident(payload: { alert_id: string; title?: string; severity?: string; assigned_to: number | null; phase?: string; note?: string; create_glpi?: boolean }): Promise<{ ok: boolean; id?: string; glpi_ticket_id?: string | null; error?: string }> {
   const res = await fetch('/api/incidents', { method: 'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+  return res.json();
+}
+
+// Create an incident manually (no source Wazuh alert). The server recognises the
+// manual path by the absence of alert_id (manual:true is sent for clarity).
+export async function createManualIncident(payload: { title: string; severity?: string; phase?: string; assigned_to?: number | null; note?: string; analysis?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const res = await fetch('/api/incidents', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ ...payload, manual: true }) });
   return res.json();
 }
 

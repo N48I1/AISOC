@@ -2,11 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shield, AlertTriangle, AlertOctagon, Activity, FileText, Search, User, CheckCircle, XCircle, X,
   Clock, ChevronRight, Filter, Plus, UserPlus, Eye, ThumbsUp, ThumbsDown, BookOpen, Send, Zap,
-  RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, Terminal, Download, Lock, Unlock,
+  RefreshCw, Hash, Globe, Crosshair, ListChecks, MessageSquare, Laptop, Link2, Terminal, Download, Lock, Unlock, Sparkles,
 } from 'lucide-react';
 import {
   getIncidents, getIncident, getIncidentReasoning, reinvestigateIncident, generateIncidentReport,
-  lockIncidentReport, getReportHistory, type ReportHistoryRow, createIncident,
+  lockIncidentReport, getReportHistory, type ReportHistoryRow, createIncident, createManualIncident,
   assignIncident, takeIncident, moveIncidentPhase, closeIncident, addIncidentNote,
   reclassifyIncidentFp, addIncidentAction, updateIncidentAction, deleteIncidentAction,
   reorderIncidentActions, updateIncident, listAnalysts, type ReasoningRow,
@@ -60,6 +60,31 @@ const PHASE_COLORS: Record<string, string> = {
   recovery:      'bg-amber-100 text-amber-700',
   post_incident: 'bg-green-100 text-green-700',
 };
+
+// Quick-start templates for manually-created incidents. Picking one pre-fills the
+// title, a suggested severity, and a Markdown "Data incident Overview" scaffold the
+// analyst then completes. Purely client-side convenience — no AI involved.
+type IncidentTemplate = { key: string; label: string; icon: React.ReactNode; tint: string; severity: string; title: string; overview: string };
+const INCIDENT_TEMPLATES: IncidentTemplate[] = [
+  { key: 'phishing', label: 'Phishing', icon: <Globe size={14} />, tint: 'border-blue-200 bg-blue-50 text-blue-700', severity: 'HIGH',
+    title: 'Phishing campaign targeting employees',
+    overview: '## Summary\nSuspected phishing email reported / detected in mail flow.\n\n## Indicators\n- Sender address: \n- Subject line: \n- Malicious URL / domain: \n- Attachment hash: \n\n## Affected users / assets\n- \n\n## Impact\n- Confidentiality (credential theft): \n\n## Initial response\n- Quarantine the message\n- Block sender / domain\n- Reset affected credentials' },
+  { key: 'malware', label: 'Malware / Ransomware', icon: <Shield size={14} />, tint: 'border-red-200 bg-red-50 text-red-700', severity: 'CRITICAL',
+    title: 'Malware detected on endpoint',
+    overview: '## Summary\nMalicious binary / ransomware activity detected.\n\n## Indicators\n- Host: \n- File path / hash: \n- C2 domain / IP: \n- Process: \n\n## Impact\n- Availability / Integrity: \n\n## Initial response\n- Isolate the host from the network\n- Capture a forensic image / memory\n- Identify patient zero and lateral movement' },
+  { key: 'unauthorized', label: 'Unauthorized Access', icon: <Lock size={14} />, tint: 'border-violet-200 bg-violet-50 text-violet-700', severity: 'HIGH',
+    title: 'Unauthorized access / suspicious login',
+    overview: '## Summary\nSuspicious authentication or privilege escalation observed.\n\n## Indicators\n- Account: \n- Source IP / geo: \n- Target system: \n- Time window: \n\n## Impact\n- Confidentiality / Integrity: \n\n## Initial response\n- Disable / force-reset the account\n- Review auth logs and active sessions\n- Verify MFA status' },
+  { key: 'exfil', label: 'Data Exfiltration', icon: <Crosshair size={14} />, tint: 'border-orange-200 bg-orange-50 text-orange-700', severity: 'CRITICAL',
+    title: 'Potential data exfiltration',
+    overview: '## Summary\nAnomalous outbound data transfer suspected.\n\n## Indicators\n- Source host / user: \n- Destination IP / domain: \n- Volume / protocol: \n- Data classification: \n\n## Impact\n- Confidentiality: \n\n## Initial response\n- Block the destination\n- Preserve netflow / proxy logs\n- Assess regulatory / notification obligations' },
+  { key: 'dos', label: 'Denial of Service', icon: <Zap size={14} />, tint: 'border-amber-200 bg-amber-50 text-amber-700', severity: 'HIGH',
+    title: 'Denial of service / availability event',
+    overview: '## Summary\nService degradation or outage suspected to be malicious.\n\n## Indicators\n- Targeted service / IP: \n- Traffic source(s): \n- Rate / pattern: \n\n## Impact\n- Availability: \n\n## Initial response\n- Engage upstream / DDoS mitigation\n- Rate-limit or geo-block sources\n- Confirm service health' },
+  { key: 'blank', label: 'Blank', icon: <FileText size={14} />, tint: 'border-[var(--b2)] bg-[var(--s1)] text-[var(--t5)]', severity: 'MEDIUM',
+    title: '',
+    overview: '## Summary\n\n## Affected assets\n- \n\n## Impact\n- \n\n## Initial response\n- ' },
+];
 
 const ACTION_TYPE_LABELS: Record<string, string> = {
   block_ip:          'Block source IP',
@@ -204,6 +229,140 @@ const cleanVal = (v?: string | null): string | null => {
   const t = String(v).trim();
   return !t || NO_VALUE.has(t.toLowerCase()) ? null : t;
 };
+
+// ── SOC analysis prompt generator ────────────────────────────────────────────
+// Static, AI-free mapping: drops the incident ID, title and the latest raw Wazuh
+// alert JSON into a fixed prompt template the analyst can copy into an external
+// AI chat. Everything between the backticks is the user-provided prompt verbatim.
+const SOC_ANALYSIS_PROMPT_HEAD = `Tu es un analyste SOC senior (niveau 2/3) opérant un SIEM Wazuh dans une infrastructure d'entreprise hétérogène (serveurs Windows et Linux, hyperviseurs, équipements réseau, sauvegarde Veeam, supervision Zabbix). Tu maîtrises les EventChannels Windows, les règles Wazuh, le triage d'alertes et les cadres ITILv4 et ISO/IEC 27035.
+
+À partir de l'alerte SIEM Wazuh brute fournie plus bas, produis une analyse complète et consolidée en 3 étapes, en français, dans un registre professionnel et sobre (sans emoji).
+
+MÉTHODE D'ANALYSE (à appliquer mentalement avant de rédiger, ne pas l'afficher) :
+1. Lis et corrèle systématiquement les champs clés du JSON : rule.id, rule.level, rule.description, rule.groups, agent.name/ip, data (srcip, dstip, user), decoder.name, full_log, integration, et surtout le contenu détaillé du message Windows EventChannel (data.win.system.message et data.win.eventdata) lorsqu'il est présent — c'est souvent là que se trouve la cause réelle.
+2. Interprète le niveau de sévérité Wazuh sur son échelle 0–15 : 0–3 faible/informatif, 4–7 moyen, 8–11 élevé, 12–15 critique. Ne sur-évalue ni ne sous-évalue par rapport au niveau réellement présent dans le JSON.
+3. Tranche explicitement entre vrai positif, faux positif et investigation requise, en justifiant à partir d'indices concrets du JSON (origine de l'IP, nature du processus, légitimité de l'activité, message d'erreur applicatif vs activité malveillante).
+
+ANTI-HALLUCINATION (impératif) :
+- N'invente jamais de valeur absente du JSON : ni IP, ni nom de machine, ni CVE, ni nom de service, ni horodatage, ni utilisateur.
+- Si une information nécessaire est absente, écris explicitement « non disponible dans l'alerte » plutôt que de la supposer.
+- Ne cite aucune référence externe (CVE, KB, lien) qui ne figure pas littéralement dans le JSON.
+- Distingue clairement les faits (extraits du JSON) des hypothèses (signalées par « hypothèse à vérifier : … »).
+
+Format de sortie attendu (Markdown standard : "##" pour les titres d'étape, "**texte**" pour le gras, "-" pour les puces) :
+
+## Étape 1 : Détails de l'événement et contexte (Détection — ISO/IEC 27035)
+- **Identifiant et gravité :** ID Wazuh, ID de règle, niveau de sévérité et sa signification sur l'échelle 0–15
+- **Hôte impacté :** nom de l'agent, adresse IP, rôle de la machine dans l'infrastructure si déductible (sinon « rôle non déductible de l'alerte »)
+- **Composant en échec :** application, chemin, processus ou service concerné
+- **Impact opérationnel :** disponibilité, confidentialité, intégrité, et qualification initiale (incident réel / faux positif probable / à investiguer)
+
+## Étape 2 : Analyse de la cause racine (Évaluation et gestion des problèmes — ITIL)
+- **Symptôme :** description technique précise de ce que la règle Wazuh a détecté et pourquoi elle s'est déclenchée
+- **Cause probable :** explication technique détaillée du mécanisme à l'origine de l'alerte, fondée uniquement sur les champs du JSON (en particulier le message EventChannel s'il est présent)
+- **Origine :** contexte plausible (activité légitime, dysfonctionnement applicatif, erreur de configuration, activité malveillante), en restant factuel et en marquant les hypothèses à vérifier
+
+## Étape 3 : Plan de résolution complet
+**A. Traitement immédiat (Gestion des incidents ITIL & Réponse ISO/IEC 27035)**
+- Actions de vérification concrètes à mener immédiatement (commandes, points de contrôle, éléments à corréler)
+- Décision de clôture ou d'escalade, avec justification
+
+**B. Actions à long terme (Gestion des problèmes & amélioration continue)**
+- Ajustements de configuration ou de règles de détection (tuning, whitelisting, seuils) à envisager
+- Actions préventives ou organisationnelles pour réduire la récurrence
+
+Consignes de forme :
+- Va à l'essentiel : phrases denses, techniques et actionnables, sans remplissage ni généralités.
+- Chaque affirmation technique doit pouvoir se rattacher à un champ du JSON ; à défaut, la signaler comme hypothèse.
+- Termine par une ligne de synthèse indiquant la qualification finale recommandée (Incident confirmé / Faux positif / Investigation complémentaire requise).
+
+IMPÉRATIF — Format final de ta réponse :
+Convertis impérativement ta réponse finale en Markdown, et colore les titres en gras avec la couleur de base #1C4F61, et la ligne de qualification finale recommandée en gras avec la couleur #2CB701, en utilisant des balises HTML <span style="color:#XXXXXX"><strong>...</strong></span> directement dans le Markdown (pas de blocs de code, le Markdown doit être rendu directement dans ta réponse) :
+- Les 3 titres d'étape ("Étape 1 : ...", "Étape 2 : ...", "Étape 3 : ...") : <span style="color:#1C4F61"><strong>Étape 1 : Détails de l'événement et contexte (Détection — ISO/IEC 27035)</strong></span> — même principe pour les Étapes 2 et 3.
+- La ligne finale de qualification recommandée : <span style="color:#2CB701"><strong>Qualification finale : ...</strong></span>
+- Tout le reste du contenu (sous-titres A./B., puces, labels en gras) reste en Markdown standard sans couleur.
+
+---
+
+Numéro d'incident : __INCIDENT_ID__
+Titre : __TITLE__
+
+Raw Wazuh Alert (JSON) :`;
+
+// Pretty-print the most recent alert's raw Wazuh log (mirrors WazuhAlertCard's rawLog).
+function latestAlertRawJson(alerts?: Alert[]): string {
+  if (!alerts || alerts.length === 0) return '';
+  const latest = [...alerts].sort(
+    (a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime(),
+  )[0] || alerts[0];
+  if (!latest?.full_log) return '';
+  try { return JSON.stringify(JSON.parse(latest.full_log), null, 2); }
+  catch { return latest.full_log; }
+}
+
+// Pure mapping function — no LLM. Fills the template and appends the raw alert JSON.
+function buildSocAnalysisPrompt(incidentId: string, title: string, rawJson: string): string {
+  const head = SOC_ANALYSIS_PROMPT_HEAD
+    .replace('__INCIDENT_ID__', incidentId || "[Numéro d'incident non renseigné]")
+    .replace('__TITLE__', title || '[Titre non renseigné]');
+  const json = rawJson || '// Aucune alerte Wazuh brute disponible pour cet incident';
+  return head + '\n```json\n' + json + '\n```';
+}
+
+// ── Resolution & closure report prompt ───────────────────────────────────────
+// Second static, AI-free template: maps only the incident ID and title (it asks
+// the AI chat to write the closure report from the prior conversation). Verbatim
+// user-provided text between the backticks.
+const SOC_RESOLUTION_REPORT_PROMPT = `Sur la base de l'ensemble de notre échange ci-dessus concernant cet incident, rédige maintenant un RAPPORT DE RÉSOLUTION ET DE CLÔTURE D'INCIDENT, professionnel, au format Markdown, structuré selon les cadres ITILv4 (gestion des incidents et des problèmes) et ISO/IEC 27035 (gestion des incidents de sécurité de l'information).
+
+Exigences :
+- Reste strictement factuel : appuie-toi uniquement sur les éléments échangés dans cette conversation. N'invente aucune donnée ; si une rubrique manque d'information, indique « non documenté ».
+- Registre professionnel et synthétique, exploitable par un responsable SOC ou un auditeur (pas de remplissage, pas d'emoji).
+- Reprends le numéro et le titre d'incident indiqués en bas de ce message.
+
+Structure attendue (Markdown : "##" pour les titres de section, "**texte**" pour le gras, "-" pour les puces) :
+
+## 1. Identification de l'incident
+- Numéro d'incident, titre, hôte/agent concerné, niveau de sévérité, date/heure de détection, statut final
+
+## 2. Résumé exécutif
+- Synthèse en 3 à 4 phrases : nature de l'incident, cause, résolution apportée, impact réel
+
+## 3. Chronologie
+- Étapes clés (détection, analyse, actions, clôture) selon ce qui a été échangé, datées si l'information est disponible
+
+## 4. Description et analyse de la cause racine (RCA)
+- Description technique de l'incident et cause racine identifiée
+
+## 5. Actions de résolution menées
+- Traitement immédiat appliqué et résultat obtenu
+
+## 6. Mesures préventives et amélioration continue
+- Tuning SIEM, durcissement, recommandations pour éviter la récurrence (gestion des problèmes ITIL)
+
+## 7. Leçons apprises (ISO/IEC 27035)
+- Enseignements et axes d'amélioration du processus de détection et de réponse
+
+## 8. Clôture
+- Décision de clôture, puis une ligne distincte commençant par « Statut final : » indiquant la qualification finale (Incident résolu / Faux positif confirmé / Transféré en problème)
+
+IMPÉRATIF — Mise en forme finale (deux couleurs distinctes, ne pas les confondre) :
+Rends ta réponse en Markdown (pas dans un bloc de code), et applique des balises HTML inline pour la couleur :
+- BLEU #1C4F61 — uniquement pour les titres de section (## 1 à ## 8), en gras : <span style="color:#1C4F61"><strong>1. Identification de l'incident</strong></span> — même principe pour les sections 2 à 8.
+- VERT #2CB701 — obligatoirement pour la ligne « Statut final » de la section « 8. Clôture », en gras : <span style="color:#2CB701"><strong>Statut final : ...</strong></span>. Cette ligne NE doit PAS être bleue : même si elle se trouve à l'intérieur de la section 8, elle est toujours en vert #2CB701, exactement comme la ligne de qualification finale d'une analyse d'incident.
+- Tout le reste du contenu reste en Markdown standard, sans couleur.
+
+---
+
+Incident concerné : __INCIDENT_ID__
+Titre : __TITLE__`;
+
+// Pure mapping function — no LLM. Only the incident ID and title are substituted.
+function buildSocResolutionReportPrompt(incidentId: string, title: string): string {
+  return SOC_RESOLUTION_REPORT_PROMPT
+    .replace('__INCIDENT_ID__', incidentId || "[Numéro d'incident non renseigné]")
+    .replace('__TITLE__', title || '[Titre non renseigné]');
+}
 
 // ── Wazuh alert card — the raw event rendered as a clean field/value table ────
 const WazuhAlertCard: React.FC<{ alert: Alert; index: number; total: number }> = ({ alert, index, total }) => {
@@ -513,6 +672,8 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const [reasoning, setReasoning]     = useState<ReasoningRow[]>([]);
   const [loadingReasoning, setLoadingReasoning] = useState(false);
   const [showOverviewReasoning, setShowOverviewReasoning] = useState(false);
+  const [showSocPrompt, setShowSocPrompt] = useState(false);
+  const [showResolutionPrompt, setShowResolutionPrompt] = useState(false);
   const [reinvestigating, setReinvestigating]   = useState(false);
   const [myOnly, setMyOnly]           = useState(false);
 
@@ -525,6 +686,9 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const [reportDraft, setReportDraft]   = useState('');
   const [reportEditing, setReportEditing] = useState(false);
   const [reportSaving, setReportSaving]   = useState(false);
+  const [overviewDraft, setOverviewDraft] = useState('');
+  const [overviewEditing, setOverviewEditing] = useState(false);
+  const [overviewSaving, setOverviewSaving]   = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
   const [locking, setLocking] = useState(false);
   const [reportHistory, setReportHistory] = useState<ReportHistoryRow[]>([]);
@@ -533,6 +697,18 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   const [noteText, setNoteText]         = useState('');
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [deleteActionTarget, setDeleteActionTarget] = useState<IncidentAction | null>(null);
+
+  // ── Manual incident creation ──────────────────────────────────────────────
+  const [showCreate, setShowCreate]   = useState(false);
+  const [creating, setCreating]       = useState(false);
+  const [cTitle, setCTitle]           = useState('');
+  const [cSeverity, setCSeverity]     = useState('MEDIUM');
+  const [cPhase, setCPhase]           = useState<IncidentPhase>('detection');
+  const [cAssignee, setCAssignee]     = useState<number | ''>('');
+  const [cReason, setCReason]         = useState('');
+  const [cOverview, setCOverview]     = useState('');
+  const [cTemplate, setCTemplate]     = useState<string>('');
+  const [cPreview, setCPreview]       = useState(false);
 
   const fetchList = useCallback(() => {
     getIncidents({
@@ -567,8 +743,8 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   }, []);
 
   useEffect(() => {
-    if (activeId) { fetchDetail(activeId); setDetailTab('overview'); setReasoning([]); }
-    else { setDetail(null); setReportEditing(false); setReasoning([]); }
+    if (activeId) { fetchDetail(activeId); setDetailTab('overview'); setReasoning([]); setOverviewEditing(false); }
+    else { setDetail(null); setReportEditing(false); setOverviewEditing(false); setReasoning([]); }
   }, [activeId, fetchDetail]);
 
   // Load the report change-history when the Report tab opens.
@@ -596,6 +772,46 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       toast(e?.message || 'Re-investigation failed', 'error');
     } finally {
       setReinvestigating(false);
+    }
+  };
+
+  // ── Manual incident creation handlers ────────────────────────────────────
+  const resetCreateForm = () => {
+    setCTitle(''); setCSeverity('MEDIUM'); setCPhase('detection'); setCAssignee('');
+    setCReason(''); setCOverview(''); setCTemplate(''); setCPreview(false);
+  };
+  const applyCreateTemplate = (t: IncidentTemplate) => {
+    setCTemplate(t.key);
+    setCSeverity(t.severity);
+    setCOverview(t.overview);
+    if (t.title) setCTitle(t.title);
+  };
+  const handleCreateManual = async () => {
+    const title = cTitle.trim();
+    if (!title) { toast('A title is required', 'error'); return; }
+    setCreating(true);
+    try {
+      const r = await createManualIncident({
+        title,
+        severity:    cSeverity,
+        phase:       cPhase,
+        assigned_to: cAssignee === '' ? null : Number(cAssignee),
+        note:        cReason.trim() || undefined,
+        analysis:    cOverview.trim() || undefined,
+      });
+      if (r.ok && r.id) {
+        toast(`Incident ${r.id} created`, 'success');
+        setShowCreate(false);
+        resetCreateForm();
+        fetchList();
+        setActiveId(r.id);
+      } else {
+        toast(r.error || 'Failed to create incident', 'error');
+      }
+    } catch (e: any) {
+      toast(e?.message || 'Failed to create incident', 'error');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -747,7 +963,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       { label: 'Report Date',      value: new Date().toLocaleString() },
     ];
     const buildReportMarkdown = () => [
-      `# Incident Report — ${detail.title}`,
+      `# Final Incident Report — ${detail.title}`,
       '',
       '| Field | Value |',
       '| --- | --- |',
@@ -767,6 +983,46 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
       toast('Report downloaded', 'success');
+    };
+
+    // ── Data incident Overview (editable AI analysis, Markdown) ───────────────
+    // Body source: the analyst's saved override on incidents.analysis when it's
+    // plain Markdown; otherwise the AI report Markdown from the latest analysis.
+    // (incidents.analysis also holds the raw AI JSON snapshot — recognised by a
+    // leading { / [ — which we treat as "no override" and fall back to the AI text.)
+    const aiReportMd = String(ai.ticket_summary || ai.summary || '');
+    const analysisRaw = (detail.analysis || '').trim();
+    const savedOverview = analysisRaw && !analysisRaw.startsWith('{') && !analysisRaw.startsWith('[') ? detail.analysis! : '';
+    const overviewBody = savedOverview || aiReportMd;
+    const hasAnyAi = !!(ai.summary || ai.ticket_summary || realReason(detail.reason) || ai.intel_summary || ai.recommended_action || ai.business_impact || (ai.mitre && ai.mitre.length > 0) || (ai.response_actions && ai.response_actions.length > 0) || (ai.iocs && Object.values(ai.iocs).some((v: any) => Array.isArray(v) && v.length)));
+    const handleSaveOverview = async () => {
+      setOverviewSaving(true);
+      const r = await updateIncident(detail.id, { analysis: overviewDraft });
+      setOverviewSaving(false);
+      if (r.ok) { toast('Overview saved', 'success'); setOverviewEditing(false); fetchDetail(detail.id); }
+      else toast(r.error || 'Failed to save overview', 'error');
+    };
+    const buildOverviewMarkdown = () => [
+      `# Data Incident Overview — ${detail.title}`,
+      '',
+      '| Field | Value |',
+      '| --- | --- |',
+      ...reportMeta.map(m => `| **${m.label}** | ${m.value} |`),
+      `| **Title** | ${detail.title} |`,
+      '',
+      '---',
+      '',
+      overviewBody || '_No overview written yet._',
+      '',
+    ].join('\n');
+    const downloadOverview = () => {
+      const blob = new Blob([buildOverviewMarkdown()], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${detail.id}-overview.md`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast('Overview downloaded', 'success');
     };
 
     // ── Report lock + history ────────────────────────────────────────────────
@@ -795,7 +1051,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       { key: 'observables'  as const, label: `Observables (${observables.length})`, icon: <Crosshair size={13} /> },
       { key: 'tasks'        as const, label: `Tasks (${actions.length})`, icon: <ListChecks size={13} /> },
       { key: 'timeline'     as const, label: `Timeline (${detail.timeline?.length || 0})`, icon: <MessageSquare size={13} /> },
-      { key: 'report'       as const, label: 'Report',      icon: <FileText size={13} /> },
+      { key: 'report'       as const, label: 'Final Report', icon: <FileText size={13} /> },
     ];
 
     return (
@@ -896,18 +1152,73 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     busy={reinvestigating}
                   />
 
-                  {/* ===== AI ANALYSIS & CONCLUSION — first, so analysts don't scroll past alerts ===== */}
-                  {(ai.summary || ai.ticket_summary || realReason(detail.reason) || ai.intel_summary || ai.recommended_action || ai.business_impact || (ai.mitre && ai.mitre.length > 0) || (ai.response_actions && ai.response_actions.length > 0)) ? (
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
-                      <div className="px-4 py-2.5 bg-gradient-to-r from-violet-50 to-[var(--s1)] border-b border-[var(--b1)] flex items-center gap-2 flex-wrap">
+                  {/* ===== DATA INCIDENT OVERVIEW — editable AI analysis (Markdown), mirrors the Report editor ===== */}
+                  <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                    <div className="px-4 py-2.5 bg-gradient-to-r from-violet-50 to-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Activity size={14} className="text-violet-600" />
-                        <p className="text-[0.75rem] font-black text-[var(--t7)]">AI Analysis &amp; Conclusion</p>
-                        <div className="ml-auto flex items-center gap-1.5">
-                          {ai.risk_score != null && <span className="text-[0.55rem] font-black text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full uppercase tracking-widest">Risk {ai.risk_score}</span>}
-                          {ai.confidence != null && <span className="text-[0.55rem] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full uppercase tracking-widest">{Math.round(ai.confidence * 100)}% conf</span>}
-                        </div>
+                        <p className="text-[0.75rem] font-black text-[var(--t7)]">Data incident Overview</p>
+                        <span className="text-[0.48rem] font-black text-[var(--t3)] uppercase tracking-widest bg-[var(--s2)] px-1.5 py-0.5 rounded">Markdown</span>
+                        {ai.risk_score != null && <span className="text-[0.55rem] font-black text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full uppercase tracking-widest">Risk {ai.risk_score}</span>}
+                        {ai.confidence != null && <span className="text-[0.55rem] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full uppercase tracking-widest">{Math.round(ai.confidence * 100)}% conf</span>}
                       </div>
-                      <div className="p-4 space-y-4 text-[0.78rem] text-[var(--t6)] leading-relaxed">
+                      {!overviewEditing && (
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {overviewBody && <CopyButton text={overviewBody} />}
+                          <button onClick={downloadOverview} title="Download the overview as a Markdown file"
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--t6)] border border-[var(--b2)] bg-[var(--s0)] hover:bg-[var(--s1)] transition-colors">
+                            <Download size={11} /> Download
+                          </button>
+                          {canEdit && !isClosed && (
+                            <button onClick={handleRunInvestigation} disabled={reinvestigating} title="Re-run the AI agents to (re)generate the analysis"
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-60 transition-colors">
+                              {reinvestigating ? <><RefreshCw size={11} className="animate-spin" /> Generating…</> : <><Activity size={11} /> {overviewBody ? 'Regenerate' : 'Generate'}</>}
+                            </button>
+                          )}
+                          {canEdit && !isClosed && (
+                            <button onClick={() => { setOverviewDraft(overviewBody); setOverviewEditing(true); }}
+                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.62rem] font-bold text-[var(--p1)] border border-[var(--p1)] hover:bg-blue-50 transition-colors">
+                              <FileText size={11} /> Edit
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-4 space-y-4 text-[0.78rem] text-[var(--t6)] leading-relaxed">
+                      {overviewEditing ? (
+                        <>
+                          <p className="text-[0.6rem] text-[var(--t3)]">Edit the incident overview in Markdown. Use “Insert AI analysis” to start from the latest agent output.</p>
+                          <div className="grid lg:grid-cols-2 gap-3">
+                            <div className="flex flex-col">
+                              <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Markdown source</p>
+                              <textarea value={overviewDraft} onChange={e => setOverviewDraft(e.target.value)} rows={18}
+                                placeholder="Write the incident overview in Markdown — ## headings, **bold**, tables, - lists…"
+                                className="w-full flex-1 border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.74rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed min-h-[18rem]" />
+                            </div>
+                            <div className="flex flex-col">
+                              <p className="text-[0.5rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1">Live preview</p>
+                              <div className="border border-[var(--b2)] rounded-lg p-3 bg-[var(--s1)]/30 min-h-[18rem] max-h-[34rem] overflow-y-auto">
+                                {overviewDraft.trim() ? <Markdown>{overviewDraft}</Markdown> : <p className="text-[0.74rem] italic text-[var(--t4)]">Nothing to preview yet…</p>}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex gap-2 mt-1 flex-wrap items-center">
+                            <button onClick={handleSaveOverview} disabled={overviewSaving}
+                              className="px-4 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.72rem] font-bold disabled:opacity-50 flex items-center gap-1">
+                              {overviewSaving ? 'Saving...' : <><CheckCircle size={12} /> Save Overview</>}
+                            </button>
+                            <button onClick={() => { setOverviewEditing(false); setOverviewDraft(overviewBody); }}
+                              className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.72rem] font-semibold">Cancel</button>
+                            {aiReportMd && (
+                              <button onClick={() => setOverviewDraft(aiReportMd)} title="Replace the draft with the latest AI analysis (Markdown)"
+                                className="ml-auto px-3 py-2 rounded-lg border border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 text-[0.7rem] font-bold flex items-center gap-1.5">
+                                <Activity size={12} /> Insert AI analysis
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      ) : (overviewBody || hasAnyAi) ? (
+                        <>
                         {/* Why escalated (real reasons only — legacy backfill placeholder suppressed) */}
                         {realReason(detail.reason) && (
                           <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
@@ -916,15 +1227,11 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                           </div>
                         )}
 
-                        {/* AI report — the rich, synthesised markdown report (preferred),
-                            else the triage summary. Rendered as Markdown. */}
-                        {(ai.ticket_summary || ai.summary) ? (
-                          <div>
-                            <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">AI Report</p>
-                            <Markdown>{String(ai.ticket_summary || ai.summary)}</Markdown>
-                          </div>
+                        {/* Editable analysis body (Markdown) — saved override or the AI report. */}
+                        {overviewBody ? (
+                          <Markdown>{overviewBody}</Markdown>
                         ) : (
-                          <p className="text-[0.74rem] text-[var(--t4)] italic">No AI summary recorded yet — use “Re-run investigation” above to generate one.</p>
+                          <p className="text-[0.74rem] text-[var(--t4)] italic">No written overview yet — use Generate above, or Edit to write one.</p>
                         )}
 
                         {/* Key facts grid */}
@@ -1055,26 +1362,32 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                             <Markdown>{String(ai.correlation_summary)}</Markdown>
                           </div>
                         )}
-                      </div>
+                        </>
+                      ) : (
+                        <div className="text-center py-8">
+                          <Activity size={26} className="mx-auto text-[var(--t3)] opacity-50 mb-2" />
+                          <p className="text-[0.82rem] font-bold text-[var(--t6)]">No overview recorded for this incident yet</p>
+                          <p className="text-[0.7rem] text-[var(--t3)] mt-1 max-w-md mx-auto">
+                            Run the AI agents to generate the analysis, threat intel, IOCs and recommended actions — or write the overview yourself in Markdown.
+                          </p>
+                          <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
+                            {canEdit && !isClosed && (
+                              <button onClick={handleRunInvestigation} disabled={reinvestigating}
+                                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 text-white text-[0.74rem] font-bold hover:bg-violet-700 disabled:opacity-60 transition-colors">
+                                {reinvestigating ? <><RefreshCw size={13} className="animate-spin" /> Running investigation…</> : <><Zap size={13} /> Run AI Investigation</>}
+                              </button>
+                            )}
+                            {canEdit && !isClosed && (
+                              <button onClick={() => { setOverviewDraft(''); setOverviewEditing(true); }}
+                                className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.74rem] font-bold hover:bg-[var(--s1)]">
+                                Write manually
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  ) : (
-                    <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-8 text-center">
-                      <Activity size={26} className="mx-auto text-[var(--t3)] opacity-50 mb-2" />
-                      <p className="text-[0.82rem] font-bold text-[var(--t6)]">No AI analysis recorded for this incident yet</p>
-                      <p className="text-[0.7rem] text-[var(--t3)] mt-1 max-w-md mx-auto">
-                        This incident was escalated without a full agent investigation. Run the agents now to generate the AI summary, threat intel, IOCs and recommended actions.
-                      </p>
-                      <button
-                        onClick={handleRunInvestigation}
-                        disabled={reinvestigating}
-                        className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 text-white text-[0.74rem] font-bold hover:bg-violet-700 disabled:opacity-60 transition-colors"
-                      >
-                        {reinvestigating
-                          ? <><RefreshCw size={13} className="animate-spin" /> Running investigation…</>
-                          : <><Zap size={13} /> Run AI Investigation</>}
-                      </button>
-                    </div>
-                  )}
+                  </div>
 
                   {/* ===== Correlated alerts — compact, scrollable, expandable (after the AI summary) ===== */}
                   {(detail.alerts && detail.alerts.length > 0) ? (
@@ -1134,6 +1447,60 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                       </div>
                     )}
                   </div>
+
+                  {/* ===== SOC Analysis Prompt — static template (no AI), copy into an external AI chat ===== */}
+                  {(() => {
+                    const socPrompt = buildSocAnalysisPrompt(detail.id, detail.title, latestAlertRawJson(detail.alerts));
+                    return (
+                      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                        <div className="px-4 py-2.5 bg-[var(--s1)] flex items-center gap-2 flex-wrap">
+                          <Sparkles size={13} className="text-[var(--p1)]" />
+                          <p className="text-[0.72rem] font-black text-[var(--t7)]">SOC Analysis Prompt</p>
+                          <span className="text-[0.55rem] text-[var(--t3)] font-semibold hidden md:inline">incident ID + title + latest raw alert → ready-to-paste prompt</span>
+                          <div className="ml-auto flex items-center gap-1.5">
+                            <CopyButton text={socPrompt} />
+                            <button onClick={() => setShowSocPrompt(s => !s)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--b2)] bg-[var(--s0)] hover:bg-[var(--s1)] text-[0.62rem] font-bold text-[var(--t5)] transition-colors">
+                              {showSocPrompt ? 'Hide' : 'Show'} prompt
+                              <ChevronRight size={12} className={`transition-transform ${showSocPrompt ? 'rotate-90' : ''}`} />
+                            </button>
+                          </div>
+                        </div>
+                        {showSocPrompt && (
+                          <div className="border-t border-[var(--b1)] p-3">
+                            <pre className="text-[0.68rem] bg-slate-950 text-slate-200 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed max-h-96 overflow-y-auto whitespace-pre-wrap break-words">{socPrompt}</pre>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* ===== Resolution & Closure Report Prompt — static template (no AI) ===== */}
+                  {(() => {
+                    const reportPrompt = buildSocResolutionReportPrompt(detail.id, detail.title);
+                    return (
+                      <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl overflow-hidden">
+                        <div className="px-4 py-2.5 bg-[var(--s1)] flex items-center gap-2 flex-wrap">
+                          <FileText size={13} className="text-emerald-600" />
+                          <p className="text-[0.72rem] font-black text-[var(--t7)]">Resolution Report Prompt</p>
+                          <span className="text-[0.55rem] text-[var(--t3)] font-semibold hidden md:inline">incident ID + title → ITILv4 / ISO 27035 closure report prompt</span>
+                          <div className="ml-auto flex items-center gap-1.5">
+                            <CopyButton text={reportPrompt} />
+                            <button onClick={() => setShowResolutionPrompt(s => !s)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--b2)] bg-[var(--s0)] hover:bg-[var(--s1)] text-[0.62rem] font-bold text-[var(--t5)] transition-colors">
+                              {showResolutionPrompt ? 'Hide' : 'Show'} prompt
+                              <ChevronRight size={12} className={`transition-transform ${showResolutionPrompt ? 'rotate-90' : ''}`} />
+                            </button>
+                          </div>
+                        </div>
+                        {showResolutionPrompt && (
+                          <div className="border-t border-[var(--b1)] p-3">
+                            <pre className="text-[0.68rem] bg-slate-950 text-slate-200 p-4 rounded-xl overflow-x-auto font-mono leading-relaxed max-h-96 overflow-y-auto whitespace-pre-wrap break-words">{reportPrompt}</pre>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                 </div>
               )}
@@ -1369,7 +1736,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                   <div className="px-4 py-2.5 bg-[var(--s1)] border-b border-[var(--b1)] flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
                       <FileText size={13} className="text-[var(--p1)]" />
-                      <p className="text-[0.72rem] font-black text-[var(--t7)]">Incident Report</p>
+                      <p className="text-[0.72rem] font-black text-[var(--t7)]">Final Incident Report</p>
                       <span className="text-[0.48rem] font-black text-[var(--t3)] uppercase tracking-widest bg-[var(--s2)] px-1.5 py-0.5 rounded">Markdown</span>
                     </div>
                     {!reportEditing && (
@@ -1409,7 +1776,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                     {/* Static report header — always present, never editable */}
                     <div className="mb-4 rounded-lg border border-[var(--b1)] bg-[var(--s1)]/40 p-4">
                       <h3 className="text-[0.98rem] font-black text-[var(--t7)] leading-tight">{detail.title}</h3>
-                      <p className="text-[0.6rem] font-mono text-[var(--t3)] mt-0.5 mb-3">Incident Report · {detail.id}</p>
+                      <p className="text-[0.6rem] font-mono text-[var(--t3)] mt-0.5 mb-3">Final / Post-Incident Report · {detail.id}</p>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2.5">
                         {reportMeta.map((m, i) => (
                           <div key={i}>
@@ -1771,7 +2138,13 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5 overflow-y-auto h-full">
       <PageHeader eyebrow="Incident Response" title="Incidents"
-        description="Manage escalated security incidents through their full lifecycle." />
+        description="Manage escalated security incidents through their full lifecycle."
+        right={
+          <button onClick={() => { resetCreateForm(); setShowCreate(true); }}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--p1)] text-white text-[0.78rem] font-bold shadow-sm hover:opacity-90 transition-opacity">
+            <Plus size={15} /> New Incident
+          </button>
+        } />
 
       {/* Summary dashboard */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1951,6 +2324,118 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
           {total > filteredList.length && (
             <p className="text-center text-[0.7rem] text-[var(--t3)] pt-2">Showing {filteredList.length} of {total}</p>
           )}
+        </div>
+      )}
+
+      {/* ===== Create Incident modal — manual incident, no Wazuh alert required ===== */}
+      {showCreate && (
+        <div className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !creating && setShowCreate(false)}>
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="sticky top-0 z-10 px-5 py-3.5 bg-gradient-to-r from-[var(--p1)] to-[var(--pd)] flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0"><Plus size={16} className="text-white" /></div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[0.85rem] font-black text-white leading-tight">Create Incident</p>
+                <p className="text-[0.6rem] text-white/80">Open an incident manually — no Wazuh alert required</p>
+              </div>
+              <button onClick={() => !creating && setShowCreate(false)} className="text-white/80 hover:text-white transition-colors"><X size={18} /></button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Quick-start templates */}
+              <div>
+                <p className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest mb-1.5">Quick start (optional)</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {INCIDENT_TEMPLATES.map(t => (
+                    <button key={t.key} type="button" onClick={() => applyCreateTemplate(t)}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[0.66rem] font-bold transition-all ${t.tint} ${cTemplate === t.key ? 'ring-2 ring-[var(--p1)]' : 'hover:brightness-95'}`}>
+                      {t.icon} {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Title */}
+              <div>
+                <label className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Title <span className="text-red-500">*</span></label>
+                <input value={cTitle} onChange={e => setCTitle(e.target.value)} autoFocus maxLength={200}
+                  placeholder="e.g. Suspicious PowerShell execution on SRV-DC-01"
+                  className="mt-1 w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.78rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]" />
+              </div>
+
+              {/* Severity segmented control */}
+              <div>
+                <label className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Severity</label>
+                <div className="mt-1 flex gap-1.5">
+                  {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(s => (
+                    <button key={s} type="button" onClick={() => setCSeverity(s)}
+                      className={`flex-1 px-2 py-1.5 rounded-lg border text-[0.62rem] font-black uppercase tracking-wider transition-all ${cSeverity === s ? `${SEV_COLORS[s]} ring-2 ring-[var(--p1)]` : 'border-[var(--b2)] text-[var(--t4)] bg-[var(--s0)] hover:bg-[var(--s1)]'}`}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Phase + assignee */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Phase</label>
+                  <select value={cPhase} onChange={e => setCPhase(e.target.value as IncidentPhase)}
+                    className="mt-1 w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.74rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]">
+                    {INCIDENT_PHASES.map(p => <option key={p} value={p}>{PHASE_LABELS[p]}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Assign to</label>
+                  <select value={cAssignee} onChange={e => setCAssignee(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="mt-1 w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.74rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)]">
+                    <option value="">Unassigned</option>
+                    {analysts.map(a => <option key={a.id} value={a.id}>{a.username} ({a.role})</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Why / context */}
+              <div>
+                <label className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Why / context (optional)</label>
+                <textarea value={cReason} onChange={e => setCReason(e.target.value)} rows={2}
+                  placeholder="Short reason this incident was opened (recorded on the timeline)…"
+                  className="mt-1 w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.74rem] outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y" />
+              </div>
+
+              {/* Overview (Markdown) */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[0.55rem] font-black text-[var(--t3)] uppercase tracking-widest">Incident overview (Markdown, optional)</label>
+                  {cOverview.trim() && (
+                    <button type="button" onClick={() => setCPreview(p => !p)} className="text-[0.6rem] font-bold text-[var(--p1)] hover:underline">
+                      {cPreview ? 'Edit' : 'Preview'}
+                    </button>
+                  )}
+                </div>
+                {cPreview ? (
+                  <div className="border border-[var(--b2)] rounded-lg p-3 bg-[var(--s1)]/30 min-h-[8rem] max-h-64 overflow-y-auto">
+                    {cOverview.trim() ? <Markdown>{cOverview}</Markdown> : <p className="text-[0.72rem] italic text-[var(--t4)]">Nothing to preview…</p>}
+                  </div>
+                ) : (
+                  <textarea value={cOverview} onChange={e => setCOverview(e.target.value)} rows={7}
+                    placeholder="## Summary&#10;…"
+                    className="w-full border border-[var(--b2)] rounded-lg px-3 py-2 text-[0.72rem] font-mono outline-none focus:border-[var(--p1)] bg-[var(--s0)] resize-y leading-relaxed" />
+                )}
+                <p className="text-[0.58rem] text-[var(--t3)] mt-1">Seeds the editable “Data incident Overview” card on the new incident.</p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="sticky bottom-0 px-5 py-3 bg-[var(--s0)] border-t border-[var(--b1)] flex items-center justify-end gap-2">
+              <button type="button" onClick={() => !creating && setShowCreate(false)}
+                className="px-4 py-2 rounded-lg border border-[var(--b2)] text-[var(--t5)] text-[0.74rem] font-semibold hover:bg-[var(--s1)]">Cancel</button>
+              <button type="button" onClick={handleCreateManual} disabled={creating || !cTitle.trim()}
+                className="px-5 py-2 rounded-lg bg-[var(--p1)] text-white text-[0.74rem] font-bold disabled:opacity-50 flex items-center gap-1.5">
+                {creating ? <><RefreshCw size={13} className="animate-spin" /> Creating…</> : <><Plus size={14} /> Create Incident</>}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

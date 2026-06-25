@@ -3331,8 +3331,43 @@ async function startServer() {
   }
 
   app.post('/api/incidents', authenticate, async (req: any, res) => {
-    const { alert_id, title, severity, assigned_to, phase, note, create_glpi } = req.body || {};
-    if (!alert_id) return res.status(400).json({ error: 'alert_id required' });
+    const { alert_id, title, severity, assigned_to, phase, note, create_glpi, analysis } = req.body || {};
+
+    // ── Manual incident (no source Wazuh alert) ──────────────────────────────
+    // Analysts can open an incident by hand (planned maintenance, an out-of-band
+    // report, a phone call, an external advisory). It has no linked alert; the
+    // optional `analysis` seeds the editable "Data incident Overview" card.
+    if (!alert_id) {
+      const cleanTitle = String(title || '').trim();
+      if (!cleanTitle) return res.status(400).json({ error: 'A title is required to create a manual incident' });
+      const sev    = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(severity) ? severity : 'MEDIUM';
+      const ph     = phase && INCIDENT_PHASES.includes(phase) ? phase : 'detection';
+      const assignee = typeof assigned_to === 'number' ? assigned_to : null;
+      const status = computeIncidentStatus(ph, assignee);
+      const incId  = `INC-MANUAL-${Date.now().toString(36).slice(-6).toUpperCase()}`;
+      try {
+        await db.prepare(
+          `INSERT INTO incidents (id, title, severity, status, phase, assigned_to, escalated_by, escalated_at, analysis, action_plan, reason, report_body)
+           VALUES (?, ?, ?, ?, ?, ?, ?, now(), ?, NULL, ?, NULL)`
+        ).run(incId, cleanTitle.slice(0, 200), sev, status, ph, assignee, req.user?.id ?? null,
+              analysis ? String(analysis) : null, note ? String(note).slice(0, 2000) : null);
+        await db.prepare(
+          `INSERT INTO incident_timeline (incident_id, event_type, phase_to, status_to, user_id, note)
+           VALUES (?, 'created', ?, ?, ?, ?)`
+        ).run(incId, ph, status, req.user?.id ?? null, note ? String(note).slice(0, 500) : 'Incident created manually');
+        if (assignee) {
+          await db.prepare(`INSERT INTO incident_timeline (incident_id, event_type, user_id, note) VALUES (?, 'assigned', ?, ?)`)
+            .run(incId, req.user?.id ?? null, `Assigned to user #${assignee}`);
+        }
+        writeAudit(req.user?.id, 'INCIDENT_CREATED', `Manual incident ${incId} created (${cleanTitle.slice(0, 80)})`);
+        io.emit('incident_created', { id: incId, title: cleanTitle, severity: sev, alertId: null });
+        return res.json({ ok: true, id: incId, manual: true });
+      } catch (err: any) {
+        console.error('[Manual incident create] Error:', err?.message);
+        return res.status(500).json({ error: err?.message || 'Failed to create manual incident' });
+      }
+    }
+
     try {
       const r = await createIncidentFromAlert({
         alertId:     alert_id,
@@ -3693,7 +3728,7 @@ async function startServer() {
   // Update incident metadata (report_body, title, severity, status)
   app.patch('/api/incidents/:id', authenticate, async (req: any, res) => {
     const { id } = req.params;
-    const { report_body, title, severity, status: newStatus } = req.body || {};
+    const { report_body, title, severity, status: newStatus, analysis } = req.body || {};
     const validStatuses = ['OPEN', 'IN_PROGRESS', 'CONTAINED', 'RESOLVED', 'CLOSED', 'RECLASSIFIED_FP'];
 
     const inc: any = await db.prepare('SELECT status, assigned_to, report_locked, report_locked_by FROM incidents WHERE id = ?').get(id);
@@ -3715,6 +3750,7 @@ async function startServer() {
     const sets: string[] = ['updated_at = now()'];
     const params: any[]  = [];
     if (report_body !== undefined) { sets.push('report_body = ?', 'report_updated_at = now()'); params.push(report_body); }
+    if (analysis    !== undefined) { sets.push('analysis = ?');    params.push(analysis); }
     if (title       !== undefined) { sets.push('title = ?');       params.push(title.slice(0, 200)); }
     if (severity    !== undefined) { sets.push('severity = ?');    params.push(severity); }
     if (newStatus   !== undefined) {

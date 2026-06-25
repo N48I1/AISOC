@@ -1,13 +1,34 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+
+// Sanitize schema extended to allow inline coloring used by the AI reports, e.g.
+// <span style="color:#1C4F61"><strong>…</strong></span>. We keep the GitHub-safe
+// defaults (which strip scripts/handlers — important since report bodies can echo
+// attacker-controlled log fields) and only additionally permit `span` + a `style`
+// attribute on inline text tags.
+const sanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames || []), 'span'],
+  attributes: {
+    ...defaultSchema.attributes,
+    span:   [...(defaultSchema.attributes?.span   || []), 'style'],
+    strong: [...(defaultSchema.attributes?.strong || []), 'style'],
+    em:     [...(defaultSchema.attributes?.em     || []), 'style'],
+    p:      [...(defaultSchema.attributes?.p      || []), 'style'],
+  },
+};
 
 // Themed Markdown renderer for AI-generated reports (GFM: tables, lists, links).
+// rehype-raw lets analyst/AI HTML (colored spans) render; rehype-sanitize keeps it safe.
 // Styled with the app's CSS variables so it fits light/dark mode.
 export const Markdown: React.FC<{ children: string; className?: string }> = ({ children, className }) => (
   <div className={`text-[0.78rem] text-[var(--t6)] leading-relaxed ${className || ''}`}>
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
       components={{
         h1: ({ children }) => <h1 className="text-[0.95rem] font-black text-[var(--t7)] mt-3 mb-1.5 first:mt-0">{children}</h1>,
         h2: ({ children }) => <h2 className="text-[0.85rem] font-black text-[var(--t7)] mt-3 mb-1.5 first:mt-0 flex items-center gap-1.5 before:content-[''] before:w-1 before:h-3.5 before:rounded before:bg-[var(--p1)]">{children}</h2>,
@@ -18,6 +39,12 @@ export const Markdown: React.FC<{ children: string; className?: string }> = ({ c
         li: ({ children }) => <li className="leading-relaxed">{children}</li>,
         strong: ({ children }) => <strong className="font-bold text-[var(--t7)]">{children}</strong>,
         em: ({ children }) => <em className="italic">{children}</em>,
+        // Colored spans from the report HTML (e.g. style="color:#1C4F61"). Force any
+        // nested elements (typically <strong>) to inherit that color so the section
+        // titles render blue/green instead of the default emphasis color.
+        span: ({ node, className, children, ...props }) => (
+          <span {...props} className={`${className || ''} [&_*]:!text-inherit`.trim()}>{children}</span>
+        ),
         a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--p1)] font-semibold underline break-all hover:opacity-80">{children}</a>,
         code: ({ children }) => <code className="px-1 py-0.5 rounded bg-[var(--s1)] border border-[var(--b2)] text-[0.72rem] font-mono text-[var(--t7)] break-all">{children}</code>,
         pre: ({ children }) => <pre className="bg-slate-950 text-emerald-300 rounded-lg p-3 text-[0.7rem] font-mono overflow-x-auto my-2">{children}</pre>,
