@@ -17,6 +17,8 @@ export const OPTIONAL_WORKERS = ["recall", "ioc_check"] as const;
 export type OptionalWorker = (typeof OPTIONAL_WORKERS)[number];
 
 export const OPENROUTER_FREE_MODELS = [
+  // Paid reasoning model (very low cost) — default for all agents.
+  "deepseek/deepseek-v4-flash",
   "openai/gpt-oss-120b:free",
   "openai/gpt-oss-20b:free",
   "meta-llama/llama-3.3-70b-instruct:free",
@@ -31,6 +33,7 @@ export const OPENROUTER_FREE_MODELS = [
 export type OpenRouterFreeModel = (typeof OPENROUTER_FREE_MODELS)[number];
 
 export const OPENROUTER_MODEL_LABELS: Record<string, string> = {
+  "deepseek/deepseek-v4-flash":                "DeepSeek V4 Flash",
   "openai/gpt-oss-120b:free":                  "GPT-OSS 120B (Free)",
   "openai/gpt-oss-20b:free":                   "GPT-OSS 20B (Free)",
   "meta-llama/llama-3.3-70b-instruct:free":    "Llama 3.3 70B Instruct (Free)",
@@ -43,17 +46,17 @@ export const OPENROUTER_MODEL_LABELS: Record<string, string> = {
 };
 
 export const DEFAULT_AGENT_MODELS: Record<AgentPhase, OpenRouterFreeModel> = {
-  analysis:    "nvidia/nemotron-3-super-120b-a12b:free",
-  intel:       "nvidia/nemotron-3-super-120b-a12b:free",
-  knowledge:   "nvidia/nemotron-3-super-120b-a12b:free",
-  correlation: "nvidia/nemotron-3-super-120b-a12b:free",
-  ticketing:   "nvidia/nemotron-3-super-120b-a12b:free",
-  response:    "nvidia/nemotron-3-super-120b-a12b:free",
-  validation:  "nvidia/nemotron-3-super-120b-a12b:free",
+  analysis:    "deepseek/deepseek-v4-flash",
+  intel:       "deepseek/deepseek-v4-flash",
+  knowledge:   "deepseek/deepseek-v4-flash",
+  correlation: "deepseek/deepseek-v4-flash",
+  ticketing:   "deepseek/deepseek-v4-flash",
+  response:    "deepseek/deepseek-v4-flash",
+  validation:  "deepseek/deepseek-v4-flash",
 };
 
 /** Planner is small and fast — it makes routing decisions, not deep analysis. */
-export const DEFAULT_PLANNER_MODEL: OpenRouterFreeModel = "meta-llama/llama-3.2-3b-instruct:free";
+export const DEFAULT_PLANNER_MODEL: OpenRouterFreeModel = "deepseek/deepseek-v4-flash";
 
 export const AGENT_METADATA: Record<AgentPhase, { name: string; desc: string }> = {
   analysis: {

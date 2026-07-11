@@ -404,8 +404,6 @@ async function initDatabase() {
     console.log('[DB] Seeded 6 default playbooks');
   }
 
-
-
   // Seed integration rows if not already present (INSERT OR IGNORE preserves user config)
   const seedIntegration = await db.prepare(
     'INSERT INTO integrations (name, enabled, config, auto_send_threshold) VALUES (?, ?, ?, ?) ON CONFLICT (name) DO NOTHING'
@@ -2098,7 +2096,7 @@ async function startServer() {
   // ── Ingest ────────────────────────────────────────────────────────────────
 
   // Helper: fire-and-forget orchestration on a freshly-ingested alert
-  async function triggerOrchestration(alertId: string) {
+  async function triggerOrchestration(alertId: string, opts: { bypassFastFp?: boolean } = {}) {
     try {
       const alert: any = await db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId);
       if (!alert) return;
@@ -2107,7 +2105,7 @@ async function startServer() {
       ).all(alertId);
       await db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run('ANALYZING', alertId);
       io.emit('alert_updated', { id: alertId, status: 'ANALYZING' });
-      const update = await runOrchestration(alert, recentAlerts, { modelAssignments: await getAgentModelAssignments() });
+      const update = await runOrchestration(alert, recentAlerts, { modelAssignments: await getAgentModelAssignments(), bypassFastFp: opts.bypassFastFp });
       if (update.status === 'FALSE_POSITIVE' && update.fp_method) {
         await db.prepare(`UPDATE alerts SET status=?, ai_analysis=?, mitre_attack=?, remediation_steps=?, email_sent=?, fp_method=?, fp_reason=?, fp_confidence=?, filtered_at=now(), last_error=NULL, last_error_at=NULL WHERE id=?`)
           .run(update.status, update.ai_analysis, update.mitre_attack, update.remediation_steps, update.email_sent, update.fp_method, update.fp_reason, update.fp_confidence ?? 0, alertId);
@@ -3461,11 +3459,13 @@ async function startServer() {
     }
   });
 
+  const incidentReinvestigations = new Set<string>();
+
   // Re-run the agent pipeline on an incident's representative alert to (re)capture
   // per-agent reasoning. Used when an incident was created by escalation/backfill
   // without ever running a full investigation, so its Reasoning timeline is empty.
-  // The run records reasoning + ai_analysis; the alert is re-asserted ESCALATED so a
-  // re-investigation can never silently un-escalate an alert that belongs to an incident.
+  // This endpoint returns as soon as the run is queued; the LLM phases continue in
+  // the background and push updates over sockets as they complete.
   app.post('/api/incidents/:id/reinvestigate', authenticate, async (req: any, res) => {
     const { id } = req.params;
     try {
@@ -3477,22 +3477,54 @@ async function startServer() {
       ).get(id);
       if (!alert) return res.status(400).json({ error: 'Incident has no linked alert to investigate' });
 
-      await triggerOrchestration(alert.id);   // runs all agents → records reasoning + ai_analysis
-      await db.prepare("UPDATE alerts SET status = 'ESCALATED' WHERE id = ?").run(alert.id);
-
-      // Sync the incident's analysis snapshot with the fresh result, so the
-      // overview stops showing the stale (often fallback) analysis from creation.
-      const fresh: any = await db.prepare('SELECT ai_analysis FROM alerts WHERE id = ?').get(alert.id);
-      if (fresh?.ai_analysis) {
-        await db.prepare('UPDATE incidents SET analysis = ? WHERE id = ?').run(fresh.ai_analysis, id);
+      if (incidentReinvestigations.has(id)) {
+        return res.status(202).json({ ok: true, queued: true, already_running: true, alert_id: alert.id });
       }
 
-      io.emit('alert_updated', { id: alert.id, status: 'ESCALATED' });
+      incidentReinvestigations.add(id);
+      await db.prepare(`
+        UPDATE alerts
+        SET status = 'ANALYZING',
+            fp_method = NULL,
+            fp_reason = NULL,
+            fp_confidence = NULL,
+            last_error = NULL,
+            last_error_at = NULL
+        WHERE id = ?
+      `).run(alert.id);
+      io.emit('alert_updated', { id: alert.id, status: 'ANALYZING' });
       io.emit('incident_updated', { id });
 
-      const steps = (await db.prepare('SELECT count(*) c FROM incident_reasoning WHERE alert_id = ?').get(alert.id) as any).c;
-      writeAudit(req.user?.id, 'INCIDENT_REINVESTIGATED', `Re-ran agents on alert ${alert.id} for incident ${id} (${steps} reasoning step(s))`);
-      res.json({ ok: true, alert_id: alert.id, reasoning_steps: Number(steps) });
+      const userId = req.user?.id;
+      void (async () => {
+        try {
+          await triggerOrchestration(alert.id, { bypassFastFp: true });   // analyst escalation: run full agents even if FP memory matched
+          await db.prepare("UPDATE alerts SET status = 'ESCALATED' WHERE id = ?").run(alert.id);
+
+          // Sync the incident's analysis snapshot with the fresh result, so the
+          // overview stops showing stale fallback data from incident creation.
+          const fresh: any = await db.prepare('SELECT ai_analysis FROM alerts WHERE id = ?').get(alert.id);
+          if (fresh?.ai_analysis) {
+            await db.prepare('UPDATE incidents SET analysis = ? WHERE id = ?').run(fresh.ai_analysis, id);
+          }
+
+          io.emit('alert_updated', { id: alert.id, status: 'ESCALATED' });
+          io.emit('incident_updated', { id });
+
+          const steps = (await db.prepare('SELECT count(*) c FROM incident_reasoning WHERE alert_id = ?').get(alert.id) as any).c;
+          writeAudit(userId, 'INCIDENT_REINVESTIGATED', `Re-ran agents on alert ${alert.id} for incident ${id} (${steps} reasoning step(s))`);
+        } catch (err: any) {
+          const reason = (err?.message || 'Re-investigation failed').slice(0, 500);
+          console.error('[Reinvestigate] Background error:', reason);
+          await db.prepare("UPDATE alerts SET status = 'ESCALATED', last_error = ?, last_error_at = now() WHERE id = ?").run(reason, alert.id);
+          io.emit('alert_updated', { id: alert.id, status: 'ESCALATED', last_error: reason });
+          io.emit('incident_updated', { id });
+        } finally {
+          incidentReinvestigations.delete(id);
+        }
+      })();
+
+      res.status(202).json({ ok: true, queued: true, alert_id: alert.id });
     } catch (err: any) {
       console.error('[Reinvestigate] Error:', err?.message);
       res.status(500).json({ error: err?.message || 'Re-investigation failed' });
@@ -4437,7 +4469,7 @@ async function startServer() {
   setInterval(async () => {
     try {
       const expired = await db.prepare(
-        "SELECT id, username FROM users WHERE status='active' AND access_expires_at IS NOT NULL AND access_expires_at <> '' AND access_expires_at < now()"
+        "SELECT id, username FROM users WHERE status='active' AND access_expires_at IS NOT NULL AND access_expires_at < now()"
       ).all() as Array<{ id: number; username: string }>;
       for (const u of expired) {
         await db.prepare(`UPDATE users SET status='disabled', jwt_epoch = COALESCE(jwt_epoch,0) + 1 WHERE id = ?`).run(u.id);

@@ -12,6 +12,7 @@ import { runHubAndSwarm, runFpScan, runInvestigation, type OrchestrationOutput, 
 
 interface RunOptions {
   modelAssignments?: ModelAssignments;
+  bypassFastFp?: boolean;
 }
 
 /** Run a single agent phase and return its raw result. Used by the per-phase

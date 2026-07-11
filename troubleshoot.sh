@@ -215,10 +215,11 @@ if $FIX; then
   fi
   sleep 1
   info "Starting server..."
-  npm run dev > "$LOG" 2>&1 &
+  nohup env USE_VITE_MIDDLEWARE=true ./node_modules/.bin/tsx server/server.ts > "$LOG" 2>&1 < /dev/null &
   sleep 12
   SERVER_PID=$(pgrep -f "tsx.*server" 2>/dev/null || true)
   if [ -n "$SERVER_PID" ]; then
+    SERVER_UP=true
     ok "Server started (PID $SERVER_PID)"
     tail -8 "$LOG"
     # Re-check HTTPS after restart so summary reflects new state

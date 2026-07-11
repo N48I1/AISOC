@@ -27,7 +27,7 @@ const KnowledgeBaseTab = ({
   const { user }  = useAuth();
   const isAdmin   = (ROLE_LEVEL[user?.role || ''] ?? 0) >= ROLE_LEVEL.ADMIN;
 
-  type Section = 'playbooks' | 'incidents' | 'iocs';
+  type Section = 'playbooks' | 'incidents' | 'iocs' | 'assets';
   const [section, setSection] = useState<Section>('playbooks');
 
   // Stats / RAG status
@@ -143,6 +143,32 @@ const KnowledgeBaseTab = ({
     return arr;
   }, [iocs, iocSort]);
 
+  // ── Asset registry state ────────────────────────────────────────────────
+  const [assets, setAssets] = useState<any[]>([]);
+  const [assetSearch, setAssetSearch] = useState('');
+  const [assetRole, setAssetRole] = useState<string>('');
+
+  const fetchAssets = useCallback(() => {
+    getAssets()
+      .then(setAssets)
+      .catch(() => setAssets([]));
+  }, []);
+
+  useEffect(() => { fetchAssets(); }, [fetchAssets]);
+
+  const filteredAssets = React.useMemo(() => {
+    const q = assetSearch.toLowerCase();
+    return assets.filter(a => {
+      const matchesText = !q
+        || String(a.value || '').toLowerCase().includes(q)
+        || String(a.description || '').toLowerCase().includes(q)
+        || String(a.type || '').toLowerCase().includes(q)
+        || String(a.role || '').toLowerCase().includes(q);
+      const matchesRole = !assetRole || a.role === assetRole;
+      return matchesText && matchesRole;
+    });
+  }, [assets, assetSearch, assetRole]);
+
   // ── Helpers ──────────────────────────────────────────────────────────────
   const outcomeColor: Record<string, string> = {
     TRIAGED:        'bg-blue-100 text-blue-700 border border-blue-200',
@@ -178,7 +204,7 @@ const KnowledgeBaseTab = ({
       />
 
       {/* ── Stats row ───────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
           <BookOpen className="w-5 h-5 text-blue-600 shrink-0" />
           <div className="min-w-0">
@@ -201,6 +227,13 @@ const KnowledgeBaseTab = ({
           </div>
         </div>
         <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
+          <Laptop className="w-5 h-5 text-green-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">Known Assets</p>
+            <p className="text-[1.2rem] font-black text-[var(--t7)] tabular-nums">{assets.length}</p>
+          </div>
+        </div>
+        <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-3 flex items-center gap-3">
           <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${ragStatus?.ok ? 'bg-green-500' : 'bg-gray-400'}`} />
           <div className="min-w-0">
             <p className="text-[0.6rem] font-black text-[var(--t3)] uppercase tracking-widest">RAG / Embeddings</p>
@@ -217,6 +250,7 @@ const KnowledgeBaseTab = ({
           { id: 'playbooks',  label: 'Playbooks',  count: playbooks.length },
           { id: 'incidents',  label: 'Incidents',  count: insightsTotal },
           { id: 'iocs',       label: 'IOC Memory', count: iocsTotal },
+          { id: 'assets',     label: 'Assets',     count: assets.length },
         ] as const).map(s => (
           <button
             key={s.id}
@@ -539,6 +573,87 @@ const KnowledgeBaseTab = ({
                     </span>
                   </div>
                   <span className="text-[0.6rem] text-[var(--t3)] shrink-0 w-20 text-right">{timeAgo(new Date(ioc.last_seen).getTime())}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Assets ──────────────────────────────────────────────────────── */}
+      {section === 'assets' && (
+        <div className="space-y-3">
+          <div className="rounded-lg px-3 py-2 text-[0.7rem] flex items-center justify-between gap-3 bg-green-50 text-green-800 border border-green-200">
+            <span>
+              Asset context is analyst-curated infrastructure knowledge used by the FP engine. Scanner entries with <code className="font-mono bg-green-100 px-1 rounded">fp_default=TRUE</code> can classify authorized scan alerts as false positives.
+            </span>
+            <button
+              onClick={() => setActiveTab('noise-filter')}
+              className="shrink-0 px-2.5 py-1 rounded-lg bg-white border border-green-300 text-green-800 text-[0.62rem] font-bold hover:bg-green-100"
+            >
+              Edit in Noise Filter
+            </button>
+          </div>
+
+          <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-xl p-3 space-y-2.5">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+              <input
+                value={assetSearch}
+                onChange={e => setAssetSearch(e.target.value)}
+                placeholder="Search asset value, role, type, or description..."
+                className="w-full pl-8 pr-8 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s1)] text-[0.75rem] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--p1)]"
+              />
+              {assetSearch && (
+                <button onClick={() => setAssetSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            <div className="flex gap-2 items-center flex-wrap">
+              <span className="text-[0.55rem] font-black uppercase tracking-widest text-[var(--t3)]">Role:</span>
+              {(['scanner', 'monitoring', 'backup', 'admin', 'production', 'user_workstation'] as const).map(r => {
+                const isActive = assetRole === r;
+                return (
+                  <button
+                    key={r}
+                    onClick={() => setAssetRole(isActive ? '' : r)}
+                    className={`px-2 py-0.5 rounded-full border text-[0.62rem] font-black uppercase tracking-wider transition-all ${isActive ? 'bg-green-50 text-green-700 border-green-300 ring-2 ring-offset-0 ring-green-200' : 'bg-[var(--s1)] text-[var(--t4)] border-[var(--b2)] hover:bg-[var(--s2)]'}`}
+                  >
+                    {r.replace(/_/g, ' ')}
+                  </button>
+                );
+              })}
+              {(assetSearch || assetRole) && (
+                <button
+                  onClick={() => { setAssetSearch(''); setAssetRole(''); }}
+                  className="ml-auto text-[0.62rem] font-bold text-[var(--p1)] hover:underline"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+          </div>
+
+          {filteredAssets.length === 0 ? (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg p-8 text-center text-[var(--t3)] text-sm">
+              {assetSearch || assetRole ? 'No assets match this filter.' : 'No known assets registered yet. Add scanners and trusted infrastructure in Noise Filter → Known Assets.'}
+            </div>
+          ) : (
+            <div className="bg-[var(--s0)] border border-[var(--b1)] rounded-lg overflow-hidden divide-y divide-[var(--b1)]">
+              {filteredAssets.map(a => (
+                <div key={a.value} className="px-4 py-3 hover:bg-[var(--s1)] flex items-start gap-3">
+                  <span className="px-1.5 py-0.5 rounded bg-[var(--s2)] text-[var(--t4)] text-[0.55rem] font-black uppercase tracking-widest w-14 text-center shrink-0">{a.type}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-[0.78rem] text-[var(--t7)] font-bold">{a.value}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-green-50 text-green-700 text-[0.55rem] font-black uppercase tracking-widest border border-green-200">{String(a.role || 'asset').replace(/_/g, ' ')}</span>
+                      {!!a.fp_default && <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-[0.55rem] font-black uppercase tracking-widest border border-amber-200">FP default</span>}
+                    </div>
+                    {a.description && <p className="text-[0.68rem] text-[var(--t4)] mt-1 leading-relaxed">{a.description}</p>}
+                    <p className="text-[0.58rem] text-[var(--t3)] mt-1">Source: {a.source || 'manual'} · Updated {a.updated_at ? timeAgo(new Date(a.updated_at).getTime()) : 'unknown'}</p>
+                  </div>
                 </div>
               ))}
             </div>

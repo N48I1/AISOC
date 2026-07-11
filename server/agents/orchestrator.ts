@@ -46,6 +46,7 @@ export interface FpScanResult {
 
 interface RunOpts {
   modelAssignments?: ModelAssignments;
+  bypassFastFp?: boolean;
 }
 
 // ── FP-reduction helpers ────────────────────────────────────────────────────
@@ -57,9 +58,10 @@ const HIGH_RISK_KEYWORDS = [
 ];
 
 /**
- * Deterministic fast-FP path: if every extracted asset value matches an asset_context
- * entry with fp_default=1 AND the description contains no high-risk attack keywords,
- * classify as FP without spending an LLM call on triage.
+ * Deterministic fast-FP path. Known scanner sources are allowed to touch
+ * production targets during authorized vulnerability checks, so matching the
+ * scanner source is enough. Other known benign assets still require every
+ * extracted asset value to be fp_default.
  */
 function assetFastFp(alert: any, assetCtx: any[]): { isFp: boolean; reason?: string } {
   if (!assetCtx?.length) return { isFp: false };
@@ -68,6 +70,23 @@ function assetFastFp(alert: any, assetCtx: any[]): { isFp: boolean; reason?: str
 
   const desc = String(alert.description || '').toLowerCase();
   if (HIGH_RISK_KEYWORDS.some(k => desc.includes(k))) return { isFp: false };
+
+  const sourceValues = [
+    alert?.source_ip,
+    alert?.agent_name,
+    alert?.hostname,
+  ].filter(Boolean).map((v: any) => String(v).toLowerCase());
+
+  const scannerSource = fpAssets.find((a: any) =>
+    String(a.role).toLowerCase() === 'scanner'
+    && sourceValues.includes(String(a.value).toLowerCase())
+  );
+  if (scannerSource) {
+    return {
+      isFp: true,
+      reason: `Known FP-default scanner source (${scannerSource.value}) generated expected test traffic (${scannerSource.description || scannerSource.role}); no post-exploitation keywords in description`,
+    };
+  }
 
   const matchedValues = new Set(fpAssets.map((a: any) => String(a.value).toLowerCase()));
   const allValues     = extractAssetValuesFromAlert(alert).map((v: any) => String(v).toLowerCase());
@@ -173,7 +192,7 @@ export async function runHubAndSwarm(
 
   // ── 1.5 Asset fast-FP (deterministic, pre-LLM) ────────────────────────────
   // If every asset value is known fp_default AND no high-risk keywords, archive without LLM cost.
-  const fastFp = assetFastFp(alert, assetCtx);
+  const fastFp = opts.bypassFastFp ? { isFp: false } : assetFastFp(alert, assetCtx);
   if (fastFp.isFp) {
     log(`Asset fast-FP: ${fastFp.reason}`);
     await upsertIocs({}, alert.id, "Low", "FALSE_POSITIVE");

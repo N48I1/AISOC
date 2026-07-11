@@ -1,4 +1,4 @@
-title Semantic Memory — RAG Retrieval Loop
+title Semantic Memory - pgvector RAG Loop
 
 Inputs [icon: log-in, color: gray] {
   ALERT  [icon: alert-triangle, label: "Incoming alert\n(description + log)"]
@@ -11,15 +11,16 @@ Embedding [icon: sparkles, color: orange] {
   DEGRADE [icon: alert-octagon, label: "null → graceful skip\n(Ollama unreachable)"]
 }
 
-Vector Store (PostgreSQL + pgvector) [icon: database, color: purple] {
-  COL    [icon: save,        label: "embedding vector(768)\n+ summary · TTPs · outcome"]
-  TABLE  [icon: file-search, label: "incident_insights table"]
-  HNSW   [icon: list-tree,   label: "HNSW index\n(vector_cosine_ops)"]
+PostgreSQL Memory Store [icon: database, color: purple] {
+  POOL   [icon: plug,        label: "shared pg pool\ndb/pool.ts"]
+  TABLE  [icon: file-search, label: "incident_insights\nsummary · TTPs · outcome"]
+  COL    [icon: save,        label: "embedding vector(768)\npgvector column"]
+  HNSW   [icon: list-tree,   label: "HNSW cosine index\nvector_cosine_ops"]
 }
 
 Retrieval [icon: search, color: blue] {
   QEMBED [icon: sparkles,    label: "Embed query"]
-  ANN    [icon: git-compare, label: "pgvector ANN in SQL\nORDER BY embedding <=> q"]
+  ANN    [icon: git-compare, label: "SQL semantic search\nORDER BY embedding <=> q"]
   TOPK   [icon: filter,      label: "Top-k ≥ threshold\n1 - (embedding <=> q)\n(recallHits)"]
 }
 
@@ -33,14 +34,16 @@ Augment + Generate [icon: brain, color: green] {
 INCID > OLLAMA: commitAsync
 OLLAMA > VEC
 OLLAMA > DEGRADE: no response
-VEC > COL: toVectorLiteral '[…]'
-COL > TABLE
-TABLE > HNSW: indexed
+VEC > COL: pgvector literal
+POOL > TABLE: INSERT
+TABLE > COL
+COL > HNSW: indexed
 
 // ── Read path (retrieve at triage time) ──
 ALERT > QEMBED
 QEMBED > OLLAMA
-QEMBED > ANN: query vector
+QEMBED > ANN: query vector literal
+POOL > ANN: SELECT
 HNSW > ANN: nearest-neighbour
 ANN > TOPK
 TOPK > CTX

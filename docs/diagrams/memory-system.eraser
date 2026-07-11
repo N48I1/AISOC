@@ -1,15 +1,22 @@
 title Memory System
 
+Database [icon: database, color: purple] {
+  PG       [icon: database, label: "PostgreSQL\nshared db/pool.ts"]
+  PGVECTOR [icon: git-compare, label: "pgvector extension\nvector(768) + HNSW"]
+}
+
 Stores [icon: database, color: purple] {
-  T_INSIGHT [icon: file-search, label: "Insights\n(semantic + embedding)"]
-  T_IOC     [icon: hash,        label: "IOC memory"]
-  T_ASSET   [icon: server,      label: "Asset context"]
-  T_SUPP    [icon: filter,      label: "Suppression rules"]
-  T_WORK    [icon: list-tree,   label: "Working memory"]
+  T_INSIGHT [icon: file-search, label: "incident_insights\nsemantic RAG + embedding"]
+  T_REASON  [icon: git-branch,  label: "incident_reasoning\nagent evidence"]
+  T_IOC     [icon: hash,        label: "ioc_memory\nFP/TP counters"]
+  T_ASSET   [icon: server,      label: "asset_context\nknown scanners/assets"]
+  T_SUPP    [icon: filter,      label: "suppression_rules\ndeterministic FP filters"]
+  T_WORK    [icon: list-tree,   label: "working_memory\nper-run trace"]
 }
 
 Reads (pre-flight) [icon: search, color: orange] {
-  R_RECALL [icon: history, label: "Recall search"]
+  R_RECALL [icon: history, label: "Semantic recall\nSQL cosine search"]
+  R_REASON [icon: git-branch, label: "Prior reasoning"]
   R_IOC    [icon: hash,    label: "IOC lookup"]
   R_ASSET  [icon: server,  label: "Asset lookup"]
   R_SUPP   [icon: filter,  label: "Suppression match"]
@@ -17,8 +24,9 @@ Reads (pre-flight) [icon: search, color: orange] {
 
 Writes [icon: upload, color: blue] {
   W_IOC     [icon: refresh-cw, label: "Upsert IOCs\n(sync)"]
-  W_INSIGHT [icon: zap,        label: "Commit insight\n(async + embed)"]
-  W_WORK    [icon: pen-tool,   label: "Planner trace"]
+  W_INSIGHT [icon: zap,        label: "commitAsync\nsummary + embed"]
+  W_REASON  [icon: git-branch, label: "recordReasoning\nper-agent notes"]
+  W_WORK    [icon: pen-tool,   label: "writeWorkingMemory\nplanner trace"]
 }
 
 Orchestrator [icon: cpu, color: red] {
@@ -41,18 +49,30 @@ Learning [icon: lightbulb, color: yellow] {
 S0 > R_SUPP
 R_SUPP > T_SUPP
 S1 > R_RECALL
+S1 > R_REASON
 S1 > R_IOC
 S1 > R_ASSET
 R_RECALL > T_INSIGHT
+R_REASON > T_REASON
 R_IOC > T_IOC
 R_ASSET > T_ASSET
 S4 > W_WORK
+S4 > W_REASON
 W_WORK > T_WORK
+W_REASON > T_REASON
 S7 > W_IOC
 S7 > W_INSIGHT
 W_IOC > T_IOC
 W_INSIGHT > T_INSIGHT
+PG > PGVECTOR
+PG > T_IOC
+PG > T_ASSET
+PG > T_SUPP
+PG > T_WORK
+PG > T_REASON
+PGVECTOR > T_INSIGHT
 T_INSIGHT > API
+T_REASON > API
 T_IOC > API
 T_ASSET > API
 T_SUPP > API

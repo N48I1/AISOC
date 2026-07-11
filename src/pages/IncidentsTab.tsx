@@ -574,12 +574,18 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
       const d = await getIncidentReasoning(activeId);
       setReasoning(d.reasoning || []);
       fetchDetail(activeId);
-      toast(
-        r.reasoning_steps
-          ? `Investigation complete — ${r.reasoning_steps} reasoning step(s) recorded`
-          : 'Investigation ran but produced no reasoning — check the LLM provider/quota',
-        r.reasoning_steps ? 'success' : 'error',
-      );
+      if (r.queued) {
+        toast(r.already_running ? 'Investigation is already running' : 'Investigation started — agents are running in the background', 'success');
+        window.setTimeout(() => fetchDetail(activeId), 5000);
+        window.setTimeout(() => fetchDetail(activeId), 20000);
+      } else {
+        toast(
+          r.reasoning_steps
+            ? `Investigation complete — ${r.reasoning_steps} reasoning step(s) recorded`
+            : 'Investigation ran but produced no reasoning — check the LLM provider/quota',
+          r.reasoning_steps ? 'success' : 'error',
+        );
+      }
     } catch (e: any) {
       toast(e?.message || 'Re-investigation failed', 'error');
     } finally {
@@ -776,6 +782,21 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
               {/* ===== OVERVIEW TAB ===== */}
               {detailTab === 'overview' && (
                 <div className="space-y-4">
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => fetchDetail(detail.id)} disabled={loadingDetail || reinvestigating}
+                      title="Re-fetch this incident's latest data"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--b2)] bg-[var(--s0)] text-[var(--t6)] text-[0.7rem] font-bold hover:bg-[var(--s1)] disabled:opacity-50 transition-colors">
+                      <RefreshCw size={13} className={loadingDetail ? 'animate-spin' : ''} /> Refresh
+                    </button>
+                    <button onClick={handleRunInvestigation} disabled={reinvestigating}
+                      title="Re-run all AI agents on this incident's alert"
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-violet-600 text-white text-[0.7rem] font-bold hover:bg-violet-700 disabled:opacity-60 transition-colors shadow-sm">
+                      {reinvestigating
+                        ? <><RefreshCw size={13} className="animate-spin" /> Running investigation...</>
+                        : <><Zap size={13} /> Re-run investigation</>}
+                    </button>
+                  </div>
+
                   {/* Agent-run health: shows a failure reason + retry/refresh when the
                       incident's alert investigation failed or fell back. */}
                   <AgentRunStatus
@@ -819,7 +840,7 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
                             <Markdown>{String(ai.ticket_summary || ai.summary)}</Markdown>
                           </div>
                         ) : (
-                          <p className="text-[0.74rem] text-[var(--t4)] italic">No AI summary recorded yet — use “Re-run investigation” above to generate one.</p>
+                          <p className="text-[0.74rem] text-[var(--t4)] italic">No AI summary recorded yet. Use the Re-run investigation button above to generate one.</p>
                         )}
 
                         {/* Key facts grid */}
@@ -1999,4 +2020,3 @@ export const IncidentsTab = ({ setActiveTab, initialIncidentId, clearInitialInci
     </div>
   );
 };
-
